@@ -80,12 +80,71 @@ brew install dashborion-cli
 
 ### Dashboard Deployment
 
-The dashboard can be deployed to any AWS account using Terraform:
+The dashboard uses **SST v3** (built on Pulumi) for deployment with three modes:
+
+| Mode | Frontend | Backend | Use Case |
+|------|----------|---------|----------|
+| **Standalone** | SST creates S3 + CloudFront | SST creates Lambda + IAM role | Development, quick demos |
+| **Semi-managed** | SST creates S3 + CloudFront | Lambda uses Terraform-managed IAM role | Production with managed Lambda role |
+| **Managed** | SST syncs to existing S3 + CloudFront | Lambda uses Terraform-managed IAM role | Full IaC control |
+
+#### Quick Start
 
 ```bash
+# 1. Install dependencies
+npm install
+
+# 2. Copy and configure infra.config.json
+cp infra.config.example.json infra.config.json
+# Edit mode, aws.region, aws.profile as needed
+
+# 3. Deploy
+npx sst deploy --stage production
+```
+
+#### Configuration (`infra.config.json`)
+
+```json
+{
+  "mode": "standalone",
+  "aws": {
+    "region": "eu-west-3",
+    "profile": "myprofile/AdministratorAccess"
+  }
+}
+```
+
+For **semi-managed** or **managed** modes, additional configuration is required:
+
+```json
+{
+  "mode": "semi-managed",
+  "aws": { "region": "eu-west-3", "profile": "myprofile" },
+  "lambda": { "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role" },
+  "crossAccountRoles": {
+    "staging": {
+      "accountId": "111111111111",
+      "readRoleArn": "arn:aws:iam::111111111111:role/dashborion-read-role",
+      "actionRoleArn": "arn:aws:iam::111111111111:role/dashborion-action-role"
+    }
+  }
+}
+```
+
+#### Terraform Modules
+
+The `terraform/modules/` directory provides IAM roles for SST deployment:
+
+| Module | Description |
+|--------|-------------|
+| `sst-deploy-role` | IAM role for SST/Pulumi to deploy resources |
+| `sst-lambda-role` | Lambda execution role with dashboard permissions |
+| `cross-account-roles` | Read/action roles for cross-account access |
+
+```bash
+# Deploy Terraform modules first (for semi-managed/managed modes)
 cd terraform
 terraform init
-terraform plan -var="project_name=my-dashboard"
 terraform apply
 ```
 
@@ -133,18 +192,30 @@ dashborion infra show --env production --output table
 
 ### Dashboard Setup
 
-1. Deploy infrastructure:
+1. Configure deployment:
 ```bash
-cd terraform
-terraform init
-terraform apply -var="project_name=my-dashboard" -var="domain=dashboard.example.com"
+cp infra.config.example.json infra.config.json
+# Edit mode, aws.region, aws.profile
 ```
 
-2. Configure SSO (optional):
+2. Deploy with SST:
+```bash
+npm install
+npx sst deploy --stage production
+```
+
+3. (Optional) For semi-managed/managed modes, deploy Terraform modules first:
+```bash
+cd terraform/modules
+# Deploy sst-deploy-role, sst-lambda-role, cross-account-roles
+terraform init && terraform apply
+```
+
+4. Configure SSO (optional):
    - Set up AWS Identity Center or any SAML provider
    - Configure CloudFront Lambda@Edge for authentication
 
-3. Access the dashboard at your configured domain
+5. Access the dashboard at the URL output by SST
 
 ## Project Structure
 
@@ -177,10 +248,13 @@ dashborion/
 │       └── publishers/    # Confluence, etc.
 │
 ├── terraform/             # Infrastructure as Code
-│   ├── api_gateway.tf
-│   ├── lambda.tf
-│   ├── cloudfront.tf
-│   └── ...
+│   └── modules/
+│       ├── sst-deploy-role/      # SST deployment IAM role
+│       ├── sst-lambda-role/      # Lambda execution role
+│       └── cross-account-roles/  # Cross-account access roles
+│
+├── sst.config.ts          # SST v3 configuration (Pulumi-based)
+├── infra.config.json      # Deployment configuration (mode, AWS settings)
 │
 ├── docs/                  # Documentation
 └── examples/              # Example configurations

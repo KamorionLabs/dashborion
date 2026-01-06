@@ -2,6 +2,25 @@
  * Fetch utilities with SSO session handling
  */
 
+// API Base URL - uses environment variable in SST dev/deploy, falls back to relative URL
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
+
+/**
+ * Build full API URL by prepending base URL to path
+ * @param {string} path - API path (e.g., '/api/health')
+ * @returns {string} Full URL
+ */
+export const apiUrl = (path) => {
+  // If path is already absolute URL, return as-is
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    return path
+  }
+  // Ensure no double slashes when joining
+  const base = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL
+  const cleanPath = path.startsWith('/') ? path : `/${path}`
+  return `${base}${cleanPath}`
+}
+
 // Session expiration event for SSO token expiry detection
 export const sessionExpiredEvent = new EventTarget()
 
@@ -14,10 +33,11 @@ export const notifySessionExpired = () => {
  * Also detects SSO session expiration
  */
 export const fetchWithRetry = async (url, options = {}, maxRetries = 3) => {
+  const fullUrl = apiUrl(url)
   let lastError
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const response = await fetch(url, options)
+      const response = await fetch(fullUrl, options)
       // Detect SSO redirect (307 to SSO portal)
       if (response.status === 307 || response.redirected) {
         const location = response.headers.get('location') || response.url

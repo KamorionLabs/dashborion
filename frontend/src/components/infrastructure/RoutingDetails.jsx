@@ -1,5 +1,6 @@
 import { Network, Route, Globe, Shield, Link2, Workflow, ExternalLink, Copy, Check, Search, ChevronDown, ChevronRight, RefreshCw, Server, Database, Box, Cloud, Wifi } from 'lucide-react'
 import { useState, useEffect, useCallback } from 'react'
+import { fetchWithRetry } from '../../utils'
 
 // Copy to clipboard helper
 function CopyButton({ text }) {
@@ -269,7 +270,7 @@ function SecurityGroupBadge({ sg, env }) {
     if (rules) return // Already loaded
     setLoading(true)
     try {
-      const response = await fetch(`/api/infrastructure/${env}/security-group/${sg.id}`)
+      const response = await fetchWithRetry(`/api/infrastructure/${env}/security-group/${sg.id}`)
       if (response.ok) {
         const data = await response.json()
         setRules(data)
@@ -544,7 +545,7 @@ export function SubnetDetails({ subnet, env }) {
       params.set('subnetId', subnet.id)
       if (ipFilter) params.set('searchIp', ipFilter)
 
-      const response = await fetch(`/api/infrastructure/${env}/enis?${params}`)
+      const response = await fetchWithRetry(`/api/infrastructure/${env}/enis?${params}`)
       if (!response.ok) throw new Error(`Failed to fetch ENIs: ${response.status}`)
       const data = await response.json()
       setEnis(data.enis || [])
@@ -858,7 +859,7 @@ export function VPCDetails({ vpc, env }) {
       params.set('vpcId', vpc.id)
       if (ipFilter) params.set('searchIp', ipFilter)
 
-      const response = await fetch(`/api/infrastructure/${env}/enis?${params}`)
+      const response = await fetchWithRetry(`/api/infrastructure/${env}/enis?${params}`)
       if (!response.ok) throw new Error(`Failed to fetch ENIs: ${response.status}`)
       const data = await response.json()
       setEnis(data.enis || [])

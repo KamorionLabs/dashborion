@@ -1,5 +1,6 @@
 import { Shield, ArrowDownToLine, ArrowUpFromLine, ChevronDown, ChevronRight, RefreshCw, ExternalLink } from 'lucide-react'
 import { useState } from 'react'
+import { fetchWithRetry } from '../../utils'
 
 /**
  * SecurityGroupsPanel - Displays security groups and their rules
@@ -50,7 +51,7 @@ function SecurityGroupCard({ sg, env, expanded, onToggle }) {
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch(`/api/infrastructure/${env}/security-group/${sgId}`)
+      const response = await fetchWithRetry(`/api/infrastructure/${env}/security-group/${sgId}`)
       if (response.ok) {
         const data = await response.json()
         setRules(data)

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { RefreshCw, AlertCircle } from 'lucide-react'
+import { fetchWithRetry } from '../../utils'
 import AwsNAT from 'aws-react-icons/lib/icons/ResourceAmazonVPCNATGateway'
 import AwsIGW from 'aws-react-icons/lib/icons/ResourceAmazonVPCInternetGateway'
 import AwsVPN from 'aws-react-icons/lib/icons/ArchitectureServiceAWSSiteToSiteVPN'
@@ -38,7 +39,7 @@ export default function RoutingView({
     setLoading(true)
     setError(null)
     try {
-      const response = await fetch(`/api/infrastructure/${env}/routing`)
+      const response = await fetchWithRetry(`/api/infrastructure/${env}/routing`)
       if (!response.ok) {
         throw new Error(`Failed to fetch routing data: ${response.status}`)
       }

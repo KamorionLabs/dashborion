@@ -91,3 +91,6 @@ secrets/
 # Lambda packages
 backend/package/
 backend/*.zip
+
+# SST
+.sst/

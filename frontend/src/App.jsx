@@ -350,7 +350,7 @@ export default function App() {
       // Only enrich events that don't already have user info
       const eventsToEnrich = eventsData.filter(e => !e.user)
       if (eventsToEnrich.length > 0) {
-        fetch(`/api/events/${env}/enrich`, {
+        fetchWithRetry(`/api/events/${env}/enrich`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ events: eventsData })
@@ -399,7 +399,7 @@ export default function App() {
         }).filter(item => item.fromRevision && item.toRevision)
 
         if (diffItems.length > 0) {
-          fetch(`/api/events/${env}/task-diff`, {
+          fetchWithRetry(`/api/events/${env}/task-diff`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ items: diffItems.map(({ family, fromRevision, toRevision }) => ({ family, fromRevision, toRevision })) })
@@ -487,7 +487,7 @@ export default function App() {
     if (!window.confirm(`Trigger build for ${service}?`)) return
     setActionLoading(prev => ({ ...prev, [`build-${service}`]: true }))
     try {
-      const res = await fetch(`/api/actions/build/${service}`, {
+      const res = await fetchWithRetry(`/api/actions/build/${service}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -512,7 +512,7 @@ export default function App() {
     if (!window.confirm(`Reload ${service} on ${env}?\nThis will restart ECS tasks to pick up new secret values.`)) return
     setActionLoading(prev => ({ ...prev, [`reload-${env}-${service}`]: true }))
     try {
-      const res = await fetch(`/api/actions/deploy/${env}/${service}/reload`, {
+      const res = await fetchWithRetry(`/api/actions/deploy/${env}/${service}/reload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -536,7 +536,7 @@ export default function App() {
     if (!window.confirm(`Deploy latest for ${service} on ${env}?\nThis will trigger the deploy pipeline to update to the latest image and task definition.`)) return
     setActionLoading(prev => ({ ...prev, [`deploy-${env}-${service}`]: true }))
     try {
-      const res = await fetch(`/api/actions/deploy/${env}/${service}/latest`, {
+      const res = await fetchWithRetry(`/api/actions/deploy/${env}/${service}/latest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -573,7 +573,7 @@ export default function App() {
     const actionLabel = action === 'stop' ? 'Stop' : 'Start'
     setActionLoading(prev => ({ ...prev, [`scale-${env}-${service}`]: true }))
     try {
-      const res = await fetch(`/api/actions/deploy/${env}/${service}/${action}`, {
+      const res = await fetchWithRetry(`/api/actions/deploy/${env}/${service}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ desiredCount })
@@ -600,7 +600,7 @@ export default function App() {
     if (!window.confirm(`${actionLabel} RDS database on ${env}?`)) return
     setActionLoading(prev => ({ ...prev, [`rds-${env}`]: true }))
     try {
-      const res = await fetch(`/api/actions/rds/${env}/${action}`, {
+      const res = await fetchWithRetry(`/api/actions/rds/${env}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -628,7 +628,7 @@ export default function App() {
     }
     setActionLoading(prev => ({ ...prev, [`cf-${env}`]: true }))
     try {
-      const res = await fetch(`/api/actions/cloudfront/${env}/invalidate`, {
+      const res = await fetchWithRetry(`/api/actions/cloudfront/${env}/invalidate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ distributionId, paths })

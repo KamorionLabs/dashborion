@@ -1,0 +1,193 @@
+# ==============================================================================
+# Example: Complete Dashborion Infrastructure Setup
+#
+# This example shows how to deploy:
+# 1. SST Lambda role (in the dashboard account)
+# 2. Cross-account roles (in each target account)
+#
+# The output can be used to generate infra.config.json for SST
+# ==============================================================================
+
+# -----------------------------------------------------------------------------
+# Provider configuration
+# -----------------------------------------------------------------------------
+
+provider "aws" {
+  region  = "eu-west-3"
+  profile = "dashborion-shared-services/AdministratorAccess"
+}
+
+provider "aws" {
+  alias   = "staging"
+  region  = "eu-west-3"
+  profile = "dashborion-staging/AdministratorAccess"
+}
+
+provider "aws" {
+  alias   = "preprod"
+  region  = "eu-west-3"
+  profile = "dashborion-preprod/AdministratorAccess"
+}
+
+provider "aws" {
+  alias   = "production"
+  region  = "eu-west-3"
+  profile = "dashborion-production/AdministratorAccess"
+}
+
+# -----------------------------------------------------------------------------
+# Variables
+# -----------------------------------------------------------------------------
+
+variable "project_name" {
+  default = "dashborion"
+}
+
+variable "dashboard_account_id" {
+  description = "AWS account ID where the dashboard Lambda runs (shared-services)"
+  type        = string
+  default     = "123456789012"
+}
+
+variable "target_accounts" {
+  description = "Target accounts configuration"
+  type = map(object({
+    account_id         = string
+    enable_action_role = bool
+  }))
+  default = {
+    staging = {
+      account_id         = "111111111111"
+      enable_action_role = true
+    }
+    preprod = {
+      account_id         = "222222222222"
+      enable_action_role = true
+    }
+    production = {
+      account_id         = "333333333333"
+      enable_action_role = true
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# SST Lambda Role (in dashboard/shared-services account)
+# -----------------------------------------------------------------------------
+
+module "sst_lambda_role" {
+  source = "./modules/sst-lambda-role"
+
+  project_name = var.project_name
+  environment  = "production"
+
+  # Cross-account roles the Lambda can assume
+  cross_account_role_arns = concat(
+    [for env, cfg in var.target_accounts : "arn:aws:iam::${cfg.account_id}:role/${var.project_name}-read-role"],
+    [for env, cfg in var.target_accounts : "arn:aws:iam::${cfg.account_id}:role/${var.project_name}-action-role" if cfg.enable_action_role]
+  )
+
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "terraform"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Cross-Account Roles (in each target account)
+# -----------------------------------------------------------------------------
+
+module "cross_account_roles_staging" {
+  source = "./modules/cross-account-roles"
+  providers = {
+    aws = aws.staging
+  }
+
+  project_name       = var.project_name
+  trusted_account_id = var.dashboard_account_id
+  target_account_id  = var.target_accounts["staging"].account_id
+  environment        = "staging"
+  enable_action_role = var.target_accounts["staging"].enable_action_role
+
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "terraform"
+  }
+}
+
+module "cross_account_roles_preprod" {
+  source = "./modules/cross-account-roles"
+  providers = {
+    aws = aws.preprod
+  }
+
+  project_name       = var.project_name
+  trusted_account_id = var.dashboard_account_id
+  target_account_id  = var.target_accounts["preprod"].account_id
+  environment        = "preprod"
+  enable_action_role = var.target_accounts["preprod"].enable_action_role
+
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "terraform"
+  }
+}
+
+module "cross_account_roles_production" {
+  source = "./modules/cross-account-roles"
+  providers = {
+    aws = aws.production
+  }
+
+  project_name       = var.project_name
+  trusted_account_id = var.dashboard_account_id
+  target_account_id  = var.target_accounts["production"].account_id
+  environment        = "production"
+  enable_action_role = var.target_accounts["production"].enable_action_role
+
+  tags = {
+    Project   = var.project_name
+    ManagedBy = "terraform"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Outputs for infra.config.json
+# -----------------------------------------------------------------------------
+
+output "lambda_role_arn" {
+  description = "Lambda role ARN for infra.config.json"
+  value       = module.sst_lambda_role.role_arn
+}
+
+output "cross_account_roles_config" {
+  description = "Configuration for infra.config.json crossAccountRoles section"
+  value = {
+    staging    = module.cross_account_roles_staging.cross_account_config
+    preprod    = module.cross_account_roles_preprod.cross_account_config
+    production = module.cross_account_roles_production.cross_account_config
+  }
+}
+
+# Generate complete infra.config.json content
+output "infra_config_json" {
+  description = "Complete infra.config.json content (copy to infra.config.json)"
+  value = jsonencode({
+    mode = "semi-managed"
+    aws = {
+      region  = "eu-west-3"
+      profile = "dashborion-shared-services/AdministratorAccess"
+    }
+    lambda = {
+      roleArn = module.sst_lambda_role.role_arn
+    }
+    crossAccountRoles = {
+      staging    = module.cross_account_roles_staging.cross_account_config
+      preprod    = module.cross_account_roles_preprod.cross_account_config
+      production = module.cross_account_roles_production.cross_account_config
+    }
+  })
+}
+
+# Usage:
+# terraform output -raw infra_config_json | jq '.' > ../infra.config.json

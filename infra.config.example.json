@@ -1,0 +1,54 @@
+{
+  "$schema": "./infra.config.schema.json",
+  "_comment": "Infrastructure configuration for Dashborion deployment",
+  "_modes": {
+    "standalone": "SST creates all resources (S3, CloudFront, Lambda role) - for dev/testing",
+    "semi-managed": "SST creates frontend (S3, CloudFront), Lambda uses external role",
+    "managed": "SST syncs to existing S3/CloudFront, Lambda uses external role"
+  },
+
+  "mode": "semi-managed",
+
+  "aws": {
+    "_comment": "AWS provider configuration - uses env vars AWS_REGION/AWS_PROFILE if not set",
+    "region": "eu-west-3",
+    "profile": "dashborion-shared-services/AdministratorAccess"
+  },
+
+  "lambda": {
+    "_comment": "Required for semi-managed and managed modes",
+    "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role"
+  },
+
+  "frontend": {
+    "_comment": "Required only for managed mode - SST syncs to existing bucket",
+    "s3Bucket": "dashborion-frontend-123456789012",
+    "cloudfrontDistributionId": "E1234567890ABC",
+    "cloudfrontDomain": "dashboard.example.com"
+  },
+
+  "apiGateway": {
+    "_comment": "Optional: if set, SST uses existing API Gateway instead of creating one",
+    "id": null,
+    "url": null
+  },
+
+  "crossAccountRoles": {
+    "_comment": "Roles to access resources in other AWS accounts (created via Terraform module)",
+    "staging": {
+      "accountId": "111111111111",
+      "readRoleArn": "arn:aws:iam::111111111111:role/dashborion-read-role",
+      "actionRoleArn": "arn:aws:iam::111111111111:role/dashborion-action-role"
+    },
+    "preprod": {
+      "accountId": "222222222222",
+      "readRoleArn": "arn:aws:iam::222222222222:role/dashborion-read-role",
+      "actionRoleArn": "arn:aws:iam::222222222222:role/dashborion-action-role"
+    },
+    "production": {
+      "accountId": "333333333333",
+      "readRoleArn": "arn:aws:iam::333333333333:role/dashborion-read-role",
+      "actionRoleArn": "arn:aws:iam::333333333333:role/dashborion-action-role"
+    }
+  }
+}

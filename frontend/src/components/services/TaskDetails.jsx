@@ -7,6 +7,7 @@ import {
 import SecurityGroupsPanel from '../infrastructure/SecurityGroupsPanel'
 import EnvVarsSecretsPanel from '../common/EnvVarsSecretsPanel'
 import CollapsibleSection from '../common/CollapsibleSection'
+import { fetchWithRetry } from '../../utils'
 
 export default function TaskDetails({ task, env, onOpenLogsPanel }) {
   const [details, setDetails] = useState(null)
@@ -18,7 +19,7 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
   const fetchTaskDetails = useCallback(() => {
     const taskId = task?.fullId || task?.taskId
     if (taskId && task?.service) {
-      return fetch(`/api/tasks/${env}/${task.service}/${taskId}`)
+      return fetchWithRetry(`/api/tasks/${env}/${task.service}/${taskId}`)
         .then(res => res.json())
         .then(data => {
           setDetails(data)
@@ -56,7 +57,7 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
   useEffect(() => {
     const privateIp = details?.placement?.privateIp
     if (privateIp && env) {
-      fetch(`/api/infrastructure/${env}/enis?searchIp=${encodeURIComponent(privateIp)}`)
+      fetchWithRetry(`/api/infrastructure/${env}/enis?searchIp=${encodeURIComponent(privateIp)}`)
         .then(res => res.json())
         .then(data => {
           // Find the ENI that matches this task's private IP
