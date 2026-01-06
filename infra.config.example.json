@@ -15,6 +15,24 @@
     "profile": "dashborion-shared-services/AdministratorAccess"
   },
 
+  "auth": {
+    "_comment": "Native SSO authentication with Lambda@Edge",
+    "enabled": true,
+    "provider": "saml",
+    "saml": {
+      "_comment": "SAML IdP configuration (AWS Identity Center / Microsoft Entra ID)",
+      "entityId": "dashborion",
+      "idpMetadataUrl": "https://portal.sso.eu-west-3.amazonaws.com/saml/metadata/...",
+      "acsPath": "/saml/acs",
+      "metadataPath": "/saml/metadata"
+    },
+    "sessionTtlSeconds": 3600,
+    "cookieDomain": ".homebox.kamorion.cloud",
+    "excludedPaths": ["/health", "/api/health", "/saml/metadata"],
+    "requireMfaForProduction": true,
+    "_permissionsNote": "Permissions table names are auto-generated as dashborion-{stage}-permissions/audit"
+  },
+
   "lambda": {
     "_comment": "Required for semi-managed and managed modes",
     "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role"
@@ -49,6 +67,21 @@
       "accountId": "333333333333",
       "readRoleArn": "arn:aws:iam::333333333333:role/dashborion-read-role",
       "actionRoleArn": "arn:aws:iam::333333333333:role/dashborion-action-role"
+    }
+  },
+
+  "projects": {
+    "_comment": "Projects configuration for multi-tenant authorization",
+    "homebox": {
+      "displayName": "Homebox",
+      "environments": ["staging", "preprod", "production"],
+      "_roleMapping": {
+        "_comment": "IdP groups mapped to Dashborion roles",
+        "dashborion-homebox-viewer": { "role": "viewer", "env": "*" },
+        "dashborion-homebox-operator": { "role": "operator", "env": "*" },
+        "dashborion-homebox-admin": { "role": "admin", "env": "*" },
+        "dashborion-homebox-prod-operator": { "role": "operator", "env": "production" }
+      }
     }
   }
 }

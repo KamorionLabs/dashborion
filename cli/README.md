@@ -157,7 +157,30 @@ dashborion services list --env staging --output yaml
 
 ## Authentication
 
-The CLI uses AWS credentials from your configured profiles:
+### Dashborion Authentication (Recommended)
+
+Authenticate with the Dashborion backend for full feature access:
+
+```bash
+# Device Flow - Opens browser for SSO authentication
+dashborion auth login
+
+# AWS SSO - Reuse existing AWS SSO session
+dashborion auth login --use-sso
+
+# Check authentication status
+dashborion auth whoami
+dashborion auth status
+
+# Logout
+dashborion auth logout
+```
+
+Credentials are stored in `~/.dashborion/credentials.json`.
+
+### AWS Profile Authentication (Legacy)
+
+For direct AWS API access without the Dashborion backend:
 
 ```bash
 # Use specific profile
@@ -180,6 +203,7 @@ aws configure sso
 | `AWS_PROFILE` | Default AWS profile |
 | `AWS_REGION` | Default AWS region |
 | `DASHBORION_CONFIG` | Path to config file |
+| `DASHBORION_API_URL` | Dashborion API URL (for auth) |
 | `CONFLUENCE_URL` | Confluence base URL |
 | `CONFLUENCE_USERNAME` | Confluence username |
 | `CONFLUENCE_TOKEN` | Confluence API token |

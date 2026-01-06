@@ -40,11 +40,14 @@ dashborion/
 │       ├── generators/    # Diagram generators
 │       └── publishers/    # Confluence publisher
 │
-├── terraform/             # Infrastructure as Code
-│   ├── api_gateway.tf     # API Gateway configuration
-│   ├── lambda.tf          # Lambda functions
-│   ├── cloudfront.tf      # CloudFront distribution
-│   └── ...
+├── terraform/             # Infrastructure as Code (Terraform modules)
+│   └── modules/
+│       ├── sst-deploy-role/      # SST/Pulumi deployment role
+│       ├── sst-lambda-role/      # Lambda execution role
+│       └── cross-account-roles/  # Cross-account access roles
+│
+├── sst.config.ts          # SST v3 configuration (3 deployment modes)
+├── infra.config.json      # Deployment settings (mode, aws region/profile)
 │
 ├── docs/                  # Documentation
 └── examples/              # Example configurations
@@ -260,13 +263,88 @@ Error responses:
 
 ## Deployment
 
-### Dashboard (Terraform)
+### Dashboard (SST v3)
+
+The dashboard uses **SST v3** (built on Pulumi) with three deployment modes:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `standalone` | SST creates all resources (S3, CloudFront, Lambda, IAM) | Development, quick demos |
+| `semi-managed` | SST creates frontend; Lambda uses Terraform-managed IAM role | Production with external role |
+| `managed` | SST syncs to existing S3/CloudFront; Lambda uses external role | Full IaC control |
+
+#### Quick Deploy
 
 ```bash
-cd terraform
+# 1. Configure
+cp infra.config.example.json infra.config.json
+# Edit mode, aws.region, aws.profile
+
+# 2. Deploy
+npm install
+npx sst deploy --stage production
+
+# Development mode
+npx sst dev
+```
+
+#### Configuration File (`infra.config.json`)
+
+```json
+{
+  "mode": "standalone",
+  "aws": {
+    "region": "eu-west-3",
+    "profile": "myprofile/AdministratorAccess"
+  }
+}
+```
+
+For **semi-managed** or **managed** modes:
+
+```json
+{
+  "mode": "semi-managed",
+  "aws": { "region": "eu-west-3", "profile": "myprofile" },
+  "lambda": { "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role" },
+  "crossAccountRoles": {
+    "staging": {
+      "accountId": "111111111111",
+      "readRoleArn": "arn:aws:iam::111111111111:role/dashborion-read-role",
+      "actionRoleArn": "arn:aws:iam::111111111111:role/dashborion-action-role"
+    }
+  }
+}
+```
+
+For **managed** mode (existing frontend infrastructure):
+
+```json
+{
+  "mode": "managed",
+  "aws": { "region": "eu-west-3", "profile": "myprofile" },
+  "lambda": { "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role" },
+  "frontend": {
+    "s3Bucket": "my-dashboard-bucket",
+    "cloudfrontDistributionId": "E1EXAMPLE",
+    "cloudfrontDomain": "dashboard.example.com"
+  }
+}
+```
+
+#### Terraform Modules
+
+| Module | Description |
+|--------|-------------|
+| `terraform/modules/sst-deploy-role/` | IAM role for SST/Pulumi deployment |
+| `terraform/modules/sst-lambda-role/` | Lambda execution role with dashboard permissions |
+| `terraform/modules/cross-account-roles/` | Read/action roles for cross-account access |
+
+```bash
+# Deploy Terraform modules (for semi-managed/managed modes)
+cd terraform/modules/sst-deploy-role
 terraform init
-terraform plan -var="project_name=my-dashboard"
-terraform apply
+terraform apply -var="mode=semi-managed"
 ```
 
 ### CLI (pip)

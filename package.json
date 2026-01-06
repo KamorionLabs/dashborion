@@ -5,12 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "sst dev",
-    "deploy": "sst deploy",
-    "deploy:staging": "sst deploy --stage staging",
-    "deploy:prod": "sst deploy --stage production",
+    "deploy": "npm run build:auth && sst deploy",
+    "deploy:staging": "npm run build:auth && sst deploy --stage staging",
+    "deploy:prod": "npm run build:auth && sst deploy --stage production",
     "remove": "sst remove",
     "console": "sst console",
     "types": "sst types",
+    "build:auth": "cd auth && npm install && npm run build",
     "frontend:dev": "cd frontend && npm run dev",
     "frontend:build": "cd frontend && npm run build",
     "cli:install": "cd cli && pip install -e .",
@@ -24,7 +25,10 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
+    "@pulumi/aws": "^6.0.0",
+    "@pulumi/pulumi": "^3.0.0",
     "@types/mime-types": "^3.0.1",
-    "mime-types": "^2.1.35"
+    "mime-types": "^2.1.35",
+    "synced-folder": "^0.11.0"
   }
 }

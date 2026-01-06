@@ -34,10 +34,18 @@ Dashborion is a comprehensive infrastructure visualization and management tool t
 - **Events Timeline**: CloudTrail, ECS events, deployments
 - **Network View**: ENIs, subnets, route tables, security group rules
 - **Actions**: Force deploy, cache invalidation, start/stop RDS
+- **Native SSO**: Built-in SAML authentication via Lambda@Edge (no external module)
+- **Multi-tenant Authorization**: RBAC with project/environment granularity
 
 ### CLI Tool (`dashborion`)
 
 ```bash
+# Authentication (Device Flow or AWS SSO)
+dashborion auth login              # Opens browser for SSO
+dashborion auth login --use-sso    # Reuse AWS SSO session
+dashborion auth whoami             # Show current user
+dashborion auth logout
+
 # List services
 dashborion services list --env staging --profile myprofile
 
@@ -131,6 +139,30 @@ For **semi-managed** or **managed** modes, additional configuration is required:
 }
 ```
 
+#### Authentication Configuration
+
+Enable native SAML authentication via Lambda@Edge:
+
+```json
+{
+  "auth": {
+    "enabled": true,
+    "provider": "saml",
+    "saml": {
+      "entityId": "dashborion",
+      "idpMetadataUrl": "https://portal.sso.eu-west-3.amazonaws.com/saml/metadata/..."
+    },
+    "sessionTtlSeconds": 3600,
+    "cookieDomain": ".example.com"
+  },
+  "authorization": {
+    "enabled": true,
+    "defaultRole": "viewer",
+    "requireMfaForProduction": true
+  }
+}
+```
+
 #### Terraform Modules
 
 The `terraform/modules/` directory provides IAM roles for SST deployment:
@@ -140,6 +172,7 @@ The `terraform/modules/` directory provides IAM roles for SST deployment:
 | `sst-deploy-role` | IAM role for SST/Pulumi to deploy resources |
 | `sst-lambda-role` | Lambda execution role with dashboard permissions |
 | `cross-account-roles` | Read/action roles for cross-account access |
+| `dashborion-auth-infra` | DynamoDB tables for auth (permissions, audit, tokens, device_codes) |
 
 ```bash
 # Deploy Terraform modules first (for semi-managed/managed modes)
@@ -221,9 +254,18 @@ terraform init && terraform apply
 
 ```
 dashborion/
+├── auth/                  # Lambda@Edge authentication (TypeScript)
+│   ├── src/
+│   │   ├── handlers/      # protect.ts, acs.ts, metadata.ts
+│   │   └── utils/         # crypto.ts, saml.ts, session.ts
+│   └── scripts/
+│       └── bundle.js      # Lambda@Edge bundler
+│
 ├── frontend/              # React dashboard application
 │   ├── src/
 │   │   ├── components/    # UI components
+│   │   ├── hooks/         # useAuth.js, etc.
+│   │   ├── pages/         # DeviceAuth.jsx (CLI verification)
 │   │   ├── utils/         # Utilities and helpers
 │   │   └── App.jsx        # Main application
 │   └── public/
@@ -231,6 +273,13 @@ dashborion/
 │
 ├── backend/               # Lambda API backend
 │   ├── handler.py         # Lambda entry point
+│   ├── auth/              # Authorization module
+│   │   ├── middleware.py  # Request authorization
+│   │   ├── decorators.py  # @require_permission
+│   │   ├── permissions.py # Permission checking
+│   │   ├── device_flow.py # RFC 8628 Device Authorization
+│   │   ├── handlers.py    # Auth API endpoints
+│   │   └── models.py      # AuthContext, Permission, Role
 │   ├── routes/            # API route handlers
 │   ├── providers/         # Data providers
 │   │   ├── ci/            # CI/CD providers (CodePipeline, ArgoCD, etc.)
@@ -241,20 +290,22 @@ dashborion/
 ├── cli/                   # CLI tool
 │   └── dashborion/
 │       ├── __init__.py
-│       ├── cli.py         # Main CLI entry point
+│       ├── main.py        # Main CLI entry point
 │       ├── commands/      # CLI commands
+│       │   └── auth.py    # login, logout, whoami, status, token
 │       ├── collectors/    # AWS/K8s data collectors
 │       ├── generators/    # Diagram generators
 │       └── publishers/    # Confluence, etc.
 │
 ├── terraform/             # Infrastructure as Code
 │   └── modules/
-│       ├── sst-deploy-role/      # SST deployment IAM role
-│       ├── sst-lambda-role/      # Lambda execution role
-│       └── cross-account-roles/  # Cross-account access roles
+│       ├── sst-deploy-role/       # SST deployment IAM role
+│       ├── sst-lambda-role/       # Lambda execution role
+│       ├── cross-account-roles/   # Cross-account access roles
+│       └── dashborion-auth-infra/ # Auth DynamoDB tables
 │
 ├── sst.config.ts          # SST v3 configuration (Pulumi-based)
-├── infra.config.json      # Deployment configuration (mode, AWS settings)
+├── infra.config.json      # Deployment configuration (mode, AWS, auth)
 │
 ├── docs/                  # Documentation
 └── examples/              # Example configurations
@@ -295,18 +346,81 @@ dashborion/
 
 ## Authentication
 
-### Web Dashboard
+### Web Dashboard (Native SSO)
 
-- **SSO via CloudFront**: Uses Lambda@Edge for SAML/OIDC authentication
-- Supports AWS Identity Center, Okta, Azure AD, etc.
+Built-in SAML authentication via Lambda@Edge:
 
-### CLI
+- **Lambda@Edge protect**: Validates session cookie, redirects to IdP if needed
+- **SAML ACS handler**: Processes SAML assertion, creates encrypted session cookie
+- **Session security**: AES-256-GCM encrypted cookies with IP validation
+- **Supported IdPs**: AWS Identity Center, Okta, Azure AD, any SAML 2.0 provider
 
-- **AWS SigV4**: Uses AWS credentials from profiles
-- Specify profile: `--profile myprofile`
-- Uses `~/.aws/credentials` or environment variables
+### CLI Authentication
+
+Two authentication methods:
+
+**1. Device Flow (default)** - Opens browser for SSO authentication:
+```bash
+dashborion auth login
+
+# Output:
+# To authenticate, visit: https://dashboard.example.com/auth/device
+# And enter code: ABCD-1234
+# Opening browser...
+# Waiting for authentication...
+# Successfully authenticated!
+```
+
+**2. AWS SSO** - Reuse existing AWS SSO session:
+```bash
+# First, authenticate with AWS SSO
+aws sso login --profile myprofile
+
+# Then exchange for Dashborion token
+dashborion auth login --use-sso
+```
+
+**Token management:**
+```bash
+dashborion auth whoami     # Show current user and token expiry
+dashborion auth status     # Check if authenticated (exit code 0/1)
+dashborion auth token      # Print access token (for scripting)
+dashborion auth logout     # Revoke token and delete credentials
+```
+
+Credentials stored in `~/.dashborion/credentials.json` with 600 permissions.
+
+### Authorization (RBAC)
+
+Multi-tenant permission model with three roles:
+
+| Role | Permissions |
+|------|-------------|
+| `viewer` | Read-only: view services, logs, metrics, infrastructure |
+| `operator` | Viewer + deploy, scale, restart, invalidate cache |
+| `admin` | Operator + start/stop RDS, manage permissions |
+
+Permissions are scoped by project and environment:
+- `viewer` on `homebox/production`
+- `operator` on `homebox/staging`
+- `admin` on `bigmat/*` (all environments)
+
+IdP group mapping pattern: `dashborion-{project}-{role}` (e.g., `dashborion-homebox-operator`)
 
 ## API Reference
+
+### Authentication
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/auth/device/code` | POST | Request device code (CLI login) |
+| `/api/auth/device/token` | POST | Exchange device code for token |
+| `/api/auth/device/verify` | POST | Verify device code (web page) |
+| `/api/auth/token/refresh` | POST | Refresh access token |
+| `/api/auth/token/revoke` | POST | Revoke access token |
+| `/api/auth/sso/exchange` | POST | Exchange AWS credentials for token |
+| `/api/auth/me` | GET | Get current user info |
+| `/api/auth/whoami` | GET | Get auth status and user details |
 
 ### Services
 
