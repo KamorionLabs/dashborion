@@ -1,0 +1,74 @@
+{
+  "global": {
+    "title": "Infrastructure Dashboard",
+    "logo": "/logo.png",
+    "logoAlt": "Company",
+    "ssoPortalUrl": "",
+    "defaultRegion": "eu-west-3"
+  },
+  "api": {
+    "baseUrl": "/api",
+    "refreshIntervals": {
+      "dashboard": 30000,
+      "logs": 3000
+    }
+  },
+  "auth": {
+    "logoutUrl": "/saml/logout"
+  },
+  "projects": {
+    "myproject": {
+      "name": "My Project",
+      "shortName": "MP",
+      "color": "#0ea5e9",
+      "client": "My Company",
+      "description": "Main application",
+      "aws": {
+        "accounts": {
+          "shared-services": {
+            "id": "123456789012",
+            "alias": "myproject-shared-services",
+            "region": "eu-west-3"
+          },
+          "staging": {
+            "id": "234567890123",
+            "alias": "myproject-staging",
+            "region": "eu-west-3"
+          },
+          "production": {
+            "id": "345678901234",
+            "alias": "myproject-production",
+            "region": "eu-west-3"
+          }
+        }
+      },
+      "services": ["backend", "frontend"],
+      "environments": ["staging", "production"],
+      "serviceNaming": {
+        "prefix": "myproject"
+      },
+      "infrastructure": {
+        "discoveryTags": {
+          "Project": "myproject"
+        },
+        "serviceColors": {
+          "backend": "#3b82f6",
+          "frontend": "#8b5cf6"
+        },
+        "domainPattern": "{service}.{env}.example.com",
+        "domains": {
+          "frontend": "app",
+          "backend": "api"
+        },
+        "databases": ["postgres"],
+        "caches": ["redis"]
+      },
+      "envColors": {
+        "staging": { "bg": "bg-yellow-500", "text": "text-yellow-400", "border": "border-yellow-500" },
+        "production": { "bg": "bg-green-500", "text": "text-green-400", "border": "border-green-500" },
+        "shared": { "bg": "bg-purple-500", "text": "text-purple-400", "border": "border-purple-500" }
+      }
+    }
+  },
+  "defaultProject": "myproject"
+}

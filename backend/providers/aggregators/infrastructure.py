@@ -1,0 +1,341 @@
+"""
+Infrastructure Aggregator - combines all infrastructure providers for the topology view.
+"""
+
+from typing import Dict, List, Optional
+
+from config import DashboardConfig
+from utils.aws import get_cross_account_client, build_sso_console_url
+from providers.base import ProviderFactory
+
+
+class InfrastructureAggregator:
+    """
+    Aggregates data from all infrastructure providers (CloudFront, ALB, RDS, ElastiCache, Network)
+    to provide a unified infrastructure topology view.
+    """
+
+    def __init__(self, config: DashboardConfig):
+        self.config = config
+        self.region = config.region
+
+        # Get individual providers
+        self.network_provider = ProviderFactory.get_network_provider(config)
+        self.loadbalancer_provider = ProviderFactory.get_loadbalancer_provider(config)
+        self.cdn_provider = ProviderFactory.get_cdn_provider(config)
+        self.database_provider = ProviderFactory.get_database_provider(config)
+        self.cache_provider = ProviderFactory.get_cache_provider(config)
+
+    def get_infrastructure(self, env: str, discovery_tags: dict = None, services: list = None,
+                           domain_config: dict = None, databases: list = None, caches: list = None) -> dict:
+        """Get infrastructure topology for an environment (CloudFront, ALB, S3, ECS services, RDS, Redis, Network)
+
+        Args:
+            env: Environment name (staging, preprod, production)
+            discovery_tags: Dict of {tag_key: tag_value} to filter resources
+            services: List of service names to look for
+            domain_config: Dict with domain patterns
+            databases: List of database types to look for (e.g., ["postgres", "mysql"])
+            caches: List of cache types to look for (e.g., ["redis"])
+        """
+        env_config = self.config.get_environment(env)
+        if not env_config:
+            return {'error': f'Unknown environment: {env}'}
+
+        # Default values for backwards compatibility
+        services = services or ['backend', 'frontend', 'cms']
+        databases = databases if databases is not None else ['postgres']
+        caches = caches if caches is not None else ['redis']
+
+        account_id = env_config.account_id
+        domain_suffix = f"{env}.{self.config.project_name}.kamorion.cloud"
+
+        # Domain patterns - use domain_config or fallback to defaults
+        if domain_config and domain_config.get('domains'):
+            domains_map = domain_config.get('domains', {})
+            result_domains = {}
+            for svc, prefix in domains_map.items():
+                result_domains[svc] = f"https://{prefix}.{domain_suffix}"
+        else:
+            result_domains = {
+                'frontend': f"https://fr.{domain_suffix}",
+                'backend': f"https://back.{domain_suffix}",
+                'cms': f"https://cms.{domain_suffix}"
+            }
+
+        result = {
+            'environment': env,
+            'accountId': account_id,
+            'domains': result_domains,
+            'cloudfront': None,
+            'alb': None,
+            's3Buckets': [],
+            'services': {},
+            'rds': None,
+            'redis': None,
+            'network': None,
+            'orchestrator': 'ecs'
+        }
+
+        cloudfront_s3_origins = set()
+
+        # Extract domain prefixes from domain_config for precise CloudFront matching
+        domain_prefixes = None
+        if domain_config and domain_config.get('domains'):
+            domain_prefixes = list(domain_config['domains'].values())
+
+        # CloudFront (using dedicated provider)
+        try:
+            if self.cdn_provider:
+                cf_data = self._get_cloudfront_for_infrastructure(env, domain_suffix, account_id, domain_prefixes)
+                result['cloudfront'] = cf_data
+                if cf_data and 'origins' in cf_data:
+                    for origin in cf_data.get('origins', []):
+                        if origin.get('type') == 's3':
+                            bucket_name = origin['domainName'].split('.s3.')[0]
+                            cloudfront_s3_origins.add(bucket_name)
+        except Exception as e:
+            result['cloudfront'] = {'error': str(e)}
+
+        # ALB (using dedicated provider)
+        try:
+            if self.loadbalancer_provider:
+                result['alb'] = self.loadbalancer_provider.get_load_balancer(env, services)
+        except Exception as e:
+            result['alb'] = {'error': str(e)}
+
+        # S3 Buckets (CloudFront origins only) - no dedicated provider needed, simple list
+        try:
+            s3 = get_cross_account_client('s3', account_id, env_config.region)
+            buckets = s3.list_buckets()
+            for bucket in buckets.get('Buckets', []):
+                bucket_name = bucket['Name']
+                if bucket_name in cloudfront_s3_origins:
+                    bucket_type = 'frontend' if 'frontend' in bucket_name else 'cms-public' if 'cms-public' in bucket_name else 'assets' if 'assets' in bucket_name else 'other'
+                    result['s3Buckets'].append({
+                        'name': bucket_name,
+                        'type': bucket_type,
+                        'createdAt': bucket['CreationDate'].isoformat() if bucket.get('CreationDate') else None,
+                        'consoleUrl': build_sso_console_url(
+                            self.config.sso_portal_url, account_id,
+                            f"https://s3.console.aws.amazon.com/s3/buckets/{bucket_name}?region={self.region}"
+                        )
+                    })
+        except Exception as e:
+            result['s3Buckets'] = [{'error': str(e)}]
+
+        # ECS Services - still from orchestrator provider (keeps ECS-specific logic together)
+        try:
+            orchestrator = ProviderFactory.get_orchestrator_provider(self.config)
+            result['services'] = orchestrator._get_services_for_infrastructure(
+                orchestrator._get_ecs_client(env),
+                env,
+                self.config.get_cluster_name(env),
+                account_id,
+                services
+            )
+        except Exception as e:
+            result['services'] = {'error': str(e)}
+
+        # RDS (using dedicated provider with discovery tags)
+        try:
+            if self.database_provider:
+                result['rds'] = self._get_rds_for_infrastructure(env, account_id, discovery_tags, databases)
+        except Exception as e:
+            result['rds'] = {'error': str(e)}
+
+        # ElastiCache Redis (using dedicated provider)
+        if caches:
+            try:
+                if self.cache_provider:
+                    result['redis'] = self.cache_provider.get_cache_cluster(env, discovery_tags, caches)
+            except Exception as e:
+                result['redis'] = {'error': str(e)}
+
+        # Network (using dedicated provider)
+        try:
+            if self.network_provider:
+                result['network'] = self.network_provider.get_network_info(env)
+        except Exception as e:
+            result['network'] = {'error': str(e)}
+
+        return result
+
+    def _get_cloudfront_for_infrastructure(self, env: str, domain_suffix: str, account_id: str, domain_prefixes: list = None) -> dict:
+        """Get CloudFront distribution info with precise filtering
+
+        Args:
+            env: Environment name
+            domain_suffix: e.g., 'staging.homebox.kamorion.cloud'
+            account_id: AWS account ID
+            domain_prefixes: List of domain prefixes to match (e.g., ['fr', 'back', 'cms'])
+        """
+        env_config = self.config.get_environment(env)
+        cloudfront = get_cross_account_client('cloudfront', account_id)
+
+        distributions = cloudfront.list_distributions()
+        for dist in distributions.get('DistributionList', {}).get('Items', []):
+            aliases = dist.get('Aliases', {}).get('Items', [])
+
+            # If domain_prefixes provided, match precisely; otherwise use broad matching
+            if domain_prefixes:
+                expected_aliases = [f"{prefix}.{domain_suffix}" for prefix in domain_prefixes]
+                if not any(alias in expected_aliases for alias in aliases):
+                    continue
+            elif not any(domain_suffix in alias for alias in aliases):
+                continue
+
+            dist_id = dist['Id']
+            cf_info = {
+                'id': dist_id,
+                'domainName': dist['DomainName'],
+                'aliases': aliases,
+                'status': dist['Status'],
+                'enabled': dist['Enabled'],
+                'origins': [],
+                'cacheBehaviors': [],
+                'webAclId': None,
+                'consoleUrl': build_sso_console_url(
+                    self.config.sso_portal_url, account_id,
+                    f"https://console.aws.amazon.com/cloudfront/v4/home#/distributions/{dist_id}"
+                )
+            }
+
+            for origin in dist.get('Origins', {}).get('Items', []):
+                origin_domain = origin['DomainName']
+                origin_type = 'alb' if 'elb.amazonaws.com' in origin_domain else 's3' if 's3.' in origin_domain else 'custom'
+                cf_info['origins'].append({
+                    'id': origin['Id'],
+                    'domainName': origin_domain,
+                    'type': origin_type,
+                    'path': origin.get('OriginPath', '')
+                })
+
+            try:
+                dist_config = cloudfront.get_distribution(Id=dist_id)
+                dist_detail = dist_config.get('Distribution', {}).get('DistributionConfig', {})
+                cf_info['webAclId'] = dist_detail.get('WebACLId', '') or None
+
+                default_behavior = dist_detail.get('DefaultCacheBehavior', {})
+                if default_behavior:
+                    cf_info['cacheBehaviors'].append({
+                        'pathPattern': 'Default (*)',
+                        'targetOriginId': default_behavior.get('TargetOriginId'),
+                        'viewerProtocolPolicy': default_behavior.get('ViewerProtocolPolicy'),
+                        'defaultTTL': default_behavior.get('DefaultTTL', 0),
+                        'compress': default_behavior.get('Compress', False),
+                        'lambdaEdge': len(default_behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
+                    })
+
+                for behavior in dist_detail.get('CacheBehaviors', {}).get('Items', []):
+                    cf_info['cacheBehaviors'].append({
+                        'pathPattern': behavior.get('PathPattern'),
+                        'targetOriginId': behavior.get('TargetOriginId'),
+                        'viewerProtocolPolicy': behavior.get('ViewerProtocolPolicy'),
+                        'defaultTTL': behavior.get('DefaultTTL', 0),
+                        'compress': behavior.get('Compress', False),
+                        'lambdaEdge': len(behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
+                    })
+            except:
+                pass
+            return cf_info
+        return None
+
+    def _get_rds_for_infrastructure(self, env: str, account_id: str, discovery_tags: dict = None, databases: list = None) -> dict:
+        """Get RDS database info (filtered by discovery_tags and database type)"""
+        env_config = self.config.get_environment(env)
+        rds = get_cross_account_client('rds', account_id, env_config.region)
+        databases = databases or ['postgres']
+
+        db_instances = rds.describe_db_instances()
+        for db in db_instances.get('DBInstances', []):
+            db_id = db['DBInstanceIdentifier']
+            db_engine = db['Engine'].lower()
+
+            # Check if this database type is in our requested list
+            engine_matches = False
+            for db_type in databases:
+                if db_type.lower() in db_engine or db_engine in db_type.lower():
+                    engine_matches = True
+                    break
+            if not engine_matches:
+                continue
+
+            # Get RDS tags and check if they match discovery_tags
+            try:
+                db_arn = db['DBInstanceArn']
+                tag_response = rds.list_tags_for_resource(ResourceName=db_arn)
+                db_tags = tag_response.get('TagList', [])
+            except Exception:
+                db_tags = []
+
+            # Check if discovery_tags match (or fallback to name-based matching)
+            from providers.infrastructure.elasticache import matches_discovery_tags
+            tags_match = matches_discovery_tags(db_tags, discovery_tags) if discovery_tags else (self.config.project_name in db_id and env in db_id)
+
+            if tags_match:
+                return {
+                    'identifier': db_id,
+                    'engine': db['Engine'],
+                    'engineVersion': db['EngineVersion'],
+                    'instanceClass': db['DBInstanceClass'],
+                    'status': db['DBInstanceStatus'],
+                    'endpoint': db.get('Endpoint', {}).get('Address'),
+                    'port': db.get('Endpoint', {}).get('Port'),
+                    'storage': {
+                        'allocated': db.get('AllocatedStorage'),
+                        'type': db.get('StorageType'),
+                        'iops': db.get('Iops'),
+                        'encrypted': db.get('StorageEncrypted', False)
+                    },
+                    'multiAz': db.get('MultiAZ', False),
+                    'availabilityZone': db.get('AvailabilityZone'),
+                    'dbName': db.get('DBName'),
+                    'masterUsername': db.get('MasterUsername'),
+                    'backupRetention': db.get('BackupRetentionPeriod'),
+                    'preferredBackupWindow': db.get('PreferredBackupWindow'),
+                    'preferredMaintenanceWindow': db.get('PreferredMaintenanceWindow'),
+                    'publiclyAccessible': db.get('PubliclyAccessible', False),
+                    'securityGroups': [sg['VpcSecurityGroupId'] for sg in db.get('VpcSecurityGroups', [])],
+                    'parameterGroup': db.get('DBParameterGroups', [{}])[0].get('DBParameterGroupName') if db.get('DBParameterGroups') else None,
+                    'consoleUrl': build_sso_console_url(
+                        self.config.sso_portal_url, account_id,
+                        f"https://{self.region}.console.aws.amazon.com/rds/home?region={self.region}#database:id={db_id};is-cluster=false"
+                    )
+                }
+        return None
+
+    def get_routing_details(self, env: str, service_security_groups: list = None) -> dict:
+        """Get detailed routing and security information (called on demand via toggle)
+
+        Args:
+            env: Environment name
+            service_security_groups: List of security group IDs to filter (only show SGs associated with services)
+        """
+        if self.network_provider:
+            return self.network_provider.get_routing_details(env, service_security_groups)
+        return {'error': 'Network provider not available'}
+
+    def get_enis(self, env: str, vpc_id: str = None, subnet_id: str = None, search_ip: str = None) -> dict:
+        """Get ENIs (Elastic Network Interfaces) for a VPC or subnet
+
+        Args:
+            env: Environment name
+            vpc_id: Optional VPC ID filter (if not provided, uses project VPC)
+            subnet_id: Optional subnet ID filter
+            search_ip: Optional IP address search term
+        """
+        if self.network_provider:
+            return self.network_provider.get_enis(env, vpc_id, subnet_id, search_ip)
+        return {'error': 'Network provider not available'}
+
+    def get_security_group(self, env: str, sg_id: str) -> dict:
+        """Get detailed Security Group information including rules
+
+        Args:
+            env: Environment name
+            sg_id: Security Group ID
+        """
+        if self.network_provider:
+            return self.network_provider.get_security_group(env, sg_id)
+        return {'error': 'Network provider not available'}
