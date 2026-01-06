@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   RefreshCw, Server, Clock, ExternalLink, Package,
-  CheckCircle, XCircle, Network, X, LogOut, User
+  CheckCircle, XCircle, Network, X, LogOut, User, Shield
 } from 'lucide-react'
 // Configuration context
 import { useConfig, useConfigHelpers } from './ConfigContext'
+// Auth context
+import { useAuth, PermissionGuard, AdminGuard } from './hooks/useAuth'
 // Utilities
 import { fetchWithRetry, sessionExpiredEvent } from './utils'
 // Components
@@ -19,6 +21,10 @@ export default function App() {
   // Get configuration from context (loaded by ConfigProvider)
   const appConfig = useConfig()
   const { getAwsConsoleUrl, getCodePipelineConsoleUrl, getServiceName, getDefaultAzs } = useConfigHelpers()
+
+  // Get auth context
+  const auth = useAuth()
+  const currentProjectId = appConfig.currentProjectId || 'unknown'
 
   // Derive constants from config
   const ENVIRONMENTS = appConfig.environments || []
@@ -65,7 +71,6 @@ export default function App() {
   const [detailsLoading, setDetailsLoading] = useState(false)
   const [selectedInfraEnv, setSelectedInfraEnv] = useState(ENVIRONMENTS[0] || 'staging')
   const [selectedInfraComponent, setSelectedInfraComponent] = useState(null)
-  const [currentUser, setCurrentUser] = useState(null)
 
   // Bottom logs panel state - supports multiple tabs
   const [bottomLogsTabs, setBottomLogsTabs] = useState([]) // [{ id, env, service, autoTail, type }, ...]
@@ -133,23 +138,6 @@ export default function App() {
     return `bg-${bgColor}/20 hover:bg-${bgColor}/30 ${textClass}`
   }
 
-  // Fetch current user from API
-  const fetchCurrentUser = useCallback(async () => {
-    try {
-      const res = await fetchWithRetry('/api/health')
-      const data = await res.json()
-      if (data.user && data.user !== 'unknown') {
-        setCurrentUser(data.user)
-      }
-    } catch (error) {
-      console.error('Error fetching user:', error)
-    }
-  }, [])
-
-  // Logout function - redirect to SSO logout endpoint (server clears cookie)
-  const handleLogout = useCallback(() => {
-    window.location.href = '/saml/logout'
-  }, [])
 
   // Fetch services for selected env only
   const fetchServices = useCallback(async (env) => {
@@ -703,11 +691,11 @@ export default function App() {
     })
   }, [openLogsTab])
 
-  // Initial load - pipelines, images, user (once on mount)
+  // Initial load - pipelines, images (once on mount)
+  // Note: User info is now loaded by AuthProvider
   useEffect(() => {
     fetchPipelines()
     fetchImages()
-    fetchCurrentUser()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])  // Run once on mount - callbacks are stable
 
@@ -873,16 +861,30 @@ export default function App() {
               </div>
             )}
 
-            {/* User info and logout */}
+            {/* User info, role badge, and logout */}
             <div className="flex items-center gap-3 ml-4 pl-4 border-l border-gray-600">
-              {currentUser && (
-                <div className="flex items-center gap-2 text-sm text-gray-300">
-                  <User className="w-4 h-4 text-gray-400" />
-                  <span>{currentUser}</span>
-                </div>
+              {auth.user && (
+                <>
+                  <div className="flex items-center gap-2 text-sm text-gray-300">
+                    <User className="w-4 h-4 text-gray-400" />
+                    <span>{auth.user.email}</span>
+                  </div>
+                  {/* Role badge */}
+                  {auth.getRoleFor(currentProjectId) && (
+                    <span className={`px-2 py-0.5 text-xs rounded-full ${
+                      auth.getRoleFor(currentProjectId) === 'admin'
+                        ? 'bg-purple-500/20 text-purple-400'
+                        : auth.getRoleFor(currentProjectId) === 'operator'
+                          ? 'bg-blue-500/20 text-blue-400'
+                          : 'bg-gray-500/20 text-gray-400'
+                    }`}>
+                      {auth.getRoleFor(currentProjectId)}
+                    </span>
+                  )}
+                </>
               )}
               <button
-                onClick={handleLogout}
+                onClick={auth.logout}
                 className="flex items-center gap-1 px-2 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
                 title="Logout"
               >

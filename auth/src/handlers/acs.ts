@@ -23,6 +23,7 @@ import { createSessionCookie, getClientIp } from '../utils/session';
 interface AcsConfig {
   cookieName: string;
   cookieDomain: string;
+  cloudfrontDomain: string;
   sessionTtlSeconds: number;
   idpMetadataXml: string;
   spEntityId: string;
@@ -35,6 +36,7 @@ function getConfig(): AcsConfig {
   return {
     cookieName: process.env.COOKIE_NAME || 'dashborion_session',
     cookieDomain: process.env.COOKIE_DOMAIN || '',
+    cloudfrontDomain: process.env.CLOUDFRONT_DOMAIN || '',
     sessionTtlSeconds: parseInt(process.env.SESSION_TTL_SECONDS || '3600', 10),
     idpMetadataXml: process.env.IDP_METADATA_XML || '',
     spEntityId: process.env.SP_ENTITY_ID || 'dashborion',
@@ -94,6 +96,15 @@ export async function handler(
   const request = event.Records[0].cf.request;
   const config = getConfig();
 
+  // Debug: Log config
+  console.log('[ACS] Config loaded:', {
+    cookieDomain: config.cookieDomain,
+    cloudfrontDomain: config.cloudfrontDomain,
+    spEntityId: config.spEntityId,
+    idpMetadataLength: config.idpMetadataXml?.length || 0,
+    idpMetadataStart: config.idpMetadataXml?.substring(0, 100) || 'EMPTY',
+  });
+
   // ACS only accepts POST requests
   if (request.method !== 'POST') {
     return createErrorResponse('400', 'ACS endpoint only accepts POST requests');
@@ -101,8 +112,15 @@ export async function handler(
 
   // Get request body
   if (!request.body || !request.body.data) {
+    console.log('[ACS] Missing body. Body object:', JSON.stringify(request.body));
     return createErrorResponse('400', 'Missing SAML response');
   }
+
+  // Debug: Log body info
+  console.log('[ACS] Body info:', {
+    encoding: request.body.encoding,
+    dataLength: request.body.data?.length || 0,
+  });
 
   // Decode body (might be base64 encoded by CloudFront)
   let body: string;
@@ -112,22 +130,34 @@ export async function handler(
     body = request.body.data;
   }
 
+  // Debug: Log decoded body
+  console.log('[ACS] Decoded body length:', body.length);
+  console.log('[ACS] Decoded body start:', body.substring(0, 200));
+
   // Extract SAML response from POST body
   const samlResponse = decodeSamlResponse(body);
   if (!samlResponse) {
+    console.log('[ACS] Failed to extract SAMLResponse from body');
     return createErrorResponse('400', 'Missing or invalid SAMLResponse');
   }
 
+  // Debug: Log SAML response
+  console.log('[ACS] SAMLResponse length:', samlResponse.length);
+  console.log('[ACS] SAMLResponse start (base64):', samlResponse.substring(0, 100));
+
   // Get relay state (original URL)
   const relayState = getRelayStateFromBody(body) || config.defaultRedirectUrl;
+  console.log('[ACS] RelayState:', relayState);
 
   try {
     // Initialize SAML providers
     const { idp, sp } = initializeSaml(config.idpMetadataXml, {
       entityId: config.spEntityId,
-      acsUrl: `https://${config.cookieDomain}/saml/acs`,
+      acsUrl: `https://${config.cloudfrontDomain}/saml/acs`,
       signAuthnRequests: config.signAuthnRequests,
     });
+
+    console.log('[ACS] SAML providers initialized, parsing response...');
 
     // Parse and validate SAML response
     const attributes = await parseSamlResponse(sp, idp, samlResponse);

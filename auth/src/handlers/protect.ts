@@ -23,6 +23,7 @@ import { initializeSaml, createLoginRedirectUrl } from '../utils/saml';
 interface ProtectConfig {
   cookieName: string;
   cookieDomain: string;
+  cloudfrontDomain: string;
   idpMetadataXml: string;
   spEntityId: string;
   signAuthnRequests: boolean;
@@ -34,6 +35,7 @@ function getConfig(): ProtectConfig {
   return {
     cookieName: process.env.COOKIE_NAME || 'dashborion_session',
     cookieDomain: process.env.COOKIE_DOMAIN || '',
+    cloudfrontDomain: process.env.CLOUDFRONT_DOMAIN || '',
     idpMetadataXml: process.env.IDP_METADATA_XML || '',
     spEntityId: process.env.SP_ENTITY_ID || 'dashborion',
     signAuthnRequests: process.env.SIGN_AUTHN_REQUESTS === 'true',
@@ -57,7 +59,7 @@ function createRedirectToIdp(
 ): CloudFrontResponse {
   const { idp, sp } = initializeSaml(config.idpMetadataXml, {
     entityId: config.spEntityId,
-    acsUrl: `https://${config.cookieDomain}/saml/acs`,
+    acsUrl: `https://${config.cloudfrontDomain}/saml/acs`,
     signAuthnRequests: config.signAuthnRequests,
   });
 

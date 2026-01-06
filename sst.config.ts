@@ -71,47 +71,109 @@ interface InfraConfig {
   };
   frontend?: {
     s3Bucket?: string;
+    s3BucketArn?: string;
+    s3BucketDomainName?: string;
     cloudfrontDistributionId?: string;
     cloudfrontDomain?: string;
+    certificateArn?: string;  // ACM certificate ARN (us-east-1)
+    originAccessControlId?: string;  // OAC ID for S3
   };
   apiGateway?: {
     id?: string;
     url?: string;
   };
   crossAccountRoles?: Record<string, CrossAccountRole>;
+  projects?: Record<string, any>;  // Project configuration for multi-tenant
+}
+
+// Get config directory (supports external config via DASHBORION_CONFIG_DIR)
+function getConfigDir(): string {
+  return process.env.DASHBORION_CONFIG_DIR || process.cwd();
 }
 
 // Load infrastructure config (sync version for app() function)
+// Config lookup order:
+// 1. $DASHBORION_CONFIG_DIR/infra.config.json (external config)
+// 2. ./infra.config.json (local, gitignored)
+// 3. ./infra.config.example.json (fallback for dev)
 function loadInfraConfig(): InfraConfig {
-  // Use require for sync loading in app() context
   const fs = require("fs");
   const path = require("path");
-  const configPath = path.join(process.cwd(), "infra.config.json");
 
-  if (fs.existsSync(configPath)) {
-    const content = fs.readFileSync(configPath, "utf-8");
+  const configDir = getConfigDir();
+  const externalConfig = path.join(configDir, "infra.config.json");
+  const localConfig = path.join(process.cwd(), "infra.config.json");
+  const exampleConfig = path.join(process.cwd(), "infra.config.example.json");
+
+  // Priority 1: External config directory
+  if (process.env.DASHBORION_CONFIG_DIR && fs.existsSync(externalConfig)) {
+    console.log(`Loading config from: ${externalConfig}`);
+    const content = fs.readFileSync(externalConfig, "utf-8");
+    return JSON.parse(content);
+  }
+
+  // Priority 2: Local config (gitignored)
+  if (fs.existsSync(localConfig)) {
+    console.log(`Loading config from: ${localConfig}`);
+    const content = fs.readFileSync(localConfig, "utf-8");
+    return JSON.parse(content);
+  }
+
+  // Priority 3: Example config (for development)
+  if (fs.existsSync(exampleConfig)) {
+    console.log(`Loading example config from: ${exampleConfig} (copy to infra.config.json for customization)`);
+    const content = fs.readFileSync(exampleConfig, "utf-8");
     return JSON.parse(content);
   }
 
   // Default: standalone mode
+  console.log("No config found, using standalone mode");
   return { mode: "standalone" };
+}
+
+// Get frontend config path (for copying to dist)
+function getFrontendConfigPath(): string | null {
+  const fs = require("fs");
+  const path = require("path");
+
+  const configDir = getConfigDir();
+  const externalConfig = path.join(configDir, "frontend-config.json");
+  const localConfig = path.join(process.cwd(), "frontend", "public", "config.json");
+
+  // External config takes priority
+  if (process.env.DASHBORION_CONFIG_DIR && fs.existsSync(externalConfig)) {
+    return externalConfig;
+  }
+
+  // Fall back to local frontend config
+  if (fs.existsSync(localConfig)) {
+    return localConfig;
+  }
+
+  return null;
 }
 
 // Auth infrastructure outputs
 interface AuthInfraOutput {
   permissionsTable: any;
   auditTable: any;
+  tokensTable: any;
+  deviceCodesTable: any;
   authProtectFunction: any;
   authAcsFunction: any;
   authMetadataFunction: any;
+  apiAuthorizer: any;
   encryptionKey: any;
+  jwtSecret: any;
+  sessionSecret: any;
 }
 
 /**
  * Create authentication infrastructure
  * - KMS key for session encryption
- * - DynamoDB tables for permissions and audit
+ * - DynamoDB tables for permissions, audit, tokens, device_codes
  * - Lambda@Edge functions for CloudFront auth
+ * - Lambda Authorizer for API Gateway
  */
 async function createAuthInfrastructure(
   stage: string,
@@ -123,6 +185,12 @@ async function createAuthInfrastructure(
   }
 
   const authConfig = config.auth;
+
+  // Create us-east-1 provider for Lambda@Edge (must be in us-east-1)
+  const usEast1Provider = new aws.Provider("AwsUsEast1", {
+    region: "us-east-1",
+    ...(config.aws?.profile ? { profile: config.aws.profile } : {}),
+  });
 
   // KMS key for session cookie encryption
   const encryptionKey = new aws.kms.Key("AuthEncryptionKey", {
@@ -138,6 +206,42 @@ async function createAuthInfrastructure(
   new aws.kms.Alias("AuthEncryptionKeyAlias", {
     name: `alias/dashborion-${stage}-auth`,
     targetKeyId: encryptionKey.id,
+  });
+
+  // JWT secret for CLI tokens (stored in Secrets Manager)
+  const jwtSecret = new aws.secretsmanager.Secret("JwtSecret", {
+    name: `dashborion-${stage}-jwt-secret`,
+    description: "JWT signing secret for Dashborion CLI tokens",
+    tags: {
+      Project: "dashborion",
+      Stage: stage,
+    },
+  });
+
+  // Generate random JWT secret value
+  new aws.secretsmanager.SecretVersion("JwtSecretValue", {
+    secretId: jwtSecret.id,
+    secretString: $util.secret(
+      require("crypto").randomBytes(32).toString("hex")
+    ),
+  });
+
+  // Session encryption key for cookie encryption
+  const sessionSecret = new aws.secretsmanager.Secret("SessionSecret", {
+    name: `dashborion-${stage}-session-secret`,
+    description: "Session encryption key for Dashborion cookies",
+    tags: {
+      Project: "dashborion",
+      Stage: stage,
+    },
+  });
+
+  // Generate random session secret value
+  new aws.secretsmanager.SecretVersion("SessionSecretValue", {
+    secretId: sessionSecret.id,
+    secretString: $util.secret(
+      require("crypto").randomBytes(32).toString("hex")
+    ),
   });
 
   // DynamoDB table for permissions
@@ -190,6 +294,64 @@ async function createAuthInfrastructure(
         rangeKey: "gsi1sk",
         projectionType: "ALL",
       },
+    ],
+    ttl: {
+      attributeName: "ttl",
+      enabled: true,
+    },
+    serverSideEncryption: {
+      enabled: true,
+      kmsKeyArn: encryptionKey.arn,
+    },
+    tags: {
+      Project: "dashborion",
+      Stage: stage,
+    },
+  });
+
+  // DynamoDB table for tokens (CLI access/refresh tokens)
+  const tokensTable = new aws.dynamodb.Table("TokensTable", {
+    name: `dashborion-${stage}-tokens`,
+    billingMode: "PAY_PER_REQUEST",
+    hashKey: "pk",
+    rangeKey: "sk",
+    attributes: [
+      { name: "pk", type: "S" },
+      { name: "sk", type: "S" },
+      { name: "gsi1pk", type: "S" },
+      { name: "gsi1sk", type: "S" },
+    ],
+    globalSecondaryIndexes: [
+      {
+        name: "user-tokens-index",
+        hashKey: "gsi1pk",
+        rangeKey: "gsi1sk",
+        projectionType: "ALL",
+      },
+    ],
+    ttl: {
+      attributeName: "ttl",
+      enabled: true,
+    },
+    serverSideEncryption: {
+      enabled: true,
+      kmsKeyArn: encryptionKey.arn,
+    },
+    tags: {
+      Project: "dashborion",
+      Stage: stage,
+    },
+  });
+
+  // DynamoDB table for device codes (CLI Device Flow)
+  const deviceCodesTable = new aws.dynamodb.Table("DeviceCodesTable", {
+    name: `dashborion-${stage}-device-codes`,
+    billingMode: "PAY_PER_REQUEST",
+    hashKey: "pk",
+    rangeKey: "sk",
+    attributes: [
+      { name: "pk", type: "S" },
+      { name: "sk", type: "S" },
     ],
     ttl: {
       attributeName: "ttl",
@@ -262,6 +424,22 @@ async function createAuthInfrastructure(
 
   // Lambda@Edge: Protect (viewer-request)
   // Note: Lambda@Edge must be in us-east-1
+  const path = require("path");
+  const { execSync } = require("child_process");
+  const authPath = path.join(process.cwd(), "auth");
+  const authDistPath = path.join(authPath, "dist");
+
+  // Build auth Lambda@Edge handlers
+  console.log("Building auth Lambda@Edge handlers...");
+  execSync("npm run build", {
+    cwd: authPath,
+    env: {
+      ...process.env,
+      DASHBORION_CONFIG_DIR: process.env.DASHBORION_CONFIG_DIR || process.cwd(),
+    },
+    stdio: "inherit",
+  });
+
   const authProtectFunction = new aws.lambda.Function(
     "AuthProtect",
     {
@@ -271,9 +449,7 @@ async function createAuthInfrastructure(
       timeout: 5, // Lambda@Edge viewer-request max is 5 seconds
       memorySize: 128,
       role: edgeRole.arn,
-      // For Lambda@Edge, we need to bundle the code
-      // SST will handle this through the build process
-      code: new $util.asset.FileArchive("auth/dist/protect"),
+      code: new $util.asset.FileArchive(path.join(authDistPath, "protect")),
       publish: true, // Lambda@Edge requires published versions
       tags: {
         Project: "dashborion",
@@ -281,7 +457,7 @@ async function createAuthInfrastructure(
         Purpose: "auth-protect",
       },
     },
-    { provider: $providers["aws-us-east-1"] }
+    { provider: usEast1Provider }
   );
 
   // Lambda@Edge: ACS (origin-request for /saml/acs)
@@ -292,9 +468,9 @@ async function createAuthInfrastructure(
       handler: "index.handler",
       runtime: "nodejs20.x",
       timeout: 10, // Origin-request allows up to 30 seconds
-      memorySize: 256, // SAML parsing needs more memory
+      memorySize: 128, // Lambda@Edge max is 128MB
       role: edgeRole.arn,
-      code: new $util.asset.FileArchive("auth/dist/acs"),
+      code: new $util.asset.FileArchive(path.join(authDistPath, "acs")),
       publish: true,
       tags: {
         Project: "dashborion",
@@ -302,7 +478,7 @@ async function createAuthInfrastructure(
         Purpose: "auth-acs",
       },
     },
-    { provider: $providers["aws-us-east-1"] }
+    { provider: usEast1Provider }
   );
 
   // Lambda@Edge: Metadata (viewer-request for /saml/metadata)
@@ -315,7 +491,7 @@ async function createAuthInfrastructure(
       timeout: 5,
       memorySize: 128,
       role: edgeRole.arn,
-      code: new $util.asset.FileArchive("auth/dist/metadata"),
+      code: new $util.asset.FileArchive(path.join(authDistPath, "metadata")),
       publish: true,
       tags: {
         Project: "dashborion",
@@ -323,16 +499,118 @@ async function createAuthInfrastructure(
         Purpose: "auth-metadata",
       },
     },
-    { provider: $providers["aws-us-east-1"] }
+    { provider: usEast1Provider }
   );
+
+  // ==========================================================================
+  // API Gateway Lambda Authorizer
+  // Validates JWT tokens (CLI) and session cookies (Web)
+  // ==========================================================================
+
+  // IAM role for the authorizer Lambda
+  const authorizerRole = new aws.iam.Role("ApiAuthorizerRole", {
+    name: `dashborion-${stage}-api-authorizer-role`,
+    assumeRolePolicy: JSON.stringify({
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Principal: { Service: "lambda.amazonaws.com" },
+          Action: "sts:AssumeRole",
+        },
+      ],
+    }),
+    tags: {
+      Project: "dashborion",
+      Stage: stage,
+    },
+  });
+
+  // Basic execution policy
+  new aws.iam.RolePolicyAttachment("ApiAuthorizerRoleBasicExecution", {
+    role: authorizerRole.name,
+    policyArn: "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+  });
+
+  // Authorizer DynamoDB and Secrets access policy
+  new aws.iam.RolePolicy("ApiAuthorizerRolePolicy", {
+    role: authorizerRole.name,
+    policy: $interpolate`{
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": [
+            "dynamodb:GetItem",
+            "dynamodb:Query"
+          ],
+          "Resource": [
+            "${permissionsTable.arn}",
+            "${permissionsTable.arn}/index/*",
+            "${tokensTable.arn}",
+            "${tokensTable.arn}/index/*"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "secretsmanager:GetSecretValue"
+          ],
+          "Resource": [
+            "${jwtSecret.arn}",
+            "${sessionSecret.arn}"
+          ]
+        },
+        {
+          "Effect": "Allow",
+          "Action": [
+            "kms:Decrypt"
+          ],
+          "Resource": "${encryptionKey.arn}"
+        }
+      ]
+    }`,
+  });
+
+  // Lambda Authorizer function
+  const apiAuthorizer = new aws.lambda.Function("ApiAuthorizer", {
+    functionName: `dashborion-${stage}-api-authorizer`,
+    handler: "authorizer.handler",
+    runtime: "python3.11",
+    timeout: 10,
+    memorySize: 256,
+    role: authorizerRole.arn,
+    code: new $util.asset.FileArchive("backend"),
+    environment: {
+      variables: {
+        STAGE: stage,
+        PROJECT_NAME: process.env.PROJECT_NAME || "dashborion",
+        SESSION_COOKIE_NAME: "dashborion_session",
+        JWT_SECRET_ARN: jwtSecret.arn,
+        SESSION_ENCRYPTION_KEY_ARN: sessionSecret.arn,
+        PERMISSIONS_TABLE: permissionsTable.name,
+        TOKENS_TABLE: tokensTable.name,
+      },
+    },
+    tags: {
+      Project: "dashborion",
+      Stage: stage,
+      Purpose: "api-authorizer",
+    },
+  });
 
   return {
     permissionsTable,
     auditTable,
+    tokensTable,
+    deviceCodesTable,
     authProtectFunction,
     authAcsFunction,
     authMetadataFunction,
+    apiAuthorizer,
     encryptionKey,
+    jwtSecret,
+    sessionSecret,
   };
 }
 
@@ -342,7 +620,6 @@ export default $config({
     const config = loadInfraConfig();
     const awsRegion = config.aws?.region || process.env.AWS_REGION || "eu-west-3";
     const awsProfile = config.aws?.profile || process.env.AWS_PROFILE;
-    const authEnabled = config.auth?.enabled ?? false;
 
     const providers: Record<string, any> = {
       aws: {
@@ -351,14 +628,6 @@ export default $config({
       },
       "synced-folder": true,
     };
-
-    // Add us-east-1 provider for Lambda@Edge if auth is enabled
-    if (authEnabled) {
-      providers["aws-us-east-1"] = {
-        region: "us-east-1",
-        ...(awsProfile ? { profile: awsProfile } : {}),
-      };
-    }
 
     return {
       name: "dashborion",
@@ -420,8 +689,12 @@ async function runStandaloneMode(stage: string, isProd: boolean, awsRegion: stri
   // Add auth-related env vars if enabled
   if (authInfra) {
     backendEnv.AUTH_ENABLED = "true";
-    backendEnv.PERMISSIONS_TABLE_NAME = authInfra.permissionsTable.name;
-    backendEnv.AUDIT_TABLE_NAME = authInfra.auditTable.name;
+    backendEnv.PERMISSIONS_TABLE = authInfra.permissionsTable.name;
+    backendEnv.AUDIT_TABLE = authInfra.auditTable.name;
+    backendEnv.TOKENS_TABLE = authInfra.tokensTable.name;
+    backendEnv.DEVICE_CODES_TABLE = authInfra.deviceCodesTable.name;
+    backendEnv.JWT_SECRET_ARN = authInfra.jwtSecret.arn;
+    backendEnv.SESSION_ENCRYPTION_KEY_ARN = authInfra.sessionSecret.arn;
   }
 
   // Backend permissions
@@ -443,14 +716,16 @@ async function runStandaloneMode(stage: string, isProd: boolean, awsRegion: stri
     "s3:GetObject", "s3:ListBucket",
   ];
 
-  // Add DynamoDB permissions if auth is enabled
+  // Add DynamoDB and Secrets permissions if auth is enabled
   if (authInfra) {
     backendPermissions.push(
       "dynamodb:GetItem",
       "dynamodb:Query",
       "dynamodb:PutItem",
-      "dynamodb:UpdateItem"
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem"
     );
+    // Note: secretsmanager:GetSecretValue is already included above
   }
 
   // Backend: API Gateway + Lambda (SST creates everything)
@@ -460,7 +735,8 @@ async function runStandaloneMode(stage: string, isProd: boolean, awsRegion: stri
         ? [customDomain ? `https://${customDomain}` : "*"]
         : ["*"],
       allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Auth-User-Id", "X-Auth-User-Email"],
+      allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Auth-User-Id", "X-Auth-User-Email", "Cookie"],
+      allowCredentials: true,
     },
   });
 
@@ -473,15 +749,84 @@ async function runStandaloneMode(stage: string, isProd: boolean, awsRegion: stri
     permissions: backendPermissions,
   });
 
-  api.route("GET /api/{proxy+}", apiHandler.arn);
-  api.route("POST /api/{proxy+}", apiHandler.arn);
-  api.route("PUT /api/{proxy+}", apiHandler.arn);
-  api.route("DELETE /api/{proxy+}", apiHandler.arn);
-  api.route("GET /health", apiHandler.arn);
-
-  // Auth endpoint for frontend to get user info
+  // If auth is enabled, create Lambda Authorizer for API Gateway
   if (authInfra) {
-    api.route("GET /api/auth/me", apiHandler.arn);
+    // Permission for API Gateway to invoke the authorizer Lambda
+    new aws.lambda.Permission("ApiAuthorizerPermission", {
+      action: "lambda:InvokeFunction",
+      function: authInfra.apiAuthorizer.name,
+      principal: "apigateway.amazonaws.com",
+      sourceArn: $interpolate`${api.nodes.api.executionArn}/*`,
+    });
+
+    // Create API Gateway HTTP API v2 Authorizer
+    const httpAuthorizer = new aws.apigatewayv2.Authorizer("HttpAuthorizer", {
+      apiId: api.nodes.api.id,
+      authorizerType: "REQUEST",
+      authorizerUri: authInfra.apiAuthorizer.invokeArn,
+      authorizerPayloadFormatVersion: "2.0",
+      authorizerResultTtlInSeconds: 300, // Cache auth results for 5 minutes
+      identitySources: [
+        "$request.header.Authorization",
+        "$request.header.Cookie",
+      ],
+      name: `dashborion-${stage}-authorizer`,
+    });
+
+    // Permission for API Gateway to invoke backend Lambda
+    new aws.lambda.Permission("ApiHandlerPermission", {
+      action: "lambda:InvokeFunction",
+      function: apiHandler.name,
+      principal: "apigateway.amazonaws.com",
+      sourceArn: $interpolate`${api.nodes.api.executionArn}/*`,
+    });
+
+    // Lambda integration for backend handler
+    const backendIntegration = new aws.apigatewayv2.Integration("BackendIntegration", {
+      apiId: api.nodes.api.id,
+      integrationType: "AWS_PROXY",
+      integrationUri: apiHandler.arn,
+      integrationMethod: "POST",
+      payloadFormatVersion: "2.0",
+    });
+
+    // Public routes (no authorization required)
+    // These must be more specific to take precedence over wildcards
+    const publicRoutes = [
+      { path: "GET /health", key: "health" },
+      { path: "GET /api/health", key: "apiHealth" },
+      { path: "POST /api/auth/device/code", key: "deviceCode" },
+      { path: "POST /api/auth/device/token", key: "deviceToken" },
+      { path: "POST /api/auth/sso/exchange", key: "ssoExchange" },
+    ];
+
+    for (const route of publicRoutes) {
+      new aws.apigatewayv2.Route(`PublicRoute-${route.key}`, {
+        apiId: api.nodes.api.id,
+        routeKey: route.path,
+        target: $interpolate`integrations/${backendIntegration.id}`,
+        authorizationType: "NONE",
+      });
+    }
+
+    // Protected routes (authorization required)
+    const protectedMethods = ["GET", "POST", "PUT", "DELETE"];
+    for (const method of protectedMethods) {
+      new aws.apigatewayv2.Route(`ProtectedRoute-${method}`, {
+        apiId: api.nodes.api.id,
+        routeKey: `${method} /api/{proxy+}`,
+        target: $interpolate`integrations/${backendIntegration.id}`,
+        authorizationType: "CUSTOM",
+        authorizerId: httpAuthorizer.id,
+      });
+    }
+  } else {
+    // No auth - use simple SST routes
+    api.route("GET /api/{proxy+}", apiHandler.arn);
+    api.route("POST /api/{proxy+}", apiHandler.arn);
+    api.route("PUT /api/{proxy+}", apiHandler.arn);
+    api.route("DELETE /api/{proxy+}", apiHandler.arn);
+    api.route("GET /health", apiHandler.arn);
   }
 
   let frontendUrl: string;
@@ -548,9 +893,39 @@ async function createFrontendWithAuth(
   authInfra: AuthInfraOutput,
   customDomain?: string
 ): Promise<{ url: string; bucket: any; distribution: any }> {
+  const fs = require("fs");
   const path = require("path");
   const frontendPath = path.join(process.cwd(), "frontend");
   const distPath = path.join(frontendPath, "dist");
+
+  // Copy external frontend config if available
+  const frontendConfigPath = getFrontendConfigPath();
+  if (frontendConfigPath && frontendConfigPath !== path.join(frontendPath, "public", "config.json")) {
+    console.log(`Copying frontend config from: ${frontendConfigPath}`);
+    const configDir = getConfigDir();
+    const destConfig = path.join(frontendPath, "public", "config.json");
+    fs.copyFileSync(frontendConfigPath, destConfig);
+
+    // Also copy any assets from the config directory (e.g., logo)
+    const assetsDir = path.join(configDir, "assets");
+    if (fs.existsSync(assetsDir)) {
+      const assets = fs.readdirSync(assetsDir);
+      for (const asset of assets) {
+        fs.copyFileSync(
+          path.join(assetsDir, asset),
+          path.join(frontendPath, "public", asset)
+        );
+        console.log(`  Copied asset: ${asset}`);
+      }
+    }
+
+    // Copy logo if exists at config dir root
+    const logoPath = path.join(configDir, "kamorion-logo.png");
+    if (fs.existsSync(logoPath)) {
+      fs.copyFileSync(logoPath, path.join(frontendPath, "public", "kamorion-logo.png"));
+      console.log("  Copied logo: kamorion-logo.png");
+    }
+  }
 
   // Build frontend
   console.log("Building frontend...");
@@ -585,7 +960,7 @@ async function createFrontendWithAuth(
   });
 
   // Upload frontend assets
-  const syncedFolder = new synced.S3BucketFolder("FrontendSync", {
+  const syncedFolder = new syncedfolder.S3BucketFolder("FrontendSync", {
     path: distPath,
     bucketName: bucket.id,
     acl: "private",
@@ -778,8 +1153,9 @@ async function createFrontendWithAuth(
 /**
  * SEMI-MANAGED MODE
  * SST creates frontend infrastructure, Lambda uses external role
- * - Frontend: SST creates S3 + CloudFront
+ * - Frontend: SST creates S3 + CloudFront (with Lambda@Edge auth if enabled)
  * - Backend: Lambda uses external IAM role
+ * - Auth: Lambda@Edge + DynamoDB (if enabled)
  */
 async function runSemiManagedMode(stage: string, isProd: boolean, awsRegion: string, config: InfraConfig) {
   // Validate required config
@@ -788,11 +1164,39 @@ async function runSemiManagedMode(stage: string, isProd: boolean, awsRegion: str
   }
 
   const customDomain = process.env.DASHBOARD_DOMAIN;
+  const authEnabled = config.auth?.enabled ?? false;
 
   // Build cross-account role ARNs for Lambda environment
   const crossAccountRolesEnv = config.crossAccountRoles
     ? JSON.stringify(config.crossAccountRoles)
     : "{}";
+
+  // Build auth infrastructure if enabled
+  const authInfra = authEnabled
+    ? await createAuthInfrastructure(stage, config, customDomain || "localhost")
+    : null;
+
+  // Backend environment variables
+  const backendEnv: Record<string, string> = {
+    STAGE: stage,
+    PROJECT_NAME: process.env.PROJECT_NAME || "dashborion",
+    AWS_REGION_DEFAULT: awsRegion,
+    ENVIRONMENTS: process.env.ENVIRONMENTS || "{}",
+    SSO_PORTAL_URL: process.env.SSO_PORTAL_URL || "",
+    GITHUB_ORG: process.env.GITHUB_ORG || "",
+    CROSS_ACCOUNT_ROLES: crossAccountRolesEnv,
+  };
+
+  // Add auth-related env vars if enabled
+  if (authInfra) {
+    backendEnv.AUTH_ENABLED = "true";
+    backendEnv.PERMISSIONS_TABLE = authInfra.permissionsTable.name;
+    backendEnv.AUDIT_TABLE = authInfra.auditTable.name;
+    backendEnv.TOKENS_TABLE = authInfra.tokensTable.name;
+    backendEnv.DEVICE_CODES_TABLE = authInfra.deviceCodesTable.name;
+    backendEnv.JWT_SECRET_ARN = authInfra.jwtSecret.arn;
+    backendEnv.SESSION_ENCRYPTION_KEY_ARN = authInfra.sessionSecret.arn;
+  }
 
   // Backend: API Gateway + Lambda with external role
   const api = new sst.aws.ApiGatewayV2("DashborionApi", {
@@ -801,7 +1205,8 @@ async function runSemiManagedMode(stage: string, isProd: boolean, awsRegion: str
         ? [customDomain ? `https://${customDomain}` : "*"]
         : ["*"],
       allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key"],
+      allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "X-Auth-User-Id", "X-Auth-User-Email", "Cookie"],
+      allowCredentials: authEnabled,
     },
   });
 
@@ -811,58 +1216,153 @@ async function runSemiManagedMode(stage: string, isProd: boolean, awsRegion: str
     timeout: "30 seconds",
     memory: "512 MB",
     role: config.lambda.roleArn,
-    environment: {
-      STAGE: stage,
-      PROJECT_NAME: process.env.PROJECT_NAME || "dashborion",
-      AWS_REGION_DEFAULT: awsRegion,
-      ENVIRONMENTS: process.env.ENVIRONMENTS || "{}",
-      SSO_PORTAL_URL: process.env.SSO_PORTAL_URL || "",
-      GITHUB_ORG: process.env.GITHUB_ORG || "",
-      CROSS_ACCOUNT_ROLES: crossAccountRolesEnv,
-    },
+    environment: backendEnv,
   });
 
-  api.route("GET /api/{proxy+}", apiHandler.arn);
-  api.route("POST /api/{proxy+}", apiHandler.arn);
-  api.route("PUT /api/{proxy+}", apiHandler.arn);
-  api.route("DELETE /api/{proxy+}", apiHandler.arn);
-  api.route("GET /health", apiHandler.arn);
+  // If auth is enabled, create Lambda Authorizer for API Gateway
+  if (authInfra) {
+    // Permission for API Gateway to invoke the authorizer Lambda
+    new aws.lambda.Permission("ApiAuthorizerPermission", {
+      action: "lambda:InvokeFunction",
+      function: authInfra.apiAuthorizer.name,
+      principal: "apigateway.amazonaws.com",
+      sourceArn: $interpolate`${api.nodes.api.executionArn}/*`,
+    });
 
-  // Frontend: Static Site (SST creates S3 + CloudFront)
-  const frontend = new sst.aws.StaticSite("DashborionFrontend", {
-    path: "frontend",
-    build: {
-      command: "npm run build",
-      output: "dist",
-    },
-    environment: {
-      VITE_API_URL: api.url,
-      VITE_STAGE: stage,
-    },
-    ...(customDomain && isProd ? {
-      domain: {
-        name: customDomain,
-        dns: sst.aws.dns(),
+    // Create API Gateway HTTP API v2 Authorizer
+    const httpAuthorizer = new aws.apigatewayv2.Authorizer("HttpAuthorizer", {
+      apiId: api.nodes.api.id,
+      authorizerType: "REQUEST",
+      authorizerUri: authInfra.apiAuthorizer.invokeArn,
+      authorizerPayloadFormatVersion: "2.0",
+      authorizerResultTtlInSeconds: 300,
+      identitySources: [
+        "$request.header.Authorization",
+        "$request.header.Cookie",
+      ],
+      name: `dashborion-${stage}-authorizer`,
+    });
+
+    // Permission for API Gateway to invoke backend Lambda
+    new aws.lambda.Permission("ApiHandlerPermission", {
+      action: "lambda:InvokeFunction",
+      function: apiHandler.name,
+      principal: "apigateway.amazonaws.com",
+      sourceArn: $interpolate`${api.nodes.api.executionArn}/*`,
+    });
+
+    // Lambda integration for backend handler
+    const backendIntegration = new aws.apigatewayv2.Integration("BackendIntegration", {
+      apiId: api.nodes.api.id,
+      integrationType: "AWS_PROXY",
+      integrationUri: apiHandler.arn,
+      integrationMethod: "POST",
+      payloadFormatVersion: "2.0",
+    });
+
+    // Public routes (no authorization required)
+    const publicRoutes = [
+      { path: "GET /health", key: "health" },
+      { path: "GET /api/health", key: "apiHealth" },
+      { path: "POST /api/auth/device/code", key: "deviceCode" },
+      { path: "POST /api/auth/device/token", key: "deviceToken" },
+      { path: "POST /api/auth/sso/exchange", key: "ssoExchange" },
+    ];
+
+    for (const route of publicRoutes) {
+      new aws.apigatewayv2.Route(`PublicRoute-${route.key}`, {
+        apiId: api.nodes.api.id,
+        routeKey: route.path,
+        target: $interpolate`integrations/${backendIntegration.id}`,
+        authorizationType: "NONE",
+      });
+    }
+
+    // Protected routes (authorization required)
+    const protectedMethods = ["GET", "POST", "PUT", "DELETE"];
+    for (const method of protectedMethods) {
+      new aws.apigatewayv2.Route(`ProtectedRoute-${method}`, {
+        apiId: api.nodes.api.id,
+        routeKey: `${method} /api/{proxy+}`,
+        target: $interpolate`integrations/${backendIntegration.id}`,
+        authorizationType: "CUSTOM",
+        authorizerId: httpAuthorizer.id,
+      });
+    }
+  } else {
+    // No auth - use simple SST routes
+    api.route("GET /api/{proxy+}", apiHandler.arn);
+    api.route("POST /api/{proxy+}", apiHandler.arn);
+    api.route("PUT /api/{proxy+}", apiHandler.arn);
+    api.route("DELETE /api/{proxy+}", apiHandler.arn);
+    api.route("GET /health", apiHandler.arn);
+  }
+
+  let frontendUrl: string;
+
+  // Frontend deployment depends on whether auth is enabled
+  if (authEnabled && authInfra) {
+    // With auth: Create custom CloudFront with Lambda@Edge
+    const frontendInfra = await createFrontendWithAuth(
+      stage,
+      config,
+      api.url,
+      authInfra,
+      customDomain
+    );
+    frontendUrl = frontendInfra.url;
+  } else {
+    // Without auth: Use SST StaticSite (simpler)
+    const frontend = new sst.aws.StaticSite("DashborionFrontend", {
+      path: "frontend",
+      build: {
+        command: "npm run build",
+        output: "dist",
       },
-    } : {}),
-  });
+      environment: {
+        VITE_API_URL: api.url,
+        VITE_STAGE: stage,
+      },
+      ...(customDomain && isProd ? {
+        domain: {
+          name: customDomain,
+          dns: sst.aws.dns(),
+        },
+      } : {}),
+    });
+    frontendUrl = frontend.url;
+  }
 
-  return {
+  const result: Record<string, any> = {
     mode: "semi-managed",
     stage,
     api: api.url,
-    frontend: frontend.url,
+    frontend: frontendUrl,
     lambdaRole: config.lambda.roleArn,
     crossAccountRoles: Object.keys(config.crossAccountRoles || {}),
   };
+
+  if (authInfra) {
+    result.auth = {
+      enabled: true,
+      permissionsTable: authInfra.permissionsTable.name,
+      auditTable: authInfra.auditTable.name,
+    };
+  }
+
+  return result;
 }
 
 /**
  * MANAGED MODE
- * SST syncs to existing resources
- * - Frontend: Syncs to existing S3 bucket + invalidates CloudFront
- * - Backend: Lambda uses existing IAM role
- * - API Gateway: SST-managed or existing
+ * SST manages CloudFront, API Gateway, Lambda, and auth infrastructure
+ * Uses existing S3 bucket and IAM role
+ *
+ * - Frontend: Syncs to existing S3 bucket
+ * - CloudFront: Imported and managed by SST (updated origins, Lambda@Edge)
+ * - API Gateway: Created by SST
+ * - Lambda: Created by SST with external IAM role
+ * - Auth: Lambda@Edge + DynamoDB (if enabled)
  */
 async function runManagedMode(stage: string, awsRegion: string, config: InfraConfig) {
   // Validate required config
@@ -872,140 +1372,359 @@ async function runManagedMode(stage: string, awsRegion: string, config: InfraCon
   if (!config.frontend?.s3Bucket) {
     throw new Error("frontend.s3Bucket is required in managed mode");
   }
+  if (!config.frontend?.cloudfrontDistributionId) {
+    throw new Error("frontend.cloudfrontDistributionId is required in managed mode");
+  }
+  if (!config.frontend?.cloudfrontDomain) {
+    throw new Error("frontend.cloudfrontDomain is required in managed mode");
+  }
+
+  const path = require("path");
+  const { execSync } = require("child_process");
 
   // Build cross-account role ARNs for Lambda environment
   const crossAccountRolesEnv = config.crossAccountRoles
     ? JSON.stringify(config.crossAccountRoles)
     : "{}";
 
-  let apiUrl: string;
+  const authEnabled = config.auth?.enabled ?? false;
+  const cloudfrontDomain = config.frontend.cloudfrontDomain;
 
-  if (config.apiGateway?.id && config.apiGateway?.url) {
-    // Use existing API Gateway - SST only deploys Lambda
-    const apiHandler = new sst.aws.Function("ApiHandler", {
-      handler: "backend/handler.lambda_handler",
-      runtime: "python3.11",
-      timeout: "30 seconds",
-      memory: "512 MB",
-      role: config.lambda.roleArn,
-      environment: {
-        STAGE: stage,
-        PROJECT_NAME: process.env.PROJECT_NAME || "dashborion",
-        AWS_REGION_DEFAULT: awsRegion,
-        ENVIRONMENTS: process.env.ENVIRONMENTS || "{}",
-        SSO_PORTAL_URL: process.env.SSO_PORTAL_URL || "",
-        GITHUB_ORG: process.env.GITHUB_ORG || "",
-        CROSS_ACCOUNT_ROLES: crossAccountRolesEnv,
-      },
-    });
+  // ==========================================================================
+  // 1. Create API Gateway + Lambda
+  // ==========================================================================
+  const api = new sst.aws.ApiGatewayV2("DashborionApi", {
+    cors: {
+      allowOrigins: [`https://${cloudfrontDomain}`],
+      allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key", "Cookie"],
+      allowCredentials: true,
+    },
+  });
 
-    apiUrl = config.apiGateway.url;
+  // Backend environment variables
+  const backendEnv: Record<string, string> = {
+    STAGE: stage,
+    PROJECT_NAME: process.env.PROJECT_NAME || "dashborion",
+    AWS_REGION_DEFAULT: awsRegion,
+    ENVIRONMENTS: process.env.ENVIRONMENTS || "{}",
+    SSO_PORTAL_URL: process.env.SSO_PORTAL_URL || "",
+    GITHUB_ORG: process.env.GITHUB_ORG || "",
+    CROSS_ACCOUNT_ROLES: crossAccountRolesEnv,
+  };
 
-    // Output Lambda ARN for external integration
-    new sst.Linkable("LambdaConfig", {
-      properties: {
-        arn: apiHandler.arn,
-        name: apiHandler.name,
-      },
-    });
+  const apiHandler = new sst.aws.Function("ApiHandler", {
+    handler: "backend/handler.lambda_handler",
+    runtime: "python3.11",
+    timeout: "30 seconds",
+    memory: "512 MB",
+    role: config.lambda.roleArn,
+    environment: backendEnv,
+  });
 
-  } else {
-    // SST creates API Gateway, but Lambda uses existing role
-    const api = new sst.aws.ApiGatewayV2("DashborionApi", {
-      cors: {
-        allowOrigins: ["*"],
-        allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allowHeaders: ["Content-Type", "Authorization", "X-Amz-Date", "X-Api-Key"],
-      },
-    });
+  api.route("GET /api/{proxy+}", apiHandler.arn);
+  api.route("POST /api/{proxy+}", apiHandler.arn);
+  api.route("PUT /api/{proxy+}", apiHandler.arn);
+  api.route("DELETE /api/{proxy+}", apiHandler.arn);
+  api.route("GET /health", apiHandler.arn);
 
-    const apiHandler = new sst.aws.Function("ApiHandler", {
-      handler: "backend/handler.lambda_handler",
-      runtime: "python3.11",
-      timeout: "30 seconds",
-      memory: "512 MB",
-      role: config.lambda.roleArn,
-      environment: {
-        STAGE: stage,
-        PROJECT_NAME: process.env.PROJECT_NAME || "dashborion",
-        AWS_REGION_DEFAULT: awsRegion,
-        ENVIRONMENTS: process.env.ENVIRONMENTS || "{}",
-        SSO_PORTAL_URL: process.env.SSO_PORTAL_URL || "",
-        GITHUB_ORG: process.env.GITHUB_ORG || "",
-        CROSS_ACCOUNT_ROLES: crossAccountRolesEnv,
-      },
-    });
-
-    api.route("GET /api/{proxy+}", apiHandler.arn);
-    api.route("POST /api/{proxy+}", apiHandler.arn);
-    api.route("PUT /api/{proxy+}", apiHandler.arn);
-    api.route("DELETE /api/{proxy+}", apiHandler.arn);
-    api.route("GET /health", apiHandler.arn);
-
-    apiUrl = api.url;
+  // ==========================================================================
+  // 2. Create Auth Infrastructure (if enabled)
+  // ==========================================================================
+  let authInfra: AuthInfraOutput | null = null;
+  if (authEnabled) {
+    authInfra = await createAuthInfrastructure(stage, config, cloudfrontDomain);
   }
 
-  // Frontend: Build and sync to existing S3 bucket
-  const path = require("path");
+  // ==========================================================================
+  // 3. Build Frontend
+  // ==========================================================================
   const frontendPath = path.join(process.cwd(), "frontend");
   const distPath = path.join(frontendPath, "dist");
 
-  // Build frontend with environment variables
   console.log("Building frontend...");
-  const { execSync } = require("child_process");
   execSync("npm run build", {
     cwd: frontendPath,
     env: {
       ...process.env,
-      VITE_API_URL: apiUrl,
+      // CloudFront proxies /api/* to API Gateway - use relative paths
       VITE_STAGE: stage,
     },
     stdio: "inherit",
   });
 
-  // Sync to S3 using synced-folder provider (uses AWS provider credentials)
+  // ==========================================================================
+  // 4. Sync Frontend to existing S3 bucket
+  // ==========================================================================
   const s3Bucket = config.frontend.s3Bucket;
-  const cloudfrontId = config.frontend.cloudfrontDistributionId;
 
-  // Use synced-folder to upload frontend assets to existing S3 bucket
-  const syncedFolder = new synced.S3BucketFolder("FrontendSync", {
+  new syncedfolder.S3BucketFolder("FrontendSync", {
     path: distPath,
     bucketName: s3Bucket,
     acl: "private",
-    managedObjects: true, // Delete files not in source
+    managedObjects: true,
   });
 
-  // CloudFront invalidation (if configured)
-  if (cloudfrontId) {
-    // Create invalidation using AWS provider
-    new aws.cloudfront.Invalidation("CloudFrontInvalidation", {
-      distributionId: cloudfrontId,
-      invalidationBatch: {
-        paths: {
-          items: ["/*"],
-          quantity: 1,
-        },
-        callerReference: `sst-deploy-${Date.now()}`,
+  // ==========================================================================
+  // 5. Create CloudFront Distribution (SST manages everything)
+  // ==========================================================================
+  const certificateArn = config.frontend.certificateArn;
+  const s3BucketDomainName = config.frontend.s3BucketDomainName ||
+    `${s3Bucket}.s3.${awsRegion}.amazonaws.com`;
+
+  // Get API Gateway domain from URL (remove https:// and trailing /)
+  const apiDomain = api.url.apply(url => url.replace("https://", "").replace(/\/$/, ""));
+
+  // Create Origin Access Control for S3
+  const oac = new aws.cloudfront.OriginAccessControl("FrontendOAC", {
+    name: `dashborion-${stage}-frontend-oac`,
+    description: "OAC for Dashborion frontend S3 bucket",
+    originAccessControlOriginType: "s3",
+    signingBehavior: "always",
+    signingProtocol: "sigv4",
+  });
+
+  // Build Lambda@Edge associations for default behavior
+  const defaultLambdaAssociations = authInfra ? [
+    {
+      eventType: "viewer-request",
+      lambdaArn: authInfra.authProtectFunction.qualifiedArn,
+      includeBody: false,
+    },
+  ] : [];
+
+  // Build ordered cache behaviors
+  const orderedCacheBehaviors: any[] = [
+    // API behavior - proxy to API Gateway
+    {
+      pathPattern: "/api/*",
+      targetOriginId: "api-gateway",
+      viewerProtocolPolicy: "redirect-to-https",
+      allowedMethods: ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+      cachedMethods: ["GET", "HEAD"],
+      compress: true,
+      forwardedValues: {
+        queryString: true,
+        headers: authEnabled ? ["Authorization", "x-sso-user-email"] : ["Authorization"],
+        cookies: { forward: authEnabled ? "all" : "none" },
       },
-    }, { dependsOn: [syncedFolder] });
+      minTtl: 0,
+      defaultTtl: 0,
+      maxTtl: 0,
+      lambdaFunctionAssociations: authInfra ? [
+        {
+          eventType: "viewer-request",
+          lambdaArn: authInfra.authProtectFunction.qualifiedArn,
+          includeBody: true,
+        },
+      ] : [],
+    },
+  ];
+
+  // Add SAML endpoints if auth is enabled
+  if (authInfra) {
+    orderedCacheBehaviors.push(
+      // SAML ACS endpoint
+      {
+        pathPattern: config.auth?.saml?.acsPath || "/saml/acs",
+        targetOriginId: "s3-frontend",
+        viewerProtocolPolicy: "https-only",
+        allowedMethods: ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"],
+        cachedMethods: ["GET", "HEAD"],
+        compress: false,
+        forwardedValues: {
+          queryString: true,
+          cookies: { forward: "all" },
+        },
+        minTtl: 0,
+        defaultTtl: 0,
+        maxTtl: 0,
+        lambdaFunctionAssociations: [
+          {
+            eventType: "viewer-request",
+            lambdaArn: authInfra.authAcsFunction.qualifiedArn,
+            includeBody: true,
+          },
+        ],
+      },
+      // SAML metadata endpoint
+      {
+        pathPattern: config.auth?.saml?.metadataPath || "/saml/metadata",
+        targetOriginId: "s3-frontend",
+        viewerProtocolPolicy: "https-only",
+        allowedMethods: ["GET", "HEAD"],
+        cachedMethods: ["GET", "HEAD"],
+        compress: true,
+        forwardedValues: {
+          queryString: false,
+          cookies: { forward: "none" },
+        },
+        minTtl: 0,
+        defaultTtl: 0,
+        maxTtl: 0,
+        lambdaFunctionAssociations: [
+          {
+            eventType: "viewer-request",
+            lambdaArn: authInfra.authMetadataFunction.qualifiedArn,
+            includeBody: false,
+          },
+        ],
+      }
+    );
   }
 
-  // Determine frontend URL
-  const frontendUrl = config.frontend.cloudfrontDomain
-    ? `https://${config.frontend.cloudfrontDomain}`
-    : `s3://${s3Bucket}`;
+  // Create new CloudFront distribution (SST manages everything)
+  const distribution = new aws.cloudfront.Distribution(
+    "FrontendDistribution",
+    {
+      enabled: true,
+      isIpv6Enabled: true,
+      comment: `Dashborion ${stage} - Managed by SST`,
+      defaultRootObject: "index.html",
+      aliases: [cloudfrontDomain],
+      priceClass: "PriceClass_100",
 
-  return {
+      // Origins
+      origins: [
+        // S3 origin for static files
+        {
+          domainName: s3BucketDomainName,
+          originId: "s3-frontend",
+          originAccessControlId: oac.id,
+        },
+        // API Gateway origin
+        {
+          domainName: apiDomain,
+          originId: "api-gateway",
+          customOriginConfig: {
+            httpPort: 80,
+            httpsPort: 443,
+            originProtocolPolicy: "https-only",
+            originSslProtocols: ["TLSv1.2"],
+          },
+        },
+      ],
+
+      // Default behavior (S3 static files)
+      defaultCacheBehavior: {
+        targetOriginId: "s3-frontend",
+        viewerProtocolPolicy: "redirect-to-https",
+        allowedMethods: ["GET", "HEAD", "OPTIONS"],
+        cachedMethods: ["GET", "HEAD"],
+        compress: true,
+        forwardedValues: {
+          queryString: false,
+          cookies: { forward: "none" },
+        },
+        minTtl: 0,
+        defaultTtl: 3600,
+        maxTtl: 86400,
+        lambdaFunctionAssociations: defaultLambdaAssociations,
+      },
+
+      // Ordered behaviors (API, SAML endpoints)
+      orderedCacheBehaviors: orderedCacheBehaviors,
+
+      // SPA error handling
+      customErrorResponses: [
+        {
+          errorCode: 404,
+          responseCode: 200,
+          responsePagePath: "/index.html",
+          errorCachingMinTtl: 300,
+        },
+        {
+          errorCode: 403,
+          responseCode: 200,
+          responsePagePath: "/index.html",
+          errorCachingMinTtl: 300,
+        },
+      ],
+
+      restrictions: {
+        geoRestriction: {
+          restrictionType: "none",
+        },
+      },
+
+      viewerCertificate: certificateArn
+        ? {
+            acmCertificateArn: certificateArn,
+            sslSupportMethod: "sni-only",
+            minimumProtocolVersion: "TLSv1.2_2021",
+          }
+        : {
+            cloudfrontDefaultCertificate: true,
+          },
+
+      tags: {
+        Project: "dashborion",
+        Stage: stage,
+        ManagedBy: "sst",
+      },
+    }
+  );
+
+  // S3 bucket policy for CloudFront OAC access
+  // Note: This updates the existing bucket's policy to allow the new CloudFront distribution
+  new aws.s3.BucketPolicy("FrontendBucketPolicy", {
+    bucket: s3Bucket,
+    policy: $interpolate`{
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Sid": "AllowCloudFrontServicePrincipal",
+          "Effect": "Allow",
+          "Principal": {
+            "Service": "cloudfront.amazonaws.com"
+          },
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::${s3Bucket}/*",
+          "Condition": {
+            "StringEquals": {
+              "AWS:SourceArn": "${distribution.arn}"
+            }
+          }
+        }
+      ]
+    }`,
+  });
+
+  // ==========================================================================
+  // 6. Return outputs
+  // ==========================================================================
+  const frontendUrl = `https://${cloudfrontDomain}`;
+
+  const result: Record<string, any> = {
     mode: "managed",
     stage,
-    api: apiUrl,
+    api: api.url,
     frontend: frontendUrl,
+    cloudfrontId: distribution.id,
+    cloudfrontDomainName: distribution.domainName,
     lambdaRole: config.lambda.roleArn,
     crossAccountRoles: Object.keys(config.crossAccountRoles || {}),
     externalResources: {
-      s3Bucket: config.frontend.s3Bucket,
-      cloudfrontId: config.frontend.cloudfrontDistributionId || null,
-      apiGatewayId: config.apiGateway?.id || "SST-managed",
+      s3Bucket: s3Bucket,
+      certificateArn: certificateArn || "default",
     },
+    // NOTE: You need to update Route53 to point to the new CloudFront distribution
+    // Run: aws route53 change-resource-record-sets with the new CloudFront domain
+    route53UpdateRequired: true,
   };
+
+  if (authInfra) {
+    result.auth = {
+      enabled: true,
+      permissionsTable: authInfra.permissionsTable.name,
+      auditTable: authInfra.auditTable.name,
+      lambdaEdge: {
+        protect: authInfra.authProtectFunction.qualifiedArn,
+        acs: authInfra.authAcsFunction.qualifiedArn,
+        metadata: authInfra.authMetadataFunction.qualifiedArn,
+      },
+    };
+  }
+
+  return result;
 }

@@ -23,6 +23,19 @@ from providers.infrastructure.alb import ALBProvider
 from providers.infrastructure.elasticache import ElastiCacheProvider
 from providers.aggregators.infrastructure import InfrastructureAggregator
 
+# Auth handlers
+try:
+    from auth.admin_handlers import route_admin_request
+    ADMIN_HANDLERS_AVAILABLE = True
+except ImportError:
+    ADMIN_HANDLERS_AVAILABLE = False
+
+try:
+    from auth.handlers import route_auth_request
+    AUTH_HANDLERS_AVAILABLE = True
+except ImportError:
+    AUTH_HANDLERS_AVAILABLE = False
+
 
 def get_providers():
     """Get configured providers"""
@@ -314,6 +327,30 @@ def lambda_handler(event, context):
                 }
             else:
                 result = {'error': 'Invalid path'}
+
+        # -------------------------------------------------------------
+        # AUTH ENDPOINTS (Device Flow, Token, User Info)
+        # -------------------------------------------------------------
+        elif path.startswith('/api/auth/'):
+            if AUTH_HANDLERS_AVAILABLE:
+                auth_response = route_auth_request(event, context)
+                if auth_response:
+                    # Auth handlers return full API Gateway response
+                    return auth_response
+                else:
+                    result = {'error': f'Unknown auth endpoint: {method} {path}'}
+            else:
+                result = {'error': 'Auth handlers not available'}
+
+        # -------------------------------------------------------------
+        # ADMIN ENDPOINTS (Permission Management)
+        # -------------------------------------------------------------
+        elif path.startswith('/api/admin/'):
+            if ADMIN_HANDLERS_AVAILABLE:
+                query_params = event.get('queryStringParameters') or {}
+                result = route_admin_request(path, method, body, query_params, user_email)
+            else:
+                result = {'error': 'Admin handlers not available'}
 
         # -------------------------------------------------------------
         # EVENTS TIMELINE ENDPOINTS

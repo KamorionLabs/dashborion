@@ -12,7 +12,7 @@ import { initializeSaml, generateSpMetadata } from '../utils/saml';
 
 // Configuration
 interface MetadataConfig {
-  cookieDomain: string;
+  cloudfrontDomain: string;
   idpMetadataXml: string;
   spEntityId: string;
   signAuthnRequests: boolean;
@@ -21,7 +21,7 @@ interface MetadataConfig {
 // Load config from environment
 function getConfig(): MetadataConfig {
   return {
-    cookieDomain: process.env.COOKIE_DOMAIN || '',
+    cloudfrontDomain: process.env.CLOUDFRONT_DOMAIN || '',
     idpMetadataXml: process.env.IDP_METADATA_XML || '',
     spEntityId: process.env.SP_ENTITY_ID || 'dashborion',
     signAuthnRequests: process.env.SIGN_AUTHN_REQUESTS === 'true',
@@ -40,7 +40,7 @@ export async function handler(
     // Initialize SAML providers
     const { sp } = initializeSaml(config.idpMetadataXml, {
       entityId: config.spEntityId,
-      acsUrl: `https://${config.cookieDomain}/saml/acs`,
+      acsUrl: `https://${config.cloudfrontDomain}/saml/acs`,
       signAuthnRequests: config.signAuthnRequests,
     });
 

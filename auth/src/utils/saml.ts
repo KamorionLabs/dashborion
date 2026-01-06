@@ -32,7 +32,8 @@ export function createServiceProvider(config: {
   privateKey?: string;
   certificate?: string;
 }): samlify.ServiceProviderInstance {
-  const spConfig: samlify.ServiceProviderSettings = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const spConfig: Record<string, any> = {
     entityID: config.entityId,
     assertionConsumerService: [
       {
@@ -171,9 +172,11 @@ export function decodeSamlResponse(body: string): string | null {
       return null;
     }
 
-    // The response is already URL-decoded by URLSearchParams
-    // but might need to handle + to space conversion
-    return samlResponse.replace(/\+/g, ' ');
+    // URLSearchParams already handles URL decoding:
+    // - '+' in URL encoding (meaning space) is decoded to space
+    // - '%2B' (meaning '+') is decoded to '+'
+    // Do NOT replace '+' with space - that corrupts base64!
+    return samlResponse;
   } catch (error) {
     console.error('Failed to decode SAML response:', error);
     return null;
