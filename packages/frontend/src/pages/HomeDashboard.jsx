@@ -12,6 +12,7 @@ import { useAuth } from '../hooks/useAuth'
 import { useDashboardUrl } from '../hooks/useDashboardUrl'
 // Utilities
 import { fetchWithRetry, sessionExpiredEvent } from '../utils'
+import { getResourceId, findResource, findAllResources } from '../utils/infraResourceHandlers'
 // Components
 import { SessionExpiredModal, MetricsChart, ProjectSelector } from '../components/common'
 import { TabbedLogsPanel, LogsBottomPanel } from '../components/logs'
@@ -111,69 +112,8 @@ export default function HomeDashboard() {
     return null
   }, [urlService, selectedInfraEnv])
 
-  // Helper to extract stable resource ID from infrastructure objects
-  const getResourceId = useCallback((type, data) => {
-    if (!data) return null
-    switch (type) {
-      case 'cloudfront': return data.id
-      case 'alb': return data.arn
-      case 'rds': return data.identifier || data.dbInstanceIdentifier
-      case 'redis': return data.cacheClusterId || data.replicationGroupId || data.id
-      case 's3': return Array.isArray(data) ? 's3-all' : data.name // S3 is typically an array
-      case 'subnet': return data.subnetId || data.id
-      case 'routeTable': return data.routeTableId || data.id
-      case 'endpoint': return data.vpcEndpointId || data.id
-      case 'vpc': return data.vpcId || data.id
-      case 'igw': return data.internetGatewayId || data.id
-      case 'peering': return data.vpcPeeringConnectionId || data.id
-      case 'vpn': return data.vpnConnectionId || data.id
-      case 'tgw': return data.transitGatewayId || data.id
-      case 'task': return data.taskId || data.id
-      default: return data.id || null
-    }
-  }, [])
-
-  // Helper to lookup full infrastructure object from URL resource type/id
-  const lookupInfraResource = useCallback((type, resourceId, infraData) => {
-    if (!infraData || !resourceId) return null
-    switch (type) {
-      case 'cloudfront':
-        return infraData.cloudfront?.id === resourceId ? infraData.cloudfront : null
-      case 'alb':
-        return infraData.alb?.arn === resourceId ? infraData.alb : null
-      case 'rds':
-        if (infraData.rds?.identifier === resourceId || infraData.rds?.dbInstanceIdentifier === resourceId) {
-          return infraData.rds
-        }
-        return null
-      case 'redis':
-        if (infraData.redis?.cacheClusterId === resourceId || infraData.redis?.replicationGroupId === resourceId || infraData.redis?.id === resourceId) {
-          return infraData.redis
-        }
-        return null
-      case 's3':
-        // For S3, resourceId 's3-all' means show all buckets
-        return resourceId === 's3-all' ? infraData.s3Buckets : null
-      case 'subnet':
-        return infraData.network?.subnets?.find(s => s.subnetId === resourceId || s.id === resourceId) || null
-      case 'routeTable':
-        return infraData.network?.routeTables?.find(r => r.routeTableId === resourceId || r.id === resourceId) || null
-      case 'endpoint':
-        return infraData.network?.endpoints?.find(e => e.vpcEndpointId === resourceId || e.id === resourceId) || null
-      case 'vpc':
-        return infraData.network?.vpc?.vpcId === resourceId ? infraData.network.vpc : null
-      case 'igw':
-        return infraData.network?.igw?.internetGatewayId === resourceId ? infraData.network.igw : null
-      case 'peering':
-        return infraData.network?.peerings?.find(p => p.vpcPeeringConnectionId === resourceId || p.id === resourceId) || null
-      case 'vpn':
-        return infraData.network?.vpns?.find(v => v.vpnConnectionId === resourceId || v.id === resourceId) || null
-      case 'tgw':
-        return infraData.network?.tgw?.transitGatewayId === resourceId ? infraData.network.tgw : null
-      default:
-        return null
-    }
-  }, [])
+  // Note: getResourceId, findResource, findAllResources are imported from infraResourceHandlers.js
+  // To add a new resource type, add a handler in that file
 
   // Derive selectedInfraComponent from URL state (enriched with actual data)
   const selectedInfraComponent = useMemo(() => {
@@ -191,30 +131,23 @@ export default function HomeDashboard() {
     }
     if (urlResource) {
       const infraData = infrastructure[selectedInfraEnv]
-      // Try to lookup the full object from infrastructure data
-      const fullData = urlResourceId ? lookupInfraResource(urlResource, urlResourceId, infraData) : null
-      if (fullData) {
-        return { type: urlResource, env: selectedInfraEnv, data: fullData }
-      }
-      // Fallback: try to get the resource directly if no ID or lookup failed
-      // This handles cases where we just have ?resource=rds without an ID
-      if (infraData) {
-        const directData = {
-          cloudfront: infraData.cloudfront,
-          alb: infraData.alb,
-          rds: infraData.rds,
-          redis: infraData.redis,
-          s3: infraData.s3Buckets,
-        }[urlResource]
-        if (directData) {
-          return { type: urlResource, env: selectedInfraEnv, data: directData }
+      // Try to lookup the specific resource by ID
+      if (urlResourceId) {
+        const fullData = findResource(urlResource, urlResourceId, infraData)
+        if (fullData) {
+          return { type: urlResource, env: selectedInfraEnv, data: fullData }
         }
+      }
+      // Fallback: get all resources of this type (for URLs like ?resource=rds without specific ID)
+      const allData = findAllResources(urlResource, infraData)
+      if (allData) {
+        return { type: urlResource, env: selectedInfraEnv, data: allData }
       }
       // Last fallback: return with minimal data (panel may show loading or error)
       return { type: urlResource, env: selectedInfraEnv, data: urlResourceId ? { id: urlResourceId } : null }
     }
     return null
-  }, [urlPipeline, urlResource, urlResourceId, selectedInfraEnv, pipelines, images, infrastructure, lookupInfraResource])
+  }, [urlPipeline, urlResource, urlResourceId, selectedInfraEnv, pipelines, images, infrastructure])
 
   // Setters that update URL
   const setSelectedService = useCallback((value) => {
@@ -237,13 +170,13 @@ export default function HomeDashboard() {
     } else if (value.type === 'pipeline') {
       urlSelectPipeline(value.data?.service)
     } else if (value.type && value.data) {
-      // Extract the appropriate ID for this resource type
+      // Extract the appropriate ID for this resource type using the handler
       const resourceId = getResourceId(value.type, value.data)
       urlSelectResource(value.type, resourceId)
     } else if (value.type) {
       urlSelectResource(value.type, null)
     }
-  }, [urlClearSelection, urlSelectPipeline, urlSelectResource, getResourceId])
+  }, [urlClearSelection, urlSelectPipeline, urlSelectResource])
 
   // Sync URL with selected environment (use user from useAuth instead of local state)
   const handleEnvChange = useCallback((env) => {
