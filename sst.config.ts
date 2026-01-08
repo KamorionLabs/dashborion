@@ -23,7 +23,7 @@ interface InfraConfigFile {
   };
   auth?: {
     enabled?: boolean;
-    provider?: "saml" | "oidc" | "none";
+    provider?: "saml" | "oidc" | "simple" | "none";
     saml?: {
       entityId: string;
       idpMetadataFile?: string;
@@ -31,6 +31,12 @@ interface InfraConfigFile {
       acsPath?: string;
       metadataPath?: string;
     };
+    users?: Record<string, {
+      password: string;
+      role: "admin" | "operator" | "viewer";
+      groups?: string[];
+      projects?: string[];
+    }>;
     sessionTtlSeconds?: number;
     cookieDomain?: string;
     sessionEncryptionKey?: string;
@@ -229,6 +235,16 @@ export default $config({
       },
     });
 
+    // Create DynamoDB table for auth tokens
+    const tokensTable = new sst.aws.Dynamo("TokensTable", {
+      fields: {
+        pk: "string",
+        sk: "string",
+      },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+      ttl: "ttl",
+    });
+
     // Create the Lambda function for the API
     // Use root handler.py wrapper that sets up Python path correctly
     // copyFiles ensures handler.py is at bundle root where Lambda expects it
@@ -242,12 +258,17 @@ export default $config({
         { from: "handler.py", to: "handler.py" },
         { from: "backend", to: "backend" },
       ],
+      link: [tokensTable],
       environment: {
         // Backend expects individual env vars, not a single DASHBORION_CONFIG
         AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
         PROJECTS: JSON.stringify(projectsWithServices),
         CROSS_ACCOUNT_ROLES: JSON.stringify(crossAccountRoles),
         CORS_ORIGINS: `https://${domain}`,
+        // Auth configuration
+        AUTH_PROVIDER: config.auth?.provider || "simple",
+        AUTH_USERS: JSON.stringify(config.auth?.users || {}),
+        TOKENS_TABLE_NAME: tokensTable.name,
       },
       permissions: [
         // Allow assuming cross-account roles
@@ -256,6 +277,42 @@ export default $config({
           resources: Object.values(crossAccountRoles).flatMap(r =>
             [r.readRoleArn, r.actionRoleArn].filter(Boolean) as string[]
           ),
+        },
+        // CodePipeline permissions (shared-services account)
+        {
+          actions: [
+            "codepipeline:GetPipelineState",
+            "codepipeline:ListPipelineExecutions",
+            "codepipeline:GetPipelineExecution",
+            "codepipeline:StartPipelineExecution",
+          ],
+          resources: ["arn:aws:codepipeline:eu-west-3:501994300510:homebox-*"],
+        },
+        // CodeBuild permissions (for build logs)
+        {
+          actions: [
+            "codebuild:BatchGetBuilds",
+            "codebuild:ListBuildsForProject",
+          ],
+          resources: ["arn:aws:codebuild:eu-west-3:501994300510:project/homebox-*"],
+        },
+        // ECR permissions (shared-services account)
+        {
+          actions: [
+            "ecr:DescribeImages",
+            "ecr:DescribeRepositories",
+            "ecr:ListImages",
+          ],
+          resources: ["arn:aws:ecr:eu-west-3:501994300510:repository/homebox-*"],
+        },
+        // CloudWatch Logs permissions (for build/deploy logs)
+        {
+          actions: [
+            "logs:GetLogEvents",
+            "logs:FilterLogEvents",
+            "logs:DescribeLogStreams",
+          ],
+          resources: ["arn:aws:logs:eu-west-3:501994300510:log-group:/aws/codebuild/homebox-*:*"],
         },
       ],
     });

@@ -2,26 +2,18 @@
  * App Router
  *
  * Main router for Dashborion dashboard.
- * Integrates plugin system, shell layout, and URL-based routing.
+ * Uses the original single-page dashboard layout with URL-based state.
  */
 
-import { useState, useCallback, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { ConfigProvider, useConfig } from './ConfigContext';
-import { PluginProvider, PluginRouter } from './plugins';
-import { Shell } from './shell';
 
 // Pages
 import DeviceAuth from './pages/DeviceAuth';
 import PermissionDenied from './pages/PermissionDenied';
-import Dashboard from './pages/Dashboard';
-
-// Register plugins (will be dynamic later)
-import { registerPlugins } from './plugins/registerPlugins';
-
-// Register all plugins on startup
-registerPlugins();
+import Login from './pages/Login';
+import HomeDashboard from './pages/HomeDashboard';
 
 /**
  * Loading screen
@@ -48,9 +40,9 @@ function ProtectedRoute({ children }) {
   }
 
   if (!isAuthenticated) {
-    // Redirect to SAML login with return URL (preserves current path)
+    // Redirect to login page with return URL (preserves current path)
     const returnUrl = window.location.pathname + window.location.search;
-    window.location.href = '/saml/login?returnUrl=' + encodeURIComponent(returnUrl);
+    window.location.href = '/login?returnUrl=' + encodeURIComponent(returnUrl);
     return null;
   }
 
@@ -58,59 +50,17 @@ function ProtectedRoute({ children }) {
 }
 
 /**
- * Main App with Shell and Plugin Router
+ * Default route - redirects to first project/env
  */
-function MainApp() {
+function DefaultRedirect() {
   const config = useConfig();
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Handle refresh
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    setRefreshKey((k) => k + 1);
+  // Get first project and its first environment
+  const projectId = config.currentProjectId || Object.keys(config.projects || {})[0] || 'homebox';
+  const project = config.projects?.[projectId];
+  const firstEnv = project?.environments?.[0] || 'staging';
 
-    // Simulate refresh delay (actual data fetching is in components)
-    setTimeout(() => {
-      setRefreshing(false);
-      setLastUpdated(new Date().toLocaleTimeString());
-    }, 500);
-  }, []);
-
-  // Initial timestamp
-  useEffect(() => {
-    setLastUpdated(new Date().toLocaleTimeString());
-  }, []);
-
-  // Build plugin config from app config
-  const pluginConfig = {
-    'aws-ecs': {
-      projects: config?.projects || {},
-      crossAccountRoles: config?.crossAccountRoles || {},
-    },
-    'aws-cicd': {
-      // Pipeline config
-    },
-    'aws-infra': {
-      // Infrastructure config
-    },
-  };
-
-  return (
-    <PluginProvider config={pluginConfig}>
-      <Shell
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        lastUpdated={lastUpdated}
-      >
-        <PluginRouter
-          config={pluginConfig}
-          defaultElement={<Dashboard refreshKey={refreshKey} />}
-        />
-      </Shell>
-    </PluginProvider>
-  );
+  return <Navigate to={`/${projectId}/${firstEnv}`} replace />;
 }
 
 /**
@@ -123,22 +73,64 @@ export default function AppRouter() {
         <AuthProvider>
           <Routes>
             {/* Public routes - no auth required */}
+            <Route path="/login" element={<Login />} />
             <Route path="/auth/device" element={<DeviceAuth />} />
             <Route path="/403" element={<PermissionDenied />} />
             <Route path="/permission-denied" element={<PermissionDenied />} />
 
-            {/* All other routes - protected and handled by PluginRouter */}
+            {/* Protected routes */}
+            {/* Dashboard with project and env in URL */}
             <Route
-              path="/*"
+              path="/:project/:env"
               element={
                 <ProtectedRoute>
-                  <MainApp />
+                  <HomeDashboard />
                 </ProtectedRoute>
               }
             />
+
+            {/* Project only - redirect to first env */}
+            <Route
+              path="/:project"
+              element={
+                <ProtectedRoute>
+                  <ProjectRedirect />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Root - redirect to default project/env */}
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <DefaultRedirect />
+                </ProtectedRoute>
+              }
+            />
+
+            {/* Catch all - redirect to home */}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </AuthProvider>
       </ConfigProvider>
     </BrowserRouter>
   );
+}
+
+/**
+ * Project redirect - redirects to first environment of the project
+ */
+function ProjectRedirect() {
+  const config = useConfig();
+  const projectId = window.location.pathname.split('/')[1];
+
+  const project = config.projects?.[projectId];
+  if (!project) {
+    // Invalid project, go to default
+    return <DefaultRedirect />;
+  }
+
+  const firstEnv = project.environments?.[0] || 'staging';
+  return <Navigate to={`/${projectId}/${firstEnv}`} replace />;
 }

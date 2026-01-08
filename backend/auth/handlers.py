@@ -23,6 +23,11 @@ from .device_flow import (
     DeviceCodePendingError,
     DeviceCodeExpiredError,
     DeviceCodeDeniedError,
+    generate_access_token,
+    generate_refresh_token,
+    AccessToken,
+    ACCESS_TOKEN_TTL,
+    _store_token,
 )
 from .permissions import get_user_permissions
 
@@ -598,6 +603,138 @@ def handle_sso_exchange(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 # =============================================================================
+# Simple Login (when SAML not available)
+# =============================================================================
+
+def _get_auth_users() -> Dict[str, Dict[str, Any]]:
+    """Get configured users from AUTH_USERS environment variable"""
+    import json
+    users_json = os.environ.get('AUTH_USERS', '{}')
+    try:
+        return json.loads(users_json)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _verify_password(stored_hash: str, password: str) -> bool:
+    """Verify password against stored hash (bcrypt or plain for dev)"""
+    import hashlib
+
+    # Support plain text for development (prefix with 'plain:')
+    if stored_hash.startswith('plain:'):
+        return stored_hash[6:] == password
+
+    # Support sha256 hash (prefix with 'sha256:')
+    if stored_hash.startswith('sha256:'):
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        return stored_hash[7:] == password_hash
+
+    # Default: plain text comparison (legacy)
+    return stored_hash == password
+
+
+def handle_login(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    POST /api/auth/login
+
+    Simple username/password login for environments without SAML.
+
+    Request body:
+        {
+            "email": "user@example.com",
+            "password": "secret"
+        }
+
+    Response:
+        {
+            "access_token": "...",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "...",
+            "user": {
+                "email": "user@example.com",
+                "role": "admin"
+            }
+        }
+    """
+    body = _parse_body(event)
+    email = body.get('email', '').lower().strip()
+    password = body.get('password', '')
+
+    if not email or not password:
+        return _json_response(400, {
+            'error': 'invalid_request',
+            'error_description': 'Email and password required',
+        })
+
+    # Get configured users
+    users = _get_auth_users()
+    user_config = users.get(email)
+
+    if not user_config:
+        return _json_response(401, {
+            'error': 'invalid_credentials',
+            'error_description': 'Invalid email or password',
+        })
+
+    # Verify password
+    stored_password = user_config.get('password', '')
+    if not _verify_password(stored_password, password):
+        return _json_response(401, {
+            'error': 'invalid_credentials',
+            'error_description': 'Invalid email or password',
+        })
+
+    # Get user permissions
+    role = user_config.get('role', 'viewer')
+    groups = user_config.get('groups', [])
+    projects = user_config.get('projects', ['*'])  # Default to all projects
+
+    # Build permissions based on role
+    permissions = []
+    for project in projects:
+        permissions.append({
+            'project': project,
+            'environment': '*',
+            'role': role,
+            'resources': ['*'],
+        })
+
+    permissions_json = json.dumps(permissions)
+
+    # Generate tokens
+    import time
+    access_token = generate_access_token()
+    refresh_token = generate_refresh_token()
+    expires_at = int(time.time()) + ACCESS_TOKEN_TTL
+
+    token = AccessToken(
+        token=access_token,
+        expires_in=ACCESS_TOKEN_TTL,
+        expires_at=expires_at,
+        refresh_token=refresh_token,
+        user_id=email,
+        email=email,
+        permissions=permissions_json,
+    )
+
+    # Store token in DynamoDB
+    _store_token(token, 'web-login')
+
+    return _json_response(200, {
+        'access_token': token.token,
+        'token_type': token.token_type,
+        'expires_in': token.expires_in,
+        'refresh_token': token.refresh_token,
+        'user': {
+            'email': email,
+            'role': role,
+            'groups': groups,
+        },
+    })
+
+
+# =============================================================================
 # Route Handler
 # =============================================================================
 
@@ -608,6 +745,7 @@ AUTH_ROUTES = {
     ('POST', '/api/auth/token/refresh'): handle_token_refresh,
     ('POST', '/api/auth/token/revoke'): handle_token_revoke,
     ('POST', '/api/auth/sso/exchange'): handle_sso_exchange,
+    ('POST', '/api/auth/login'): handle_login,
     ('GET', '/api/auth/me'): handle_auth_me,
     ('GET', '/api/auth/whoami'): handle_auth_whoami,
 }

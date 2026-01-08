@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { fetchWithRetry } from '../utils/fetch';
+import { fetchWithRetry, clearAuthTokens } from '../utils/fetch';
 
 // Role hierarchy for permission checks
 const ROLE_HIERARCHY = {
@@ -192,10 +192,21 @@ export function AuthProvider({ children }) {
   }, [user, permissions]);
 
   /**
-   * Logout - redirect to logout endpoint
+   * Logout - adapts to auth method (SAML or simple)
    */
   const logout = useCallback(() => {
-    window.location.href = '/saml/logout';
+    const authMethod = localStorage.getItem('dashborion_auth_method');
+
+    // Always clear local tokens (includes auth_method)
+    clearAuthTokens();
+
+    if (authMethod === 'saml') {
+      // SAML logout - redirect to IdP logout
+      window.location.href = '/saml/logout';
+    } else {
+      // Simple auth - just go to login page
+      window.location.href = '/login';
+    }
   }, []);
 
   /**

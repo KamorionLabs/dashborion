@@ -29,15 +29,47 @@ export const notifySessionExpired = () => {
 }
 
 /**
+ * Get auth headers from stored token
+ */
+const getAuthHeaders = () => {
+  const token = localStorage.getItem('dashborion_token')
+  if (token) {
+    return { Authorization: `Bearer ${token}` }
+  }
+  return {}
+}
+
+/**
+ * Clear stored auth tokens (logout)
+ */
+export const clearAuthTokens = () => {
+  localStorage.removeItem('dashborion_token')
+  localStorage.removeItem('dashborion_refresh_token')
+  localStorage.removeItem('dashborion_user')
+  localStorage.removeItem('dashborion_auth_method')
+}
+
+/**
  * Fetch with automatic retry for transient errors (503, 502, etc.)
- * Also detects SSO session expiration
+ * Also detects SSO session expiration and includes JWT token
  */
 export const fetchWithRetry = async (url, options = {}, maxRetries = 3) => {
   const fullUrl = apiUrl(url)
   let lastError
+
+  // Add auth headers
+  const authHeaders = getAuthHeaders()
+  const mergedOptions = {
+    ...options,
+    headers: {
+      ...authHeaders,
+      ...options.headers,
+    },
+  }
+
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const response = await fetch(fullUrl, options)
+      const response = await fetch(fullUrl, mergedOptions)
       // Detect SSO redirect (307 to SSO portal)
       if (response.status === 307 || response.redirected) {
         const location = response.headers.get('location') || response.url
