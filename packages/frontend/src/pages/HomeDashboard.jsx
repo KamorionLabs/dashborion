@@ -12,7 +12,7 @@ import { useAuth } from '../hooks/useAuth'
 import { useDashboardUrl } from '../hooks/useDashboardUrl'
 // Utilities
 import { fetchWithRetry, sessionExpiredEvent } from '../utils'
-import { getResourceId, findResource, findAllResources } from '../utils/infraResourceHandlers'
+import { getResourceId, findResource, findAllResources, parseResourceId } from '../utils/infraResourceHandlers'
 // Components
 import { SessionExpiredModal, MetricsChart, ProjectSelector } from '../components/common'
 import { TabbedLogsPanel, LogsBottomPanel } from '../components/logs'
@@ -29,6 +29,7 @@ export default function HomeDashboard() {
   // URL state hook - syncs state with search params for deep linking
   // Destructure to get stable function references
   const {
+    view: urlView,
     service: urlService,
     pipeline: urlPipeline,
     resource: urlResource,
@@ -37,6 +38,7 @@ export default function HomeDashboard() {
     events: urlEvents,
     hours: urlHours,
     types: urlTypes,
+    setView: urlSetView,
     selectService: urlSelectService,
     selectPipeline: urlSelectPipeline,
     selectResource: urlSelectResource,
@@ -143,11 +145,26 @@ export default function HomeDashboard() {
       if (allData) {
         return { type: urlResource, env: selectedInfraEnv, data: allData }
       }
-      // Last fallback: return with minimal data (panel may show loading or error)
-      return { type: urlResource, env: selectedInfraEnv, data: urlResourceId ? { id: urlResourceId } : null }
+      // Last fallback: use parseId to reconstruct minimal data from composite ID
+      // This allows handlers to encode metadata in the ID (e.g., task: "backend:abc123")
+      const parsedData = parseResourceId(urlResource, urlResourceId)
+      return { type: urlResource, env: selectedInfraEnv, data: parsedData }
     }
     return null
   }, [urlPipeline, urlResource, urlResourceId, selectedInfraEnv, pipelines, images, infrastructure])
+
+  // Effective view: force network view when viewing a task (tasks are only visible in network view)
+  const effectiveView = useMemo(() => {
+    if (urlResource === 'task') {
+      return 'network'
+    }
+    return urlView || 'simple'
+  }, [urlResource, urlView])
+
+  // Handler for view changes from InfrastructureDiagram
+  const handleViewChange = useCallback((newView) => {
+    urlSetView(newView)
+  }, [urlSetView])
 
   // Setters that update URL
   const setSelectedService = useCallback((value, skipClear = false) => {
@@ -171,6 +188,7 @@ export default function HomeDashboard() {
       urlSelectPipeline(value.data?.service)
     } else if (value.type && value.data) {
       // Extract the appropriate ID for this resource type using the handler
+      // Handlers can encode metadata in the ID (e.g., task: "backend:abc123")
       const resourceId = getResourceId(value.type, value.data)
       urlSelectResource(value.type, resourceId)
     } else if (value.type) {
@@ -1212,6 +1230,8 @@ export default function HomeDashboard() {
                   actionLoading={actionLoading}
                   onOpenLogsPanel={openLogsTab}
                   onTailDeployLogs={handleOpenDeployLogs}
+                  view={effectiveView}
+                  onViewChange={handleViewChange}
                 />
               </div>
             )}

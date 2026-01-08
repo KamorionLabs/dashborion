@@ -693,6 +693,18 @@ class ECSProvider(OrchestratorProvider):
                 )
             }
 
+            # Get current service revision to determine if task is latest
+            task_revision = task_def_arn.split(':')[-1]
+            is_latest = False
+            try:
+                svc_response = ecs.describe_services(cluster=cluster_name, services=[service_name])
+                if svc_response.get('services'):
+                    current_task_def = svc_response['services'][0].get('taskDefinition', '')
+                    current_revision = current_task_def.split(':')[-1]
+                    is_latest = task_revision == current_revision
+            except Exception:
+                pass  # If we can't determine, default to False
+
             return {
                 'taskId': task_id,
                 'taskArn': task_arn,
@@ -702,7 +714,8 @@ class ECSProvider(OrchestratorProvider):
                 'status': task.get('lastStatus'),
                 'desiredStatus': task.get('desiredStatus'),
                 'health': task.get('healthStatus', 'UNKNOWN'),
-                'revision': task_def_arn.split(':')[-1],
+                'revision': task_revision,
+                'isLatest': is_latest,
                 'placement': {
                     'az': az,
                     'subnetId': subnet_id,

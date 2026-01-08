@@ -20,7 +20,7 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
   const logsContainerRef = useRef(null)
 
   const fetchTaskDetails = useCallback(() => {
-    const taskId = task?.fullId || task?.taskId
+    const taskId = task?.fullId || task?.taskId || task?.id
     if (taskId && task?.service && currentProjectId) {
       return fetchWithRetry(`/api/${currentProjectId}/tasks/${env}/${task.service}/${taskId}`)
         .then(res => res.json())
@@ -32,7 +32,9 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
           console.error('Failed to fetch task details:', err)
         })
     }
-  }, [task?.fullId, task?.taskId, task?.service, env, currentProjectId])
+    // Return resolved promise when we can't fetch (missing service, etc.)
+    return Promise.resolve(null)
+  }, [task?.fullId, task?.taskId, task?.id, task?.service, env, currentProjectId])
 
   useEffect(() => {
     setLoading(true)
@@ -77,6 +79,32 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
     return <p className="text-red-400">Task data not available</p>
   }
 
+  // Use isLatest from API response (details) if available, fallback to task prop
+  // This is important for deep-links where task prop may not have isLatest
+  const isLatest = details?.isLatest ?? task.isLatest ?? false
+
+  // If we only have an ID (e.g., from URL deep-link without service), show a helpful message
+  if (!task.service && !task.taskId && !task.fullId && task.id) {
+    return (
+      <div className="space-y-4">
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-yellow-400 font-medium text-sm">Incomplete Task Reference</p>
+              <p className="text-yellow-300/80 text-xs mt-1">
+                Task ID <code className="bg-gray-800 px-1 rounded">{task.id}</code> was referenced but the service name is missing.
+              </p>
+              <p className="text-yellow-300/80 text-xs mt-1">
+                Please select a task from the service view or network diagram to see its details.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const formatDate = (dateStr) => {
     if (!dateStr) return '-'
     const date = new Date(dateStr)
@@ -113,12 +141,12 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
       )}
 
       {/* Status Banner */}
-      <div className={`rounded-lg p-4 ${task.isLatest ? 'bg-green-500/20 border border-green-500/50' : 'bg-orange-500/20 border border-orange-500/50'}`}>
+      <div className={`rounded-lg p-4 ${isLatest ? 'bg-green-500/20 border border-green-500/50' : 'bg-orange-500/20 border border-orange-500/50'}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className={`w-3 h-3 rounded-full ${d.status === 'RUNNING' ? 'bg-green-500' : d.status === 'PENDING' ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
-            <span className={`font-medium ${task.isLatest ? 'text-green-400' : 'text-orange-400'}`}>
-              {task.isLatest ? 'Latest Revision' : 'Old Revision (Draining)'}
+            <span className={`font-medium ${isLatest ? 'text-green-400' : 'text-orange-400'}`}>
+              {isLatest ? 'Latest Revision' : 'Old Revision (Draining)'}
             </span>
           </div>
           <span className={`text-sm font-medium ${getStatusColor(d.status)}`}>{d.status}</span>
@@ -184,7 +212,7 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
           </div>
           <div className="flex justify-between">
             <span className="text-gray-500">Revision</span>
-            <span className={`font-mono ${task.isLatest ? 'text-green-400' : 'text-orange-400'}`}>{d.revision || task.revision}</span>
+            <span className={`font-mono ${isLatest ? 'text-green-400' : 'text-orange-400'}`}>{d.revision || task.revision}</span>
           </div>
           {details?.launchType && (
             <div className="flex justify-between">
@@ -403,7 +431,7 @@ export default function TaskDetails({ task, env, onOpenLogsPanel }) {
       </div>
 
       {/* Rolling Update Notice */}
-      {!task.isLatest && d.status === 'RUNNING' && (
+      {!isLatest && d.status === 'RUNNING' && (
         <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-4">
           <div className="flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-orange-400 flex-shrink-0 mt-0.5" />

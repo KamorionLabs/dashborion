@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   RefreshCw, Globe, Server, Database, Clock, Rocket, Play, Square, Terminal
 } from 'lucide-react'
@@ -8,8 +8,21 @@ import SimpleView from './SimpleView'
 import NetworkView from './NetworkView'
 import RoutingView from './RoutingView'
 
-export default function InfrastructureDiagram({ data, env, onComponentSelect, selectedComponent, services: envServices, pipelines, onForceReload, onDeployLatest, onScaleService, actionLoading, onOpenLogsPanel, onTailDeployLogs }) {
-  const [viewMode, setViewMode] = useState('simple') // 'simple', 'network', or 'routing'
+export default function InfrastructureDiagram({ data, env, onComponentSelect, selectedComponent, services: envServices, pipelines, onForceReload, onDeployLatest, onScaleService, actionLoading, onOpenLogsPanel, onTailDeployLogs, view, onViewChange }) {
+  const [viewMode, setViewMode] = useState(view || 'simple') // 'simple', 'network', or 'routing'
+
+  // Sync internal state with prop when it changes
+  useEffect(() => {
+    if (view && view !== viewMode) {
+      setViewMode(view)
+    }
+  }, [view])
+
+  // Wrapper to notify parent of view changes
+  const handleViewChange = (newView) => {
+    setViewMode(newView)
+    onViewChange?.(newView)
+  }
 
   // Get config from context
   const appConfig = useConfig()
@@ -52,19 +65,19 @@ export default function InfrastructureDiagram({ data, env, onComponentSelect, se
             {/* View Mode Toggle */}
             <div className="flex items-center bg-gray-700 rounded-lg p-0.5 ml-2">
               <button
-                onClick={() => setViewMode('simple')}
+                onClick={() => handleViewChange('simple')}
                 className={`px-2 py-1 text-xs rounded-md transition-colors ${viewMode === 'simple' ? 'bg-brand-500 text-white' : 'text-gray-400 hover:text-white'}`}
               >
                 Simple
               </button>
               <button
-                onClick={() => setViewMode('network')}
+                onClick={() => handleViewChange('network')}
                 className={`px-2 py-1 text-xs rounded-md transition-colors ${viewMode === 'network' ? 'bg-brand-500 text-white' : 'text-gray-400 hover:text-white'}`}
               >
                 Network
               </button>
               <button
-                onClick={() => setViewMode('routing')}
+                onClick={() => handleViewChange('routing')}
                 className={`px-2 py-1 text-xs rounded-md transition-colors ${viewMode === 'routing' ? 'bg-cyan-500 text-white' : 'text-gray-400 hover:text-white'}`}
               >
                 Routing

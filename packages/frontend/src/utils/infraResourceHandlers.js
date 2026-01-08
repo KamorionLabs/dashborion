@@ -1,213 +1,162 @@
 /**
- * Infrastructure resource handlers for deep-linking
+ * Infrastructure Resource Handlers Registry
  *
- * Each handler defines how to:
- * - getId(data): Extract a stable ID from a resource object
- * - findInInfra(id, infraData): Find the resource in infrastructure data by ID
- * - findAll(infraData): Get all resources of this type (for direct access without ID)
+ * This module provides a registry pattern for infrastructure resource handlers.
+ * Handlers are NOT defined here - they self-register from their respective
+ * component/feature directories.
  *
- * To add a new resource type, simply add a new handler to this map.
+ * ## How It Works
+ *
+ * 1. Each resource type has its handler defined alongside its component
+ * 2. Handlers self-register via `registerResourceHandler()` on import
+ * 3. The registry is populated automatically when components are loaded
+ *
+ * ## File Structure
+ *
+ * ```
+ * src/
+ *   handlers/
+ *     index.js              # Imports all handlers (triggers registration)
+ *     cloudfront.js         # CloudFront handler
+ *     alb.js                # ALB handler
+ *     task.js               # ECS Task handler (composite ID example)
+ *     ...
+ * ```
+ *
+ * ## Handler Interface
+ *
+ * Each handler must implement:
+ *
+ * ```javascript
+ * {
+ *   // Required: Extract ID from resource data for URL
+ *   // Can encode multiple values (e.g., "service:taskId")
+ *   getId: (data) => string | null,
+ *
+ *   // Required: Find resource in infrastructure data by ID
+ *   // Return null if resource is fetched separately (like tasks)
+ *   findInInfra: (id, infraData) => object | null,
+ *
+ *   // Required: Get all resources of this type (for URLs without specific ID)
+ *   findAll: (infraData) => object | array | null,
+ *
+ *   // Optional: Parse composite ID back to data object
+ *   // Default: returns { id: rawId }
+ *   // Use this when getId encodes multiple values
+ *   parseId: (id) => object,
+ * }
+ * ```
+ *
+ * ## Creating a New Handler
+ *
+ * 1. Create a file in `src/handlers/` (e.g., `myresource.js`)
+ * 2. Import and call `registerResourceHandler`:
+ *
+ * ```javascript
+ * // src/handlers/myresource.js
+ * import { registerResourceHandler } from '../utils/infraResourceHandlers'
+ *
+ * registerResourceHandler('myresource', {
+ *   getId: (data) => data?.id,
+ *   findInInfra: (id, infraData) => infraData?.myResources?.find(r => r.id === id),
+ *   findAll: (infraData) => infraData?.myResources,
+ * })
+ * ```
+ *
+ * 3. Add the import to `src/handlers/index.js`:
+ *
+ * ```javascript
+ * import './myresource'
+ * ```
+ *
+ * ## Composite IDs (for resources needing metadata)
+ *
+ * Some resources need more than just an ID (e.g., ECS tasks need service name).
+ * Use composite IDs:
+ *
+ * ```javascript
+ * registerResourceHandler('task', {
+ *   // Encode: "backend:abc123"
+ *   getId: (data) => `${data.service}:${data.taskId}`,
+ *
+ *   // Decode back to object
+ *   parseId: (id) => {
+ *     const [service, taskId] = id.split(':')
+ *     return { service, taskId, id: taskId }
+ *   },
+ *
+ *   findInInfra: () => null, // Fetched via API
+ *   findAll: () => null,
+ * })
+ * ```
  */
 
-export const resourceHandlers = {
-  // CDN
-  cloudfront: {
-    getId: (data) => data?.id,
-    findInInfra: (id, infraData) => {
-      // Support both single object and array
-      const cf = infraData?.cloudfront
-      if (Array.isArray(cf)) {
-        return cf.find(c => c.id === id)
-      }
-      return cf?.id === id ? cf : null
-    },
-    findAll: (infraData) => infraData?.cloudfront,
-  },
+// ============================================================
+// Handler Registry (populated by handler imports)
+// ============================================================
 
-  // Load Balancer
-  alb: {
-    getId: (data) => {
-      // Use short name from ARN if available, otherwise full ARN
-      if (data?.arn) {
-        const match = data.arn.match(/loadbalancer\/app\/([^/]+)/)
-        return match ? match[1] : data.arn
-      }
-      return data?.name || null
-    },
-    findInInfra: (id, infraData) => {
-      const alb = infraData?.alb
-      if (Array.isArray(alb)) {
-        return alb.find(a => {
-          const albId = a.arn?.match(/loadbalancer\/app\/([^/]+)/)?.[1] || a.name
-          return albId === id || a.arn === id
-        })
-      }
-      // Single ALB - check if ID matches
-      if (alb) {
-        const albId = alb.arn?.match(/loadbalancer\/app\/([^/]+)/)?.[1] || alb.name
-        return albId === id || alb.arn === id ? alb : null
-      }
-      return null
-    },
-    findAll: (infraData) => infraData?.alb,
-  },
+export const resourceHandlers = {}
 
-  // Database
-  rds: {
-    getId: (data) => data?.identifier || data?.dbInstanceIdentifier,
-    findInInfra: (id, infraData) => {
-      const rds = infraData?.rds
-      if (Array.isArray(rds)) {
-        return rds.find(r => r.identifier === id || r.dbInstanceIdentifier === id)
-      }
-      if (rds?.identifier === id || rds?.dbInstanceIdentifier === id) {
-        return rds
-      }
-      return null
-    },
-    findAll: (infraData) => infraData?.rds,
-  },
+// ============================================================
+// Public API Functions
+// ============================================================
 
-  // Cache
-  redis: {
-    getId: (data) => data?.cacheClusterId || data?.replicationGroupId || data?.id,
-    findInInfra: (id, infraData) => {
-      const redis = infraData?.redis
-      if (Array.isArray(redis)) {
-        return redis.find(r =>
-          r.cacheClusterId === id || r.replicationGroupId === id || r.id === id
-        )
-      }
-      if (redis) {
-        const redisId = redis.cacheClusterId || redis.replicationGroupId || redis.id
-        return redisId === id ? redis : null
-      }
-      return null
-    },
-    findAll: (infraData) => infraData?.redis,
-  },
-
-  // S3 Buckets (always an array)
-  s3: {
-    getId: (data) => {
-      // If it's an array (all buckets), use a marker
-      if (Array.isArray(data)) return 's3-all'
-      return data?.name || data?.bucketName
-    },
-    findInInfra: (id, infraData) => {
-      const buckets = infraData?.s3Buckets
-      if (!buckets) return null
-      // Special case: 's3-all' means show all buckets
-      if (id === 's3-all') return buckets
-      // Find specific bucket by name
-      return buckets.find(b => b.name === id || b.bucketName === id)
-    },
-    findAll: (infraData) => infraData?.s3Buckets,
-  },
-
-  // Network - Subnets (array)
-  subnet: {
-    getId: (data) => data?.subnetId || data?.id,
-    findInInfra: (id, infraData) => {
-      const subnets = infraData?.network?.subnets
-      return subnets?.find(s => s.subnetId === id || s.id === id)
-    },
-    findAll: (infraData) => infraData?.network?.subnets,
-  },
-
-  // Network - Route Tables (array)
-  routeTable: {
-    getId: (data) => data?.routeTableId || data?.id,
-    findInInfra: (id, infraData) => {
-      const tables = infraData?.network?.routeTables
-      return tables?.find(r => r.routeTableId === id || r.id === id)
-    },
-    findAll: (infraData) => infraData?.network?.routeTables,
-  },
-
-  // Network - VPC Endpoints (array)
-  endpoint: {
-    getId: (data) => data?.vpcEndpointId || data?.id,
-    findInInfra: (id, infraData) => {
-      const endpoints = infraData?.network?.endpoints
-      return endpoints?.find(e => e.vpcEndpointId === id || e.id === id)
-    },
-    findAll: (infraData) => infraData?.network?.endpoints,
-  },
-
-  // Network - VPC (single)
-  vpc: {
-    getId: (data) => data?.vpcId || data?.id,
-    findInInfra: (id, infraData) => {
-      const vpc = infraData?.network?.vpc
-      return vpc?.vpcId === id || vpc?.id === id ? vpc : null
-    },
-    findAll: (infraData) => infraData?.network?.vpc,
-  },
-
-  // Network - Internet Gateway (single)
-  igw: {
-    getId: (data) => data?.internetGatewayId || data?.id,
-    findInInfra: (id, infraData) => {
-      const igw = infraData?.network?.igw
-      return igw?.internetGatewayId === id || igw?.id === id ? igw : null
-    },
-    findAll: (infraData) => infraData?.network?.igw,
-  },
-
-  // Network - VPC Peerings (array)
-  peering: {
-    getId: (data) => data?.vpcPeeringConnectionId || data?.id,
-    findInInfra: (id, infraData) => {
-      const peerings = infraData?.network?.peerings
-      return peerings?.find(p => p.vpcPeeringConnectionId === id || p.id === id)
-    },
-    findAll: (infraData) => infraData?.network?.peerings,
-  },
-
-  // Network - VPN Connections (array)
-  vpn: {
-    getId: (data) => data?.vpnConnectionId || data?.id,
-    findInInfra: (id, infraData) => {
-      const vpns = infraData?.network?.vpns
-      return vpns?.find(v => v.vpnConnectionId === id || v.id === id)
-    },
-    findAll: (infraData) => infraData?.network?.vpns,
-  },
-
-  // Network - Transit Gateway (single)
-  tgw: {
-    getId: (data) => data?.transitGatewayId || data?.id,
-    findInInfra: (id, infraData) => {
-      const tgw = infraData?.network?.tgw
-      return tgw?.transitGatewayId === id || tgw?.id === id ? tgw : null
-    },
-    findAll: (infraData) => infraData?.network?.tgw,
-  },
-
-  // ECS Task (from tasks array in services)
-  task: {
-    getId: (data) => data?.taskId || data?.taskArn?.split('/').pop() || data?.id,
-    findInInfra: (id, infraData) => {
-      // Tasks are typically fetched separately, not from infra
-      // Return null to let the component fetch them
-      return null
-    },
-    findAll: (infraData) => null,
-  },
+/**
+ * Register a resource handler.
+ * Called by handler modules to self-register.
+ *
+ * @param {string} type - Resource type name (e.g., 'task', 'subnet')
+ * @param {object} handler - Handler object with getId, findInInfra, findAll, and optionally parseId
+ */
+export function registerResourceHandler(type, handler) {
+  if (resourceHandlers[type]) {
+    console.warn(`[infraResourceHandlers] Handler for '${type}' is being overwritten`)
+  }
+  resourceHandlers[type] = handler
 }
 
 /**
- * Get the resource ID from data using the appropriate handler
+ * Get the resource ID from data using the appropriate handler.
+ * The ID may be composite (encoding metadata) for certain resource types.
+ *
+ * @param {string} type - Resource type (e.g., 'task', 'subnet')
+ * @param {object} data - Resource data object
+ * @returns {string|null} - Resource ID for URL
  */
 export function getResourceId(type, data) {
   const handler = resourceHandlers[type]
-  if (!handler) return data?.id || null
+  if (!handler) {
+    console.warn(`[infraResourceHandlers] No handler registered for type '${type}'`)
+    return data?.id || null
+  }
   return handler.getId(data)
 }
 
 /**
- * Find a resource in infrastructure data by type and ID
+ * Parse a resource ID back to a data object.
+ * For composite IDs, this extracts the encoded metadata.
+ *
+ * @param {string} type - Resource type (e.g., 'task', 'subnet')
+ * @param {string} id - Resource ID from URL
+ * @returns {object} - Parsed data object (at minimum { id })
+ */
+export function parseResourceId(type, id) {
+  if (!id) return null
+  const handler = resourceHandlers[type]
+  // Use handler's parseId if available, otherwise default to { id }
+  if (handler?.parseId) {
+    return handler.parseId(id)
+  }
+  return { id }
+}
+
+/**
+ * Find a resource in infrastructure data by type and ID.
+ *
+ * @param {string} type - Resource type
+ * @param {string} id - Resource ID
+ * @param {object} infraData - Infrastructure data for the environment
+ * @returns {object|null} - Found resource or null
  */
 export function findResource(type, id, infraData) {
   const handler = resourceHandlers[type]
@@ -216,7 +165,11 @@ export function findResource(type, id, infraData) {
 }
 
 /**
- * Get all resources of a type from infrastructure data
+ * Get all resources of a type from infrastructure data.
+ *
+ * @param {string} type - Resource type
+ * @param {object} infraData - Infrastructure data for the environment
+ * @returns {object|array|null} - All resources of this type
  */
 export function findAllResources(type, infraData) {
   const handler = resourceHandlers[type]
@@ -225,11 +178,22 @@ export function findAllResources(type, infraData) {
 }
 
 /**
- * Register a new resource handler
- * Use this to add handlers from components
+ * Check if a handler is registered for a type.
+ *
+ * @param {string} type - Resource type
+ * @returns {boolean} - True if handler exists
  */
-export function registerResourceHandler(type, handler) {
-  resourceHandlers[type] = handler
+export function hasHandler(type) {
+  return !!resourceHandlers[type]
+}
+
+/**
+ * Get list of all registered handler types.
+ *
+ * @returns {string[]} - Array of registered type names
+ */
+export function getRegisteredTypes() {
+  return Object.keys(resourceHandlers)
 }
 
 export default resourceHandlers
