@@ -58,6 +58,8 @@ export interface AwsConfig {
 export interface BackendConfig {
   /** Path to the backend Python code */
   codePath?: string;
+  /** Lambda handler (e.g., 'handler.handler' or 'backend.handler.lambda_handler') */
+  handler?: string;
   /** Lambda memory size in MB */
   memorySize?: number;
   /** Lambda timeout in seconds */

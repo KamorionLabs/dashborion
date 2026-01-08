@@ -3,7 +3,13 @@
 from typing import Any
 
 class Resource:
+    class ApiHandler:
+        name: str
+        type: str
     class App:
         name: str
         stage: str
+    class DashborionApi:
+        type: str
+        url: str
 

@@ -35,7 +35,7 @@
  */
 
 import * as pulumi from '@pulumi/pulumi';
-import * as aws from '@pulumi/aws';
+import * as awsNative from '@pulumi/aws';
 import * as fs from 'fs';
 import type { DashborionConfig } from '@dashborion/core';
 import type { DashborionArgs, DashborionOutputs } from './types.js';
@@ -65,7 +65,7 @@ export class Dashborion extends pulumi.ComponentResource {
     const enableAuth = args.auth?.provider !== 'none' && args.auth?.provider !== undefined;
 
     // Provider for us-east-1 (required for Lambda@Edge and CloudFront certificates)
-    const usEast1Provider = new aws.Provider(`${name}-us-east-1`, {
+    const usEast1Provider = new awsNative.Provider(`${name}-us-east-1`, {
       region: 'us-east-1',
       ...(args.aws?.profile ? { profile: args.aws.profile } : {}),
     }, { parent: this });
@@ -74,11 +74,11 @@ export class Dashborion extends pulumi.ComponentResource {
     const backendConfig = this.generateBackendConfig(args.config);
 
     // Create resources based on mode
-    let frontendBucket: aws.s3.Bucket | undefined;
-    let distribution: aws.cloudfront.Distribution | undefined;
-    let apiGateway: aws.apigatewayv2.Api | undefined;
-    let backendLambda: aws.lambda.Function | undefined;
-    let authLambda: aws.lambda.Function | undefined;
+    let frontendBucket: awsNative.s3.Bucket | undefined;
+    let distribution: awsNative.cloudfront.Distribution | undefined;
+    let apiGateway: awsNative.apigatewayv2.Api | undefined;
+    let backendLambda: awsNative.lambda.Function | undefined;
+    let authLambda: awsNative.lambda.Function | undefined;
 
     // Load IDP metadata if SAML auth is configured
     let idpMetadataXml = '';
@@ -92,7 +92,7 @@ export class Dashborion extends pulumi.ComponentResource {
 
     if (mode === 'standalone' || mode === 'semi-managed') {
       // Create S3 bucket for frontend
-      frontendBucket = new aws.s3.Bucket(
+      frontendBucket = new awsNative.s3.Bucket(
         `${name}-frontend`,
         {
           bucket: `dashborion-${name.toLowerCase()}-frontend`,
@@ -105,7 +105,7 @@ export class Dashborion extends pulumi.ComponentResource {
       );
 
       // Create CloudFront OAC
-      const oac = new aws.cloudfront.OriginAccessControl(
+      const oac = new awsNative.cloudfront.OriginAccessControl(
         `${name}-oac`,
         {
           name: `dashborion-${name.toLowerCase()}-oac`,
@@ -117,11 +117,11 @@ export class Dashborion extends pulumi.ComponentResource {
       );
 
       // Create Lambda@Edge for authentication (if enabled)
-      let lambdaAssociations: aws.types.input.cloudfront.DistributionDefaultCacheBehaviorLambdaFunctionAssociation[] = [];
+      let lambdaAssociations: awsNative.types.input.cloudfront.DistributionDefaultCacheBehaviorLambdaFunctionAssociation[] = [];
 
       if (enableAuth && args.auth?.provider === 'saml') {
         // Create Lambda@Edge execution role
-        const edgeRole = new aws.iam.Role(
+        const edgeRole = new awsNative.iam.Role(
           `${name}-edge-role`,
           {
             assumeRolePolicy: JSON.stringify({
@@ -144,7 +144,7 @@ export class Dashborion extends pulumi.ComponentResource {
           { parent: this }
         );
 
-        new aws.iam.RolePolicyAttachment(
+        new awsNative.iam.RolePolicyAttachment(
           `${name}-edge-basic`,
           {
             role: edgeRole.name,
@@ -154,11 +154,11 @@ export class Dashborion extends pulumi.ComponentResource {
         );
 
         // Auth protect Lambda@Edge (viewer-request)
-        authLambda = new aws.lambda.Function(
+        authLambda = new awsNative.lambda.Function(
           `${name}-auth-protect`,
           {
             name: `dashborion-${name.toLowerCase()}-auth-protect`,
-            runtime: aws.lambda.Runtime.NodeJS20dX,
+            runtime: awsNative.lambda.Runtime.NodeJS20dX,
             handler: 'index.handler',
             code: new pulumi.asset.FileArchive(args.authLambda?.codePath ?? './packages/auth/dist'),
             role: edgeRole.arn,
@@ -193,7 +193,7 @@ export class Dashborion extends pulumi.ComponentResource {
       }
 
       // Certificate and aliases for custom domain
-      let viewerCertificate: aws.types.input.cloudfront.DistributionViewerCertificate;
+      let viewerCertificate: awsNative.types.input.cloudfront.DistributionViewerCertificate;
       let aliases: string[] | undefined;
 
       if (args.domain && args.external?.certificateArn) {
@@ -210,7 +210,7 @@ export class Dashborion extends pulumi.ComponentResource {
       }
 
       // Create CloudFront distribution
-      distribution = new aws.cloudfront.Distribution(
+      distribution = new awsNative.cloudfront.Distribution(
         `${name}-cdn`,
         {
           enabled: true,
@@ -261,7 +261,7 @@ export class Dashborion extends pulumi.ComponentResource {
       );
 
       // S3 bucket policy for CloudFront access
-      new aws.s3.BucketPolicy(
+      new awsNative.s3.BucketPolicy(
         `${name}-bucket-policy`,
         {
           bucket: frontendBucket.id,
@@ -293,18 +293,25 @@ export class Dashborion extends pulumi.ComponentResource {
     }
 
     // Create backend Lambda
+    console.log('[Dashborion] Creating backend Lambda...');
+    console.log('[Dashborion] Backend codePath:', args.backend?.codePath ?? '.');
+    console.log('[Dashborion] Backend handler:', args.backend?.handler ?? 'handler.lambda_handler');
+    console.log('[Dashborion] External lambdaRoleArn:', args.external?.lambdaRoleArn);
+
     const lambdaRole =
       args.external?.lambdaRoleArn ?
         pulumi.output(args.external.lambdaRoleArn)
       : this.createLambdaRole(name, args.config);
 
-    backendLambda = new aws.lambda.Function(
+    console.log('[Dashborion] Lambda role created/resolved');
+
+    backendLambda = new awsNative.lambda.Function(
       `${name}-backend`,
       {
         name: `dashborion-${name.toLowerCase()}-api`,
-        runtime: aws.lambda.Runtime.Python3d12,
-        handler: 'handler.handler',
-        code: new pulumi.asset.FileArchive(args.backend?.codePath ?? './backend'),
+        runtime: awsNative.lambda.Runtime.Python3d12,
+        handler: args.backend?.handler ?? 'handler.lambda_handler',
+        code: new pulumi.asset.FileArchive(args.backend?.codePath ?? '.'),
         role: lambdaRole,
         memorySize: args.backend?.memorySize ?? 256,
         timeout: args.backend?.timeout ?? 30,
@@ -324,8 +331,10 @@ export class Dashborion extends pulumi.ComponentResource {
       { parent: this }
     );
 
+    console.log('[Dashborion] Lambda function resource created:', backendLambda ? 'success' : 'null');
+
     // Create API Gateway
-    apiGateway = new aws.apigatewayv2.Api(
+    apiGateway = new awsNative.apigatewayv2.Api(
       `${name}-api`,
       {
         name: `dashborion-${name.toLowerCase()}-api`,
@@ -345,7 +354,7 @@ export class Dashborion extends pulumi.ComponentResource {
     );
 
     // Lambda integration
-    const lambdaIntegration = new aws.apigatewayv2.Integration(
+    const lambdaIntegration = new awsNative.apigatewayv2.Integration(
       `${name}-integration`,
       {
         apiId: apiGateway.id,
@@ -357,7 +366,7 @@ export class Dashborion extends pulumi.ComponentResource {
     );
 
     // Default route
-    new aws.apigatewayv2.Route(
+    new awsNative.apigatewayv2.Route(
       `${name}-route`,
       {
         apiId: apiGateway.id,
@@ -368,7 +377,7 @@ export class Dashborion extends pulumi.ComponentResource {
     );
 
     // API Gateway stage
-    new aws.apigatewayv2.Stage(
+    new awsNative.apigatewayv2.Stage(
       `${name}-stage`,
       {
         apiId: apiGateway.id,
@@ -379,7 +388,7 @@ export class Dashborion extends pulumi.ComponentResource {
     );
 
     // Lambda permission for API Gateway
-    new aws.lambda.Permission(
+    new awsNative.lambda.Permission(
       `${name}-api-permission`,
       {
         action: 'lambda:InvokeFunction',
@@ -390,14 +399,23 @@ export class Dashborion extends pulumi.ComponentResource {
       { parent: this }
     );
 
-    // Set outputs
-    this.url = distribution?.domainName
-      ? pulumi.interpolate`https://${distribution.domainName}`
-      : pulumi.output('http://localhost:3000');
-
-    this.cloudfrontId = distribution?.id ?? pulumi.output('');
+    // Set outputs (use external values in managed mode, created resources otherwise)
+    if (mode === 'managed' && args.external) {
+      // Use existing external infrastructure
+      this.url = args.external.cloudfrontDomain
+        ? pulumi.output(`https://${args.external.cloudfrontDomain}`)
+        : pulumi.output('http://localhost:3000');
+      this.cloudfrontId = pulumi.output(args.external.cloudfrontDistributionId ?? '');
+      this.s3Bucket = pulumi.output(args.external.s3Bucket ?? '');
+    } else {
+      // Use created resources
+      this.url = distribution?.domainName
+        ? pulumi.interpolate`https://${distribution.domainName}`
+        : pulumi.output('http://localhost:3000');
+      this.cloudfrontId = distribution?.id ?? pulumi.output('');
+      this.s3Bucket = frontendBucket?.bucket ?? pulumi.output('');
+    }
     this.apiUrl = pulumi.interpolate`${apiGateway.apiEndpoint}`;
-    this.s3Bucket = frontendBucket?.bucket ?? pulumi.output('');
 
     // Register outputs
     this.registerOutputs({
@@ -435,7 +453,7 @@ export class Dashborion extends pulumi.ComponentResource {
       }
     }
 
-    const role = new aws.iam.Role(
+    const role = new awsNative.iam.Role(
       `${name}-lambda-role`,
       {
         assumeRolePolicy: JSON.stringify({
@@ -459,7 +477,7 @@ export class Dashborion extends pulumi.ComponentResource {
     );
 
     // Basic Lambda execution policy
-    new aws.iam.RolePolicyAttachment(
+    new awsNative.iam.RolePolicyAttachment(
       `${name}-lambda-basic`,
       {
         role: role.name,
@@ -470,7 +488,7 @@ export class Dashborion extends pulumi.ComponentResource {
 
     // Cross-account assume role policy
     if (crossAccountRoles.length > 0) {
-      new aws.iam.RolePolicy(
+      new awsNative.iam.RolePolicy(
         `${name}-cross-account`,
         {
           role: role.name,

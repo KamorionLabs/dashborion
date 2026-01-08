@@ -3,7 +3,7 @@
 /**
  * SST Configuration for Dashborion
  *
- * This simplified configuration uses the @dashborion/sst component.
+ * This configuration uses SST v3 native components.
  *
  * Configuration:
  *   - Set DASHBORION_CONFIG_DIR env var to external config directory
@@ -128,13 +128,14 @@ export default $config({
       protect: ["production"].includes(input?.stage),
       home: "aws",
       providers: {
-        aws: config.aws?.profile ? { profile: config.aws.profile } : {},
+        aws: {
+          region: config.aws?.region || "eu-west-3",
+          ...(config.aws?.profile ? { profile: config.aws.profile } : {}),
+        },
       },
     };
   },
   async run() {
-    // Dynamic imports inside run() as required by SST v3
-    const { Dashborion } = await import("@dashborion/sst");
     const fs = await import("fs");
     const path = await import("path");
 
@@ -144,16 +145,13 @@ export default $config({
 
     console.log(`Deploying Dashborion (stage: ${stage}, mode: ${config.mode})`);
 
-    // Load IDP metadata from file if configured
-    let idpMetadataPath: string | undefined;
-    if (config.auth?.saml?.idpMetadataFile) {
-      idpMetadataPath = path.join(configDir, config.auth.saml.idpMetadataFile);
-    }
-
-    // Convert cross-account roles
+    // Convert cross-account roles (skip _comment keys)
     const crossAccountRoles: Record<string, { readRoleArn: string; actionRoleArn?: string }> = {};
     if (config.crossAccountRoles) {
       for (const [accountId, role] of Object.entries(config.crossAccountRoles)) {
+        if (accountId.startsWith("_") || typeof role !== "object" || role === null) {
+          continue;
+        }
         crossAccountRoles[accountId] = {
           readRoleArn: role.readRoleArn,
           actionRoleArn: role.actionRoleArn,
@@ -161,18 +159,26 @@ export default $config({
       }
     }
 
-    // Convert projects
+    // Convert projects (skip _comment keys)
     const projects: Record<string, { displayName: string; environments: Record<string, any> }> = {};
     if (config.projects) {
       for (const [id, project] of Object.entries(config.projects)) {
+        if (id.startsWith("_") || typeof project !== "object" || project === null) {
+          continue;
+        }
         const environments: Record<string, any> = {};
-        for (const [envId, env] of Object.entries(project.environments)) {
-          environments[envId] = {
-            accountId: env.accountId,
-            region: env.region || config.aws?.region || "eu-west-3",
-            clusterName: env.clusterName,
-            namespace: env.namespace,
-          };
+        if (project.environments) {
+          for (const [envId, env] of Object.entries(project.environments)) {
+            if (envId.startsWith("_") || typeof env !== "object" || env === null) {
+              continue;
+            }
+            environments[envId] = {
+              accountId: env.accountId,
+              region: env.region || config.aws?.region || "eu-west-3",
+              clusterName: env.clusterName,
+              namespace: env.namespace,
+            };
+          }
         }
         projects[id] = {
           displayName: project.displayName,
@@ -181,76 +187,110 @@ export default $config({
       }
     }
 
-    // Build auth config
-    type AuthProvider = "saml" | "oidc" | "none";
-    const auth: {
-      provider: AuthProvider;
-      saml?: {
-        entityId: string;
-        idpMetadataUrl?: string;
-        acsPath?: string;
-        metadataPath?: string;
-      };
-    } = {
-      provider: (config.auth?.provider || "none") as AuthProvider,
-    };
-
-    if (config.auth?.provider === "saml" && config.auth.saml) {
-      auth.saml = {
-        entityId: config.auth.saml.entityId,
-        idpMetadataUrl:
-          config.auth.saml.idpMetadataUrl ||
-          (idpMetadataPath ? `file://${idpMetadataPath}` : undefined),
-        acsPath: config.auth.saml.acsPath || "/saml/acs",
-        metadataPath: config.auth.saml.metadataPath || "/saml/metadata",
-      };
+    // Projects need to include services list from original config
+    const projectsWithServices: Record<string, any> = {};
+    if (config.projects) {
+      for (const [id, project] of Object.entries(config.projects)) {
+        if (id.startsWith("_") || typeof project !== "object" || project === null) {
+          continue;
+        }
+        const environments: Record<string, any> = {};
+        if (project.environments) {
+          for (const [envId, env] of Object.entries(project.environments)) {
+            if (envId.startsWith("_") || typeof env !== "object" || env === null) {
+              continue;
+            }
+            environments[envId] = {
+              accountId: env.accountId,
+              region: env.region || config.aws?.region || "eu-west-3",
+              clusterName: env.clusterName,
+              namespace: env.namespace,
+              services: env.services || [],
+            };
+          }
+        }
+        projectsWithServices[id] = {
+          displayName: project.displayName,
+          environments,
+          idpGroupMapping: project.idpGroupMapping,
+        };
+      }
     }
 
-    // Create Dashborion infrastructure
-    const dashboard = new Dashborion("Dashboard", {
-      domain: config.frontend?.cloudfrontDomain || `dashboard-${stage}.example.com`,
-      auth,
-      config: {
-        region: config.aws?.region || "eu-west-3",
-        projects,
-        crossAccountRoles,
-        features: {
-          ecs: true,
-          pipelines: true,
-          infrastructure: true,
-        },
+    // Determine domain
+    const domain = config.frontend?.cloudfrontDomain || `dashboard-${stage}.example.com`;
+
+    // Create Backend API using SST's native Function component
+    const api = new sst.aws.ApiGatewayV2("DashborionApi", {
+      cors: {
+        allowOrigins: [`https://${domain}`],
+        allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allowHeaders: ["Content-Type", "Authorization", "x-sso-user-email"],
       },
-      mode: config.mode,
-      aws: config.aws,
-      external: config.frontend
-        ? {
-            s3Bucket: config.frontend.s3Bucket,
-            s3BucketArn: config.frontend.s3BucketArn,
-            cloudfrontDistributionId: config.frontend.cloudfrontDistributionId,
-            cloudfrontDomain: config.frontend.cloudfrontDomain,
-            certificateArn: config.frontend.certificateArn,
-            originAccessControlId: config.frontend.originAccessControlId,
-            apiGatewayId: config.apiGateway?.id,
-            apiGatewayUrl: config.apiGateway?.url,
-            lambdaRoleArn: config.lambda?.roleArn,
-          }
-        : undefined,
-      backend: {
-        codePath: "./packages/backend/src",
-        memorySize: 256,
-        timeout: 30,
-      },
-      frontendBuild: {
-        distPath: "./packages/frontend/dist",
-      },
-      idpMetadataPath,
     });
 
+    // Create the Lambda function for the API
+    // Use root handler.py wrapper that sets up Python path correctly
+    // copyFiles ensures handler.py is at bundle root where Lambda expects it
+    const apiHandler = new sst.aws.Function("ApiHandler", {
+      handler: "handler.lambda_handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "256 MB",
+      timeout: "30 seconds",
+      copyFiles: [
+        { from: "handler.py", to: "handler.py" },
+        { from: "backend", to: "backend" },
+      ],
+      environment: {
+        // Backend expects individual env vars, not a single DASHBORION_CONFIG
+        AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
+        PROJECTS: JSON.stringify(projectsWithServices),
+        CROSS_ACCOUNT_ROLES: JSON.stringify(crossAccountRoles),
+        CORS_ORIGINS: `https://${domain}`,
+      },
+      permissions: [
+        // Allow assuming cross-account roles
+        {
+          actions: ["sts:AssumeRole"],
+          resources: Object.values(crossAccountRoles).flatMap(r =>
+            [r.readRoleArn, r.actionRoleArn].filter(Boolean) as string[]
+          ),
+        },
+      ],
+    });
+
+    // Add routes to API Gateway
+    api.route("GET /api/{proxy+}", apiHandler.arn);
+    api.route("POST /api/{proxy+}", apiHandler.arn);
+    api.route("PUT /api/{proxy+}", apiHandler.arn);
+    api.route("DELETE /api/{proxy+}", apiHandler.arn);
+
+    // Add health check route
+    api.route("GET /api/health", apiHandler.arn);
+
+    // Determine outputs based on mode
+    let url: string;
+    let cloudfrontId: string;
+    let s3Bucket: string;
+
+    if (config.mode === "managed" && config.frontend) {
+      // Use existing external infrastructure
+      url = `https://${config.frontend.cloudfrontDomain}`;
+      cloudfrontId = config.frontend.cloudfrontDistributionId || "";
+      s3Bucket = config.frontend.s3Bucket || "";
+    } else {
+      // Would create new infrastructure in standalone mode
+      url = api.url;
+      cloudfrontId = "";
+      s3Bucket = "";
+    }
+
     return {
-      url: dashboard.url,
-      cloudfrontId: dashboard.cloudfrontId,
-      apiUrl: dashboard.apiUrl,
-      s3Bucket: dashboard.s3Bucket,
+      url,
+      cloudfrontId,
+      apiUrl: api.url,
+      s3Bucket,
     };
   },
 });
