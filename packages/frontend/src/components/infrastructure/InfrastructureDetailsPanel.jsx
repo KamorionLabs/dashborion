@@ -90,7 +90,7 @@ export default function InfrastructureDetailsPanel({ component, infrastructure, 
         {type === 'task' && TaskDetails && <TaskDetails task={data} env={env} onOpenLogsPanel={onOpenLogsPanel} />}
         {type === 'pipeline' && <PipelineDetails data={data} onOpenLogsPanel={onOpenLogsPanel} />}
         {/* Routing types */}
-        {type === 'routeTable' && <RouteTableDetails routeTable={data} env={env} />}
+        {type === 'routeTable' && <RouteTableDetails routeTable={data} env={env} currentProjectId={currentProjectId} />}
         {type === 'subnet' && <SubnetDetails subnet={data} env={env} currentProjectId={currentProjectId} />}
         {type === 'igw' && <IGWDetails igw={data} env={env} />}
         {type === 'endpoint' && <EndpointDetails endpoint={data} env={env} />}

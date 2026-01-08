@@ -33,16 +33,71 @@ function InfoRow({ label, value, mono = false, copy = false, color }) {
 
 /**
  * Route Table Details - shows routes and associations
+ * Can fetch its own data when accessed via deep-link (only has ID)
  */
-export function RouteTableDetails({ routeTable, env }) {
-  if (!routeTable) {
+export function RouteTableDetails({ routeTable, env, currentProjectId }) {
+  const [fetchedData, setFetchedData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  // Determine if we need to fetch data (only have ID, no routes)
+  const needsFetch = routeTable && !routeTable.routes && routeTable.id
+
+  // Fetch routing data to find the route table
+  useEffect(() => {
+    if (!needsFetch || !env || !currentProjectId) return
+
+    const fetchRoutingData = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const response = await fetchWithRetry(`/api/${currentProjectId}/infrastructure/${env}/routing`)
+        if (!response.ok) {
+          throw new Error(`Failed to fetch routing data: ${response.status}`)
+        }
+        const result = await response.json()
+        // Find our route table in the response
+        const rt = result?.routing?.routeTables?.find(r => r.id === routeTable.id)
+        if (rt) {
+          setFetchedData(rt)
+        } else {
+          setError('Route table not found in routing data')
+        }
+      } catch (err) {
+        console.error('Error fetching routing data:', err)
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchRoutingData()
+  }, [needsFetch, env, currentProjectId, routeTable?.id])
+
+  // Use fetched data if available, otherwise use prop
+  const rt = fetchedData || routeTable
+
+  if (!rt) {
     return <p className="text-red-400">Route table data not available</p>
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <RefreshCw className="w-6 h-6 text-cyan-400 animate-spin" />
+        <span className="ml-2 text-gray-400">Loading route table...</span>
+      </div>
+    )
+  }
+
+  if (error) {
+    return <p className="text-red-400">{error}</p>
   }
 
   // Build console URL
   const region = 'eu-west-3'
-  const consoleUrl = routeTable.consoleUrl ||
-    `https://${region}.console.aws.amazon.com/vpcconsole/home?region=${region}#RouteTables:routeTableId=${routeTable.id}`
+  const consoleUrl = rt.consoleUrl ||
+    `https://${region}.console.aws.amazon.com/vpcconsole/home?region=${region}#RouteTables:routeTableId=${rt.id}`
 
   return (
     <div className="space-y-4">
@@ -53,17 +108,17 @@ export function RouteTableDetails({ routeTable, env }) {
           Route Table Info
         </h3>
         <div className="space-y-2 text-sm">
-          <InfoRow label="ID" value={routeTable.id} mono copy />
-          <InfoRow label="Name" value={routeTable.name} />
-          <InfoRow label="VPC ID" value={routeTable.vpcId} mono copy />
+          <InfoRow label="ID" value={rt.id} mono copy />
+          <InfoRow label="Name" value={rt.name} />
+          <InfoRow label="VPC ID" value={rt.vpcId} mono copy />
           <InfoRow
             label="Main"
-            value={routeTable.isMain ? 'Yes' : 'No'}
-            color={routeTable.isMain ? 'text-green-400' : 'text-gray-400'}
+            value={rt.isMain ? 'Yes' : 'No'}
+            color={rt.isMain ? 'text-green-400' : 'text-gray-400'}
           />
           <InfoRow
             label="Associations"
-            value={`${routeTable.subnetAssociations?.length || routeTable.associations?.length || 0} subnets`}
+            value={`${rt.subnetAssociations?.length || rt.associations?.length || 0} subnets`}
           />
         </div>
       </div>
@@ -72,10 +127,10 @@ export function RouteTableDetails({ routeTable, env }) {
       <div className="bg-gray-900 rounded-lg p-4">
         <h3 className="text-sm font-medium text-gray-300 mb-3 flex items-center gap-2">
           <Network className="w-4 h-4" />
-          Routes ({routeTable.routes?.length || 0})
+          Routes ({rt.routes?.length || 0})
         </h3>
         <div className="space-y-2 max-h-64 overflow-y-auto">
-          {routeTable.routes?.map((route, idx) => {
+          {rt.routes?.map((route, idx) => {
             // Get target info - handle both old and new field formats
             const targetType = route.targetType || (route.gatewayId?.startsWith('igw-') ? 'internet-gateway' : route.gatewayId === 'local' ? 'local' : route.natGatewayId ? 'nat-gateway' : route.transitGatewayId ? 'transit-gateway' : route.vpcPeeringConnectionId ? 'vpc-peering' : route.networkInterfaceId ? 'network-interface' : route.instanceId ? 'instance' : null)
             const targetId = route.targetId || route.gatewayId || route.natGatewayId || route.transitGatewayId || route.vpcPeeringConnectionId || route.networkInterfaceId || route.instanceId || route.target
@@ -121,7 +176,7 @@ export function RouteTableDetails({ routeTable, env }) {
               </div>
             )
           })}
-          {(!routeTable.routes || routeTable.routes.length === 0) && (
+          {(!rt.routes || rt.routes.length === 0) && (
             <div className="text-gray-500 italic text-xs">No routes</div>
           )}
         </div>
@@ -130,7 +185,7 @@ export function RouteTableDetails({ routeTable, env }) {
       {/* Associations */}
       {(() => {
         // Handle both formats: subnetAssociations (array of IDs) or associations (array of objects)
-        const associations = routeTable.subnetAssociations || routeTable.associations || []
+        const associations = rt.subnetAssociations || rt.associations || []
         const assocCount = associations.length
 
         return (
