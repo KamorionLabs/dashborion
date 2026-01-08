@@ -12,4 +12,7 @@ class Resource:
     class DashborionApi:
         type: str
         url: str
+    class TokensTable:
+        name: str
+        type: str
 

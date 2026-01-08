@@ -192,12 +192,20 @@ function ServiceCards({
           return (
             <div
               key={svc}
+              role="button"
+              tabIndex={0}
               className={`bg-gray-900 rounded-lg border cursor-pointer transition-all hover:border-gray-500 ${
                 isDeploying ? 'border-yellow-500/70 animate-pulse' :
                 health === 'healthy' || health === 'HEALTHY' ? 'border-green-500/50' :
                 health === 'unhealthy' || health === 'UNHEALTHY' ? 'border-red-500/50' : 'border-gray-600'
               }`}
               onClick={() => onComponentSelect?.('service', env, serviceWithName)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onComponentSelect?.('service', env, serviceWithName)
+                }
+              }}
             >
               {/* Header */}
               <div className={`px-3 py-2 rounded-t-lg flex items-center justify-between ${

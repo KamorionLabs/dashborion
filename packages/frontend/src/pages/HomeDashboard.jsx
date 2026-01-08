@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import {
   RefreshCw, Server, Clock, ExternalLink, Package,
   CheckCircle, XCircle, Network, X, LogOut, User
@@ -8,6 +8,8 @@ import {
 import { useConfig, useConfigHelpers } from '../ConfigContext'
 // Auth hook
 import { useAuth } from '../hooks/useAuth'
+// URL state hook for deep linking
+import { useDashboardUrl } from '../hooks/useDashboardUrl'
 // Utilities
 import { fetchWithRetry, sessionExpiredEvent } from '../utils'
 // Components
@@ -22,7 +24,29 @@ export default function HomeDashboard() {
   // URL params for deep linking
   const { project: urlProject, env: urlEnv } = useParams()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
+
+  // URL state hook - syncs state with search params for deep linking
+  // Destructure to get stable function references
+  const {
+    service: urlService,
+    pipeline: urlPipeline,
+    resource: urlResource,
+    resourceId: urlResourceId,
+    logs: urlLogs,
+    events: urlEvents,
+    hours: urlHours,
+    types: urlTypes,
+    selectService: urlSelectService,
+    selectPipeline: urlSelectPipeline,
+    selectResource: urlSelectResource,
+    clearSelection: urlClearSelection,
+    openLogs: urlOpenLogs,
+    closeLogs: urlCloseLogs,
+    closeAllLogs: urlCloseAllLogs,
+    setEventsVisible: urlSetEventsVisible,
+    setEventsHours: urlSetEventsHours,
+    setEventsTypes: urlSetEventsTypes,
+  } = useDashboardUrl()
 
   // Auth state
   const { user, logout } = useAuth()
@@ -30,11 +54,11 @@ export default function HomeDashboard() {
   const appConfig = useConfig()
   const { getAwsConsoleUrl, getCodePipelineConsoleUrl, getServiceName, getDefaultAzs } = useConfigHelpers()
 
-  // Derive constants from config
-  const ENVIRONMENTS = appConfig.environments || []
-  const SERVICES = appConfig.services || []
-  const AWS_ACCOUNTS = appConfig.aws?.accounts || {}
-  const ENV_COLORS = appConfig.envColors || {}
+  // Derive constants from config - memoize to avoid infinite loops in useEffects
+  const ENVIRONMENTS = useMemo(() => appConfig.environments || [], [appConfig.environments])
+  const SERVICES = useMemo(() => appConfig.services || [], [appConfig.services])
+  const AWS_ACCOUNTS = useMemo(() => appConfig.aws?.accounts || {}, [appConfig.aws?.accounts])
+  const ENV_COLORS = useMemo(() => appConfig.envColors || {}, [appConfig.envColors])
 
   // Session expiration state
   const [sessionExpired, setSessionExpired] = useState(false)
@@ -70,7 +94,6 @@ export default function HomeDashboard() {
   // UI states
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
-  const [selectedService, setSelectedService] = useState(null)
   const [serviceDetails, setServiceDetails] = useState(null)
   const [detailsLoading, setDetailsLoading] = useState(false)
   // Use URL env param if provided, otherwise first environment
@@ -78,7 +101,65 @@ export default function HomeDashboard() {
     if (urlEnv && ENVIRONMENTS.includes(urlEnv)) return urlEnv
     return ENVIRONMENTS[0] || 'staging'
   })
-  const [selectedInfraComponent, setSelectedInfraComponent] = useState(null)
+
+  // Derive selectedService from URL state (format: serviceName)
+  // Internal format is env-service, so we build it from current env + URL service
+  const selectedService = useMemo(() => {
+    if (urlService) {
+      return `${selectedInfraEnv}-${urlService}`
+    }
+    return null
+  }, [urlService, selectedInfraEnv])
+
+  // Derive selectedInfraComponent from URL state (enriched with actual data)
+  const selectedInfraComponent = useMemo(() => {
+    if (urlPipeline) {
+      // Enrich with actual pipeline and images data
+      return {
+        type: 'pipeline',
+        env: 'shared',
+        data: {
+          service: urlPipeline,
+          pipeline: pipelines[urlPipeline],
+          images: images[urlPipeline]
+        }
+      }
+    }
+    if (urlResource && urlResourceId) {
+      return { type: urlResource, env: selectedInfraEnv, data: { id: urlResourceId } }
+    }
+    if (urlResource) {
+      return { type: urlResource, env: selectedInfraEnv, data: null }
+    }
+    return null
+  }, [urlPipeline, urlResource, urlResourceId, selectedInfraEnv, pipelines, images])
+
+  // Setters that update URL
+  const setSelectedService = useCallback((value) => {
+    if (value) {
+      // value is in format env-service, extract just service name
+      const parts = value.split('-')
+      const serviceName = parts[parts.length - 1]
+      urlSelectService(serviceName)
+    } else {
+      urlClearSelection()
+    }
+  }, [urlSelectService, urlClearSelection])
+
+  const setSelectedInfraComponent = useCallback((value, skipClear = false) => {
+    if (!value) {
+      // Only clear if not being called alongside setSelectedService
+      if (!skipClear) {
+        urlClearSelection()
+      }
+    } else if (value.type === 'pipeline') {
+      urlSelectPipeline(value.data?.service)
+    } else if (value.type && value.data?.id) {
+      urlSelectResource(value.type, value.data.id)
+    } else if (value.type) {
+      urlSelectResource(value.type, null)
+    }
+  }, [urlClearSelection, urlSelectPipeline, urlSelectResource])
 
   // Sync URL with selected environment (use user from useAuth instead of local state)
   const handleEnvChange = useCallback((env) => {
@@ -95,18 +176,53 @@ export default function HomeDashboard() {
     }
   }, [urlEnv, ENVIRONMENTS, selectedInfraEnv])
 
-  // Bottom logs panel state - supports multiple tabs
-  const [bottomLogsTabs, setBottomLogsTabs] = useState([]) // [{ id, env, service, autoTail, type }, ...]
+  // Bottom logs panel state - derived from URL + internal state for full tab data
+  const [bottomLogsTabsInternal, setBottomLogsTabsInternal] = useState([]) // [{ id, env, service, autoTail, type }, ...]
   const [activeBottomTab, setActiveBottomTab] = useState(null) // id of active tab
 
-  // Events timeline panel state
+  // Sync bottomLogsTabs with URL logs param
+  const bottomLogsTabs = useMemo(() => {
+    // If URL has logs param, ensure those services are in tabs
+    if (!urlLogs || urlLogs.length === 0) return bottomLogsTabsInternal
+
+    // Add any URL logs not already in internal state
+    const existingServices = new Set(bottomLogsTabsInternal.map(t => t.service))
+    const newTabs = urlLogs
+      .filter(service => !existingServices.has(service))
+      .map(service => ({
+        id: `${selectedInfraEnv}-${service}`,
+        env: selectedInfraEnv,
+        service,
+        type: 'logs',
+        autoTail: true
+      }))
+
+    return [...bottomLogsTabsInternal, ...newTabs]
+  }, [urlLogs, bottomLogsTabsInternal, selectedInfraEnv])
+
+  // Events timeline panel state - some from URL, some internal
   const [events, setEvents] = useState([])
   const [eventsLoading, setEventsLoading] = useState(false)
-  const [eventsPanelVisible, setEventsPanelVisible] = useState(true)
   const [eventsPanelWidth, setEventsPanelWidth] = useState(320)
-  const [eventsHours, setEventsHours] = useState(24)
-  const [eventsTypeFilter, setEventsTypeFilter] = useState(['build', 'deploy', 'rollback', 'cache_invalidation', 'rds_stop', 'rds_start']) // exclude 'scale' by default
   const [eventsServiceFilter, setEventsServiceFilter] = useState([]) // empty = all services
+
+  // Events visibility and hours from URL (with defaults)
+  const eventsPanelVisible = urlEvents !== false // Default to true if not explicitly false
+  const eventsHours = urlHours || 24
+  const eventsTypeFilter = urlTypes || ['build', 'deploy', 'rollback', 'cache_invalidation', 'rds_stop', 'rds_start']
+
+  // Setters that update URL for events
+  const setEventsPanelVisible = useCallback((visible) => {
+    urlSetEventsVisible(visible)
+  }, [urlSetEventsVisible])
+
+  const setEventsHours = useCallback((hours) => {
+    urlSetEventsHours(hours)
+  }, [urlSetEventsHours])
+
+  const setEventsTypeFilter = useCallback((types) => {
+    urlSetEventsTypes(types)
+  }, [urlSetEventsTypes])
 
   // Refs for stable callback access (avoids stale closures)
   const eventsHoursRef = useRef(eventsHours)
@@ -134,10 +250,10 @@ export default function HomeDashboard() {
       setServiceConfig({})
       setInfrastructure({})
       setEvents([])
-      setSelectedService(null)
-      setSelectedInfraComponent(null)
-      setBottomLogsTabs([])
+      urlClearSelection()
+      setBottomLogsTabsInternal([])
       setActiveBottomTab(null)
+      urlCloseAllLogs()
       setLastUpdated(null)
       // Reset selected env to first env of new project
       if (ENVIRONMENTS.length > 0) {
@@ -677,7 +793,7 @@ export default function HomeDashboard() {
   // Bottom logs panel tab management
   const openLogsTab = useCallback((logsData) => {
     const tabId = `${logsData.env}-${logsData.service}`
-    setBottomLogsTabs(prev => {
+    setBottomLogsTabsInternal(prev => {
       // Check if tab already exists
       const existingTab = prev.find(t => t.id === tabId)
       if (existingTab) {
@@ -689,27 +805,45 @@ export default function HomeDashboard() {
       const newTab = { id: tabId, ...logsData }
       const newTabs = [...prev, newTab].slice(-5) // Keep last 5 tabs
       setActiveBottomTab(tabId)
+
+      // Update URL with logs services (only for regular logs, not build/deploy)
+      if (logsData.type !== 'build' && logsData.type !== 'deploy' && logsData.type !== 'task') {
+        const currentServices = newTabs
+          .filter(t => t.type !== 'build' && t.type !== 'deploy' && t.type !== 'task')
+          .map(t => t.service)
+        urlOpenLogs([...new Set(currentServices)])
+      }
+
       return newTabs
     })
-  }, [])
+  }, [urlOpenLogs])
 
   const closeLogsTab = useCallback((tabId) => {
-    setBottomLogsTabs(prev => {
+    setBottomLogsTabsInternal(prev => {
+      const closedTab = prev.find(t => t.id === tabId)
       const newTabs = prev.filter(t => t.id !== tabId)
+
       // If we closed the active tab, activate another one
       if (activeBottomTab === tabId && newTabs.length > 0) {
         setActiveBottomTab(newTabs[newTabs.length - 1].id)
       } else if (newTabs.length === 0) {
         setActiveBottomTab(null)
       }
+
+      // Update URL - remove closed service from logs param
+      if (closedTab && closedTab.type !== 'build' && closedTab.type !== 'deploy' && closedTab.type !== 'task') {
+        urlCloseLogs(closedTab.service)
+      }
+
       return newTabs
     })
-  }, [activeBottomTab])
+  }, [activeBottomTab, urlCloseLogs])
 
   const closeAllLogsTabs = useCallback(() => {
-    setBottomLogsTabs([])
+    setBottomLogsTabsInternal([])
     setActiveBottomTab(null)
-  }, [])
+    urlCloseAllLogs()
+  }, [urlCloseAllLogs])
 
   // Open build logs in bottom panel
   const handleOpenBuildLogs = useCallback((service) => {
@@ -792,12 +926,13 @@ export default function HomeDashboard() {
       // Extract service name from full name (prefix-env-service -> service)
       const serviceName = data.name.split('-').pop()
       setSelectedService(`${env}-${serviceName}`)
-      setSelectedInfraComponent(null)
+      // Pass skipClear=true to avoid clearing the URL params we just set
+      setSelectedInfraComponent(null, true)
     } else {
       setSelectedInfraComponent({ type, env, data })
       setSelectedService(null)
     }
-  }, [])
+  }, [setSelectedService, setSelectedInfraComponent])
 
   // Handle click on timeline event - open relevant panel
   const handleEventClick = useCallback((event) => {
@@ -831,7 +966,7 @@ export default function HomeDashboard() {
         setSelectedService(null)
       }
     }
-  }, [selectedInfraEnv, pipelines, images, infrastructure])
+  }, [selectedInfraEnv, pipelines, images, infrastructure, setSelectedService, setSelectedInfraComponent])
 
   // Loading skeleton component
   const LoadingSkeleton = ({ className = '' }) => (

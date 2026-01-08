@@ -20,11 +20,34 @@ export default function Login() {
   // Get return URL
   const returnUrl = new URLSearchParams(location.search).get('returnUrl') || '/';
 
-  // Check if already logged in
+  // Check if already logged in - validate token before redirecting
   useEffect(() => {
     const token = localStorage.getItem('dashborion_token');
     if (token) {
-      navigate(returnUrl, { replace: true });
+      // Validate token with API before redirecting
+      fetch('/api/auth/me', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+        .then(res => {
+          if (res.ok) {
+            // Token is valid, redirect
+            navigate(returnUrl, { replace: true });
+          } else {
+            // Token is invalid, clear it to prevent redirect loop
+            console.log('Invalid token detected, clearing localStorage');
+            localStorage.removeItem('dashborion_token');
+            localStorage.removeItem('dashborion_refresh_token');
+            localStorage.removeItem('dashborion_user');
+            localStorage.removeItem('dashborion_auth_method');
+          }
+        })
+        .catch(() => {
+          // Network error, clear tokens to be safe
+          localStorage.removeItem('dashborion_token');
+          localStorage.removeItem('dashborion_refresh_token');
+          localStorage.removeItem('dashborion_user');
+          localStorage.removeItem('dashborion_auth_method');
+        });
     }
   }, [navigate, returnUrl]);
 
