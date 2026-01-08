@@ -72,6 +72,8 @@ frontend/build/
 !frontend/public/*.svg
 !docs/*.png
 !docs/*.svg
+!docs/screenshots/*.png
+!docs/screenshots/*.svg
 
 # Logs
 *.log

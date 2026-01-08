@@ -1,80 +1,137 @@
-# Dashborion
+<p align="center">
+  <img src="docs/screenshots/logo-placeholder.png" alt="Dashborion Logo" width="200" />
+</p>
 
-**Multi-cloud infrastructure dashboard with CLI** - Visualize and manage ECS, EKS, and CI/CD pipelines.
+<h1 align="center">Dashborion</h1>
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.9+-green.svg)
-![Node](https://img.shields.io/badge/node-18+-green.svg)
+<p align="center">
+  <strong>Modern infrastructure operations dashboard for AWS ECS, EKS, and CI/CD pipelines</strong>
+</p>
+
+<p align="center">
+  <a href="#features">Features</a> •
+  <a href="#screenshots">Screenshots</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#documentation">Documentation</a> •
+  <a href="#contributing">Contributing</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License" />
+  <img src="https://img.shields.io/badge/python-3.9+-green.svg" alt="Python" />
+  <img src="https://img.shields.io/badge/node-18+-green.svg" alt="Node" />
+  <img src="https://img.shields.io/badge/SST-v3-orange.svg" alt="SST" />
+  <img src="https://img.shields.io/badge/React-18-61dafb.svg" alt="React" />
+</p>
+
+---
 
 ## Overview
 
-Dashborion is a comprehensive infrastructure visualization and management tool that provides:
+Dashborion is a comprehensive infrastructure visualization and operations tool designed for DevOps teams managing AWS workloads. It provides real-time visibility into ECS services, infrastructure components, CI/CD pipelines, and enables quick operational actions—all through a modern web interface and CLI.
 
-- **Web Dashboard**: Real-time infrastructure monitoring with SSO authentication
-- **CLI Tool**: Command-line interface with AWS SigV4 authentication
-- **Diagram Generation**: Automatic architecture diagram creation with Confluence publishing
+### Why Dashborion?
 
-### Supported Platforms
+- **Single pane of glass** - View services, infrastructure, pipelines, and events in one place
+- **Deep AWS integration** - Native support for ECS, ALB, RDS, ElastiCache, CloudFront, VPC
+- **Multi-environment** - Switch between staging, preprod, and production instantly
+- **Actionable** - Deploy, restart, scale services, invalidate caches, control RDS
+- **Shareable URLs** - Deep-link to any view, service, or resource for collaboration
+- **Secure by default** - Native SAML SSO, RBAC, audit logging
 
-| Compute | CI/CD | Cloud |
-|---------|-------|-------|
-| AWS ECS (Fargate & EC2) | AWS CodePipeline | AWS |
-| AWS EKS | ArgoCD | - |
-| Kubernetes | Jenkins | - |
-| - | GitLab CI | - |
-| - | Bitbucket Pipelines | - |
+---
+
+## Screenshots
+
+### Simple View
+Overview of services, pipelines, and infrastructure status at a glance.
+
+![Simple View](docs/screenshots/dashboard-simple-view.png)
+
+### Network View
+Detailed VPC topology with subnets, ENIs, security groups, and data stores.
+
+![Network View](docs/screenshots/dashboard-network-view.png)
+
+### Routing View
+Route tables, NAT gateways, VPC endpoints, and subnet associations.
+
+![Routing View](docs/screenshots/dashboard-routing-view.png)
+
+---
 
 ## Features
 
 ### Web Dashboard
 
-- **Services View**: ECS/EKS services, tasks, deployments, logs
-- **Infrastructure View**: ALB, RDS, ElastiCache, CloudFront, VPC, Security Groups
-- **Pipelines View**: Build and deploy pipelines, ECR images
-- **Events Timeline**: CloudTrail, ECS events, deployments
-- **Network View**: ENIs, subnets, route tables, security group rules
-- **Actions**: Force deploy, cache invalidation, start/stop RDS
-- **Native SSO**: Built-in SAML authentication via Lambda@Edge (no external module)
-- **Multi-tenant Authorization**: RBAC with project/environment granularity
-- **Deep-linkable URLs**: Bookmark and share specific views, services, and resources
+| Feature | Description |
+|---------|-------------|
+| **Services** | ECS services status, tasks, deployments, real-time logs |
+| **Infrastructure** | ALB, RDS, ElastiCache, CloudFront, S3, VPC components |
+| **Pipelines** | Build/deploy pipelines, ECR images, execution history |
+| **Events Timeline** | CloudTrail, ECS events, deployments with filtering |
+| **Network Explorer** | ENIs, security groups with expandable rules |
+| **Quick Actions** | Deploy, restart, scale, invalidate cache, RDS control |
+| **Deep-linking** | Bookmark and share any view or resource |
+| **Native SSO** | Built-in SAML via Lambda@Edge (no external modules) |
+| **RBAC** | Project/environment scoped roles (viewer, operator, admin) |
 
-### CLI Tool (`dashborion`)
+### CLI Tool
 
 ```bash
-# Authentication (Device Flow or AWS SSO)
-dashborion auth login              # Opens browser for SSO
+# Authentication
+dashborion auth login              # Device flow (opens browser)
 dashborion auth login --use-sso    # Reuse AWS SSO session
 dashborion auth whoami             # Show current user
-dashborion auth logout
 
-# List services
-dashborion services list --env staging --profile myprofile
-
-# Show service details
+# Services
+dashborion services list --env staging
 dashborion services describe backend --env production
 
-# Infrastructure overview
+# Infrastructure
 dashborion infra show --env staging --output json
 
-# Generate architecture diagram
+# Diagrams
 dashborion diagram generate --env staging --output architecture.png
-
-# Kubernetes resources (EKS)
-dashborion k8s pods --context arn:aws:eks:... --namespace staging
-dashborion k8s services --context ... --output table
-
-# Publish diagram to Confluence
-dashborion diagram publish --env staging --confluence-page 12345
+dashborion diagram publish --confluence-page 12345
 ```
 
-### Diagram Generation
+### Supported Platforms
 
-- Automatic architecture diagrams using [diagrams](https://diagrams.mingrammer.com/)
-- AWS resources visualization (ALB, RDS, API Gateway, VPC)
-- Kubernetes resources (Pods, Services, Ingresses, Nodes)
-- Confluence integration for documentation
+| Compute | CI/CD | Storage |
+|---------|-------|---------|
+| AWS ECS Fargate | AWS CodePipeline | RDS PostgreSQL/MySQL |
+| AWS ECS EC2 | AWS CodeBuild | ElastiCache (Redis/Valkey) |
+| AWS EKS | ArgoCD | S3 |
+| Kubernetes | GitHub Actions | CloudFront |
 
-## Installation
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+
+- Python 3.9+ (for CLI)
+- AWS credentials configured
+
+### Dashboard Deployment
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/KamorionLabs/dashborion.git
+cd dashborion
+
+# 2. Install dependencies
+npm install
+
+# 3. Configure deployment
+cp infra.config.example.json infra.config.json
+# Edit: mode, aws.region, aws.profile
+
+# 4. Deploy with SST
+npx sst deploy --stage production
+```
 
 ### CLI Installation
 
@@ -87,62 +144,63 @@ brew tap KamorionLabs/tap
 brew install dashborion-cli
 ```
 
-### Dashboard Deployment
+---
 
-The dashboard uses **SST v3** (built on Pulumi) for deployment with three modes:
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        CloudFront                                │
+│                    (Lambda@Edge SSO)                             │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+          ┌───────────────┴───────────────┐
+          │                               │
+          ▼                               ▼
+┌─────────────────┐             ┌─────────────────┐
+│   S3 (Frontend) │             │  API Gateway    │
+│   React SPA     │             │  + Lambda       │
+└─────────────────┘             └────────┬────────┘
+                                         │
+                    ┌────────────────────┼────────────────────┐
+                    │                    │                    │
+                    ▼                    ▼                    ▼
+           ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+           │   Staging    │    │   Preprod    │    │  Production  │
+           │   Account    │    │   Account    │    │   Account    │
+           │  (ECS, RDS)  │    │  (ECS, RDS)  │    │  (ECS, RDS)  │
+           └──────────────┘    └──────────────┘    └──────────────┘
+```
+
+### Deployment Modes
 
 | Mode | Frontend | Backend | Use Case |
 |------|----------|---------|----------|
-| **Standalone** | SST creates S3 + CloudFront | SST creates Lambda + IAM role | Development, quick demos |
-| **Semi-managed** | SST creates S3 + CloudFront | Lambda uses Terraform-managed IAM role | Production with managed Lambda role |
-| **Managed** | SST syncs to existing S3 + CloudFront | Lambda uses Terraform-managed IAM role | Full IaC control |
+| **Standalone** | SST creates S3 + CloudFront | SST creates Lambda + IAM | Dev, demos |
+| **Semi-managed** | SST creates S3 + CloudFront | Lambda uses Terraform IAM role | Production |
+| **Managed** | SST syncs to existing S3 + CloudFront | Lambda uses Terraform IAM role | Full IaC |
 
-#### Quick Start
+---
 
-```bash
-# 1. Install dependencies
-npm install
+## Configuration
 
-# 2. Copy and configure infra.config.json
-cp infra.config.example.json infra.config.json
-# Edit mode, aws.region, aws.profile as needed
-
-# 3. Deploy
-npx sst deploy --stage production
-```
-
-#### Configuration (`infra.config.json`)
+### Dashboard Config (`config.json`)
 
 ```json
 {
-  "mode": "standalone",
-  "aws": {
-    "region": "eu-west-3",
-    "profile": "myprofile/AdministratorAccess"
-  }
-}
-```
-
-For **semi-managed** or **managed** modes, additional configuration is required:
-
-```json
-{
-  "mode": "semi-managed",
-  "aws": { "region": "eu-west-3", "profile": "myprofile" },
-  "lambda": { "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role" },
-  "crossAccountRoles": {
-    "staging": {
-      "accountId": "111111111111",
-      "readRoleArn": "arn:aws:iam::111111111111:role/dashborion-read-role",
-      "actionRoleArn": "arn:aws:iam::111111111111:role/dashborion-action-role"
+  "projects": [{
+    "id": "my-project",
+    "name": "My Project",
+    "environments": ["staging", "production"],
+    "services": ["backend", "frontend", "api"],
+    "infrastructure": {
+      "discoveryTags": { "Project": "my-project" }
     }
-  }
+  }]
 }
 ```
 
-#### Authentication Configuration
-
-Enable native SAML authentication via Lambda@Edge:
+### Authentication (`infra.config.json`)
 
 ```json
 {
@@ -151,383 +209,160 @@ Enable native SAML authentication via Lambda@Edge:
     "provider": "saml",
     "saml": {
       "entityId": "dashborion",
-      "idpMetadataUrl": "https://portal.sso.eu-west-3.amazonaws.com/saml/metadata/..."
-    },
-    "sessionTtlSeconds": 3600,
-    "cookieDomain": ".example.com"
+      "idpMetadataUrl": "https://portal.sso.region.amazonaws.com/saml/metadata/..."
+    }
   },
   "authorization": {
     "enabled": true,
-    "defaultRole": "viewer",
-    "requireMfaForProduction": true
+    "defaultRole": "viewer"
   }
 }
 ```
 
-#### Terraform Modules
+---
 
-The `terraform/modules/` directory provides IAM roles for SST deployment:
+## Deep-Linking
 
-| Module | Description |
-|--------|-------------|
-| `sst-deploy-role` | IAM role for SST/Pulumi to deploy resources |
-| `sst-lambda-role` | Lambda execution role with dashboard permissions |
-| `cross-account-roles` | Read/action roles for cross-account access |
-| `dashborion-auth-infra` | DynamoDB tables for auth (permissions, audit, tokens, device_codes) |
+Share specific views and resources with bookmarkable URLs:
 
-```bash
-# Deploy Terraform modules first (for semi-managed/managed modes)
-cd terraform
-terraform init
-terraform apply
+```
+# Service details
+/project/staging?service=backend
+
+# Infrastructure resource
+/project/staging?view=network&resource=subnet&id=subnet-abc123
+
+# Route table with details panel
+/project/staging?view=routing&resource=routeTable&id=rtb-xyz789
+
+# Logs with multiple tabs
+/project/staging?logs=backend,frontend
+
+# Events timeline with filters
+/project/staging?events=true&hours=48&types=deploy,error
 ```
 
-## Quick Start
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `view` | View mode | `simple`, `network`, `routing` |
+| `service` | ECS service | `backend` |
+| `resource` | Resource type | `subnet`, `routeTable`, `rds` |
+| `id` | Resource ID | `subnet-abc123` |
+| `logs` | Log tabs | `backend,frontend` |
+| `events` | Show timeline | `true` |
 
-### CLI Setup
-
-1. Configure AWS credentials:
-```bash
-aws configure --profile myprofile
-```
-
-2. Create a configuration file `~/.dashborion/config.yaml`:
-```yaml
-default_profile: myprofile
-default_region: eu-west-3
-
-environments:
-  staging:
-    type: ecs
-    cluster: my-staging-cluster
-    aws_profile: myprofile
-    aws_region: eu-west-3
-
-  production:
-    type: ecs
-    cluster: my-prod-cluster
-    aws_profile: prod-profile
-    aws_region: eu-west-3
-
-  eks-staging:
-    type: eks
-    context: arn:aws:eks:eu-west-3:123456789:cluster/my-eks
-    namespaces:
-      - staging
-      - common
-    aws_profile: myprofile
-```
-
-3. Run commands:
-```bash
-dashborion services list --env staging
-dashborion infra show --env production --output table
-```
-
-### Dashboard Setup
-
-1. Configure deployment:
-```bash
-cp infra.config.example.json infra.config.json
-# Edit mode, aws.region, aws.profile
-```
-
-2. Deploy with SST:
-```bash
-npm install
-npx sst deploy --stage production
-```
-
-3. (Optional) For semi-managed/managed modes, deploy Terraform modules first:
-```bash
-cd terraform/modules
-# Deploy sst-deploy-role, sst-lambda-role, cross-account-roles
-terraform init && terraform apply
-```
-
-4. Configure SSO (optional):
-   - Set up AWS Identity Center or any SAML provider
-   - Configure CloudFront Lambda@Edge for authentication
-
-5. Access the dashboard at the URL output by SST
+---
 
 ## Project Structure
 
 ```
 dashborion/
-├── auth/                  # Lambda@Edge authentication (TypeScript)
-│   ├── src/
-│   │   ├── handlers/      # protect.ts, acs.ts, metadata.ts
-│   │   └── utils/         # crypto.ts, saml.ts, session.ts
-│   └── scripts/
-│       └── bundle.js      # Lambda@Edge bundler
-│
-├── frontend/              # React dashboard application
-│   ├── src/
-│   │   ├── components/    # UI components
-│   │   ├── hooks/         # useAuth.js, etc.
-│   │   ├── pages/         # DeviceAuth.jsx (CLI verification)
-│   │   ├── utils/         # Utilities and helpers
-│   │   └── App.jsx        # Main application
-│   └── public/
-│       └── config.json    # Runtime configuration
-│
-├── backend/               # Lambda API backend
-│   ├── handler.py         # Lambda entry point
-│   ├── auth/              # Authorization module
-│   │   ├── middleware.py  # Request authorization
-│   │   ├── decorators.py  # @require_permission
-│   │   ├── permissions.py # Permission checking
-│   │   ├── device_flow.py # RFC 8628 Device Authorization
-│   │   ├── handlers.py    # Auth API endpoints
-│   │   └── models.py      # AuthContext, Permission, Role
-│   ├── routes/            # API route handlers
-│   ├── providers/         # Data providers
-│   │   ├── ci/            # CI/CD providers (CodePipeline, ArgoCD, etc.)
-│   │   ├── infrastructure/# Infrastructure providers (ECS, EKS, etc.)
-│   │   └── events/        # Event providers
-│   └── utils/             # Backend utilities
-│
-├── cli/                   # CLI tool
+├── packages/
+│   └── frontend/          # React dashboard (Vite + Tailwind)
+├── backend/               # Lambda API (Python)
+│   ├── routes/            # API endpoints
+│   ├── providers/         # AWS data providers
+│   └── auth/              # RBAC + Device Flow
+├── cli/                   # CLI tool (Python)
 │   └── dashborion/
-│       ├── __init__.py
-│       ├── main.py        # Main CLI entry point
 │       ├── commands/      # CLI commands
-│       │   └── auth.py    # login, logout, whoami, status, token
-│       ├── collectors/    # AWS/K8s data collectors
-│       ├── generators/    # Diagram generators
-│       └── publishers/    # Confluence, etc.
-│
-├── terraform/             # Infrastructure as Code
+│       ├── collectors/    # AWS/K8s data
+│       └── generators/    # Diagram generation
+├── terraform/             # IAM roles modules
 │   └── modules/
-│       ├── sst-deploy-role/       # SST deployment IAM role
-│       ├── sst-lambda-role/       # Lambda execution role
-│       ├── cross-account-roles/   # Cross-account access roles
-│       └── dashborion-auth-infra/ # Auth DynamoDB tables
-│
-├── sst.config.ts          # SST v3 configuration (Pulumi-based)
-├── infra.config.json      # Deployment configuration (mode, AWS, auth)
-│
-├── docs/                  # Documentation
-└── examples/              # Example configurations
+├── sst.config.ts          # SST v3 deployment
+└── infra.config.json      # Deployment configuration
 ```
 
-## Configuration
+---
 
-### Environment Variables
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `AWS_PROFILE` | AWS profile to use | No (uses default) |
-| `AWS_REGION` | AWS region | No (uses config) |
-| `DASHBORION_CONFIG` | Path to config file | No |
-| `CONFLUENCE_URL` | Confluence base URL | For publishing |
-| `CONFLUENCE_USERNAME` | Confluence username | For publishing |
-| `CONFLUENCE_TOKEN` | Confluence API token | For publishing |
-
-### Dashboard Configuration (`config.json`)
-
-```json
-{
-  "projects": [
-    {
-      "id": "my-project",
-      "name": "My Project",
-      "environments": ["staging", "production"],
-      "services": ["backend", "frontend", "api"],
-      "infrastructure": {
-        "discoveryTags": {
-          "Project": "my-project"
-        }
-      }
-    }
-  ]
-}
-```
-
-## Authentication
-
-### Web Dashboard (Native SSO)
-
-Built-in SAML authentication via Lambda@Edge:
-
-- **Lambda@Edge protect**: Validates session cookie, redirects to IdP if needed
-- **SAML ACS handler**: Processes SAML assertion, creates encrypted session cookie
-- **Session security**: AES-256-GCM encrypted cookies with IP validation
-- **Supported IdPs**: AWS Identity Center, Okta, Azure AD, any SAML 2.0 provider
-
-### CLI Authentication
-
-Two authentication methods:
-
-**1. Device Flow (default)** - Opens browser for SSO authentication:
-```bash
-dashborion auth login
-
-# Output:
-# To authenticate, visit: https://dashboard.example.com/auth/device
-# And enter code: ABCD-1234
-# Opening browser...
-# Waiting for authentication...
-# Successfully authenticated!
-```
-
-**2. AWS SSO** - Reuse existing AWS SSO session:
-```bash
-# First, authenticate with AWS SSO
-aws sso login --profile myprofile
-
-# Then exchange for Dashborion token
-dashborion auth login --use-sso
-```
-
-**Token management:**
-```bash
-dashborion auth whoami     # Show current user and token expiry
-dashborion auth status     # Check if authenticated (exit code 0/1)
-dashborion auth token      # Print access token (for scripting)
-dashborion auth logout     # Revoke token and delete credentials
-```
-
-Credentials stored in `~/.dashborion/credentials.json` with 600 permissions.
-
-### Authorization (RBAC)
-
-Multi-tenant permission model with three roles:
+## Authorization (RBAC)
 
 | Role | Permissions |
 |------|-------------|
-| `viewer` | Read-only: view services, logs, metrics, infrastructure |
-| `operator` | Viewer + deploy, scale, restart, invalidate cache |
-| `admin` | Operator + start/stop RDS, manage permissions |
+| `viewer` | Read: services, logs, metrics, infrastructure |
+| `operator` | + deploy, scale, restart, invalidate cache |
+| `admin` | + start/stop RDS, manage permissions |
 
 Permissions are scoped by project and environment:
-- `viewer` on `homebox/production`
-- `operator` on `homebox/staging`
-- `admin` on `bigmat/*` (all environments)
+- `viewer` on `project/production`
+- `operator` on `project/staging`
+- `admin` on `project/*`
 
-IdP group mapping pattern: `dashborion-{project}-{role}` (e.g., `dashborion-homebox-operator`)
+IdP group mapping: `dashborion-{project}-{role}`
 
-## Deep-Linking URLs
-
-The dashboard supports deep-linkable URLs for bookmarking and sharing specific views:
-
-### URL Structure
-
-```
-/:project/:env?param1=value1&param2=value2
-```
-
-### Available Parameters
-
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `view` | string | View mode: simple, network, routing | `?view=network` |
-| `service` | string | Selected ECS service | `?service=backend` |
-| `resource` | string | Infrastructure resource type | `?resource=rds` |
-| `id` | string | Resource ID | `?resource=subnet&id=subnet-abc123` |
-| `pipeline` | string | Build pipeline for a service | `?pipeline=backend` |
-| `logs` | string | Comma-separated log tabs | `?logs=backend,frontend` |
-| `events` | boolean | Show events timeline | `?events=true` |
-| `hours` | number | Events time filter | `?hours=48` |
-| `types` | string | Event type filter | `?types=deploy,build` |
-
-### Examples
-
-```
-# Service details panel
-/homebox/staging?service=backend
-
-# Network view with subnet selected
-/homebox/staging?view=network&resource=subnet&id=subnet-0abc123
-
-# Logs panel with multiple tabs
-/homebox/staging?logs=backend,frontend,cms
-
-# Events timeline with filters
-/homebox/staging?events=true&hours=48&types=deploy,error
-
-# Build pipeline details
-/homebox/staging?pipeline=backend
-```
+---
 
 ## API Reference
 
 ### Authentication
-
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/auth/device/code` | POST | Request device code (CLI login) |
-| `/api/auth/device/token` | POST | Exchange device code for token |
-| `/api/auth/device/verify` | POST | Verify device code (web page) |
-| `/api/auth/token/refresh` | POST | Refresh access token |
-| `/api/auth/token/revoke` | POST | Revoke access token |
-| `/api/auth/sso/exchange` | POST | Exchange AWS credentials for token |
-| `/api/auth/me` | GET | Get current user info |
-| `/api/auth/whoami` | GET | Get auth status and user details |
+| `/api/auth/device/code` | POST | Request device code (CLI) |
+| `/api/auth/device/token` | POST | Exchange for access token |
+| `/api/auth/me` | GET | Current user info |
 
 ### Services
-
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/services/{env}` | GET | List services |
-| `/api/services/{env}/{service}` | GET | Service details |
-| `/api/services/{env}/{service}/tasks` | GET | Service tasks |
-| `/api/services/{env}/{service}/logs` | GET | Service logs |
+| `/api/{project}/services/{env}` | GET | List services |
+| `/api/{project}/services/{env}/{service}/tasks` | GET | Service tasks |
+| `/api/{project}/services/{env}/{service}/logs` | GET | Service logs |
 
 ### Infrastructure
-
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/infrastructure/{env}` | GET | Infrastructure overview |
-| `/api/infrastructure/{env}/alb` | GET | ALB details |
-| `/api/infrastructure/{env}/rds` | GET | RDS details |
-| `/api/infrastructure/{env}/security-group/{id}` | GET | Security group rules |
+| `/api/{project}/infrastructure/{env}` | GET | Full infrastructure |
+| `/api/{project}/infrastructure/{env}/routing` | GET | VPC routing data |
+| `/api/{project}/infrastructure/{env}/enis` | GET | Network interfaces |
 
-### Pipelines
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/pipelines/build/{service}` | GET | Build pipeline status |
-| `/api/pipelines/deploy/{env}/{service}` | GET | Deploy pipeline status |
-| `/api/images/{service}` | GET | ECR images |
+---
 
 ## Development
 
-### Frontend
-
 ```bash
-cd frontend
+# Frontend development
+cd packages/frontend
 npm install
 npm run dev
-```
 
-### Backend
-
-```bash
+# Backend (local Lambda)
 cd backend
 pip install -r requirements.txt
-# Use SAM or serverless for local development
-```
+sam local start-api
 
-### CLI
-
-```bash
+# CLI development
 cd cli
 pip install -e .
 dashborion --help
 ```
 
+---
+
 ## Contributing
 
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md).
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
+---
+
 ## Credits
 
 Developed by [Kamorion](https://kamorion.com) - Cloud & DevOps Consulting
 
-Based on production infrastructure tooling used across multiple enterprise clients.
+Built with production infrastructure experience across multiple enterprise clients.
+
+<p align="center">
+  <sub>Made with ❤️ for DevOps teams</sub>
+</p>
