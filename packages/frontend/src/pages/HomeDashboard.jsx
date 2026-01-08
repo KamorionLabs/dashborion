@@ -150,13 +150,13 @@ export default function HomeDashboard() {
   }, [urlPipeline, urlResource, urlResourceId, selectedInfraEnv, pipelines, images, infrastructure])
 
   // Setters that update URL
-  const setSelectedService = useCallback((value) => {
+  const setSelectedService = useCallback((value, skipClear = false) => {
     if (value) {
       // value is in format env-service, extract just service name
       const parts = value.split('-')
       const serviceName = parts[parts.length - 1]
       urlSelectService(serviceName)
-    } else {
+    } else if (!skipClear) {
       urlClearSelection()
     }
   }, [urlSelectService, urlClearSelection])
@@ -947,7 +947,8 @@ export default function HomeDashboard() {
       setSelectedInfraComponent(null, true)
     } else {
       setSelectedInfraComponent({ type, env, data })
-      setSelectedService(null)
+      // Pass skipClear=true to avoid clearing the URL params we just set
+      setSelectedService(null, true)
     }
   }, [setSelectedService, setSelectedInfraComponent])
 
@@ -962,25 +963,25 @@ export default function HomeDashboard() {
       // Open pipeline panel for build events
       if (pipelines[eventService]) {
         setSelectedInfraComponent({ type: 'pipeline', env: 'shared', data: { service: eventService, pipeline: pipelines[eventService], images: images[eventService] }})
-        setSelectedService(null)
+        setSelectedService(null, true)
       }
     } else if (['deploy', 'rollback', 'scale', 'ecs_event'].includes(eventType)) {
       // Open service detail panel for deploy/scale events
       if (eventService) {
         setSelectedService(`${eventEnv}-${eventService}`)
-        setSelectedInfraComponent(null)
+        setSelectedInfraComponent(null, true)
       }
     } else if (['rds_stop', 'rds_start'].includes(eventType)) {
       // Open RDS infra component
       if (infrastructure[eventEnv]?.rds) {
         setSelectedInfraComponent({ type: 'rds', env: eventEnv, data: infrastructure[eventEnv].rds })
-        setSelectedService(null)
+        setSelectedService(null, true)
       }
     } else if (eventType === 'cache_invalidation') {
       // Open CloudFront infra component
       if (infrastructure[eventEnv]?.cloudfront) {
         setSelectedInfraComponent({ type: 'cloudfront', env: eventEnv, data: infrastructure[eventEnv].cloudfront })
-        setSelectedService(null)
+        setSelectedService(null, true)
       }
     }
   }, [selectedInfraEnv, pipelines, images, infrastructure, setSelectedService, setSelectedInfraComponent])
