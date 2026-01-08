@@ -3,17 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.27.0",
   "scripts": {
-    "dev": "sst dev",
-    "deploy": "npm run build:auth && sst deploy",
-    "deploy:staging": "npm run build:auth && sst deploy --stage staging",
-    "deploy:prod": "npm run build:auth && sst deploy --stage production",
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "deploy": "pnpm run build && sst deploy",
+    "deploy:staging": "pnpm run build && sst deploy --stage staging",
+    "deploy:prod": "pnpm run build && sst deploy --stage production",
     "remove": "sst remove",
     "console": "sst console",
     "types": "sst types",
-    "build:auth": "cd auth && npm install && npm run build",
-    "frontend:dev": "cd frontend && npm run dev",
-    "frontend:build": "cd frontend && npm run build",
     "cli:install": "cd cli && pip install -e .",
     "tf:init": "cd terraform && terraform init",
     "tf:plan": "cd terraform && terraform plan",
@@ -22,13 +25,16 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "sst": "^3.0.0",
+    "turbo": "^2.0.0",
     "typescript": "^5.3.0"
   },
   "dependencies": {
+    "@dashborion/core": "workspace:*",
+    "@dashborion/sst": "workspace:*",
     "@pulumi/aws": "^6.0.0",
     "@pulumi/pulumi": "^3.0.0",
     "@types/mime-types": "^3.0.1",
     "mime-types": "^2.1.35",
-    "synced-folder": "^0.11.0"
+    "@pulumi/synced-folder": "^0.12.0"
   }
 }

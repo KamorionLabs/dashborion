@@ -95,6 +95,13 @@ backend/*.zip
 # SST
 .sst/
 
+# Turborepo
+.turbo/
+
+# Package manager
+pnpm-lock.yaml
+*.tsbuildinfo
+
 # Instance-specific configs (not committed - use DASHBORION_CONFIG_DIR instead)
 infra.config.json
 frontend/public/config.json

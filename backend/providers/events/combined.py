@@ -23,13 +23,14 @@ class CombinedEventsProvider(EventsProvider):
     - CloudTrail (user attribution)
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def get_events(self, env: str, hours: int = 24, event_types: List[str] = None, services: List[str] = None) -> dict:
         """Get aggregated events timeline for an environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -82,7 +83,7 @@ class CombinedEventsProvider(EventsProvider):
             pipelines_response = codepipeline.list_pipelines()
             project_pipelines = [
                 p['name'] for p in pipelines_response.get('pipelines', [])
-                if p['name'].startswith(self.config.project_name)
+                if p['name'].startswith(self.project)
             ]
 
             for pipeline_name in project_pipelines:
@@ -175,7 +176,7 @@ class CombinedEventsProvider(EventsProvider):
                             if commit_sha and not commit_sha.startswith('sha256:'):
                                 github_org = self.config.github_org or 'HOMEBOXDEV'
                                 repo_pattern = self.config.ci_provider.config.get('repo_pattern', '{project}-{service}')
-                                repo = repo_pattern.replace('{project}', self.config.project_name).replace('{service}', service)
+                                repo = repo_pattern.replace('{project}', self.project).replace('{service}', service)
                                 event['details']['commitUrl'] = f"https://github.com/{github_org}/{repo}/commit/{commit_sha}"
 
                         events.append(event)
@@ -201,9 +202,9 @@ class CombinedEventsProvider(EventsProvider):
 
         # Fallback: parse from pattern
         if is_build:
-            parts = pipeline_name.replace(f'{self.config.project_name}-build-', '').replace('-arm64', '')
+            parts = pipeline_name.replace(f'{self.project}-build-', '').replace('-arm64', '')
         else:
-            parts = pipeline_name.replace(f'{self.config.project_name}-deploy-', '').rsplit('-', 1)
+            parts = pipeline_name.replace(f'{self.project}-deploy-', '').rsplit('-', 1)
             parts = parts[0] if parts else pipeline_name
 
         return parts
@@ -218,7 +219,7 @@ class CombinedEventsProvider(EventsProvider):
                     commit_sha = event.get('details', {}).get('commitFull', '')
                     if service and commit_sha:
                         try:
-                            repo_name = self.config.get_ecr_repo(service)
+                            repo_name = self.config.get_ecr_repo(self.project, service)
                             response = ecr.describe_images(
                                 repositoryName=repo_name,
                                 imageIds=[{'imageTag': commit_sha}]
@@ -237,12 +238,12 @@ class CombinedEventsProvider(EventsProvider):
         events = []
 
         try:
-            cluster_name = self.config.get_cluster_name(env)
+            cluster_name = self.config.get_cluster_name(self.project, env)
             ecs = get_cross_account_client('ecs', env_config.account_id, env_config.region)
 
             for svc_name in env_config.services:
                 try:
-                    service_name = self.config.get_service_name(env, svc_name)
+                    service_name = self.config.get_service_name(self.project, env, svc_name)
                     svc_response = ecs.describe_services(
                         cluster=cluster_name,
                         services=[service_name]
@@ -435,7 +436,7 @@ class CombinedEventsProvider(EventsProvider):
 
             # Find distribution for this environment
             distributions = cloudfront.list_distributions()
-            domain_suffix = f"{env}.{self.config.project_name}"
+            domain_suffix = f"{env}.{self.project}"
 
             cf_id = None
             for dist in distributions.get('DistributionList', {}).get('Items', []):
@@ -565,7 +566,7 @@ class CombinedEventsProvider(EventsProvider):
 
             # Environment account
             if env:
-                env_config = self.config.get_environment(env)
+                env_config = self.config.get_environment(self.project, env)
                 if env_config:
                     try:
                         cloudtrail_env = get_cross_account_client('cloudtrail', env_config.account_id, env_config.region)

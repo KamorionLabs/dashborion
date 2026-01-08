@@ -32,10 +32,15 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
     if account_id == shared_account:
         return boto3.client(service, region_name=region)
 
+    # Get role ARN from config (indexed by account ID)
+    role_arn = config.get_read_role_arn(account_id)
+    if not role_arn:
+        # Fallback to convention-based naming if not in config
+        # This handles cases where roles aren't explicitly configured
+        role_arn = f"arn:aws:iam::{account_id}:role/dashborion-read-role"
+
     # Cross-account: assume read role
     sts = boto3.client('sts')
-    role_arn = f"arn:aws:iam::{account_id}:role/{config.project_name}-dashboard-read-role"
-
     assumed = sts.assume_role(
         RoleArn=role_arn,
         RoleSessionName='dashboard-api'
@@ -72,9 +77,13 @@ def get_action_client(service: str, account_id: str, user_email: str, region: st
     sanitized_email = user_email.replace('@', '-at-').replace('.', '-dot-')[:64] if user_email else 'unknown'
     session_name = f"dashboard-{sanitized_email}"
 
-    sts = boto3.client('sts')
-    role_arn = f"arn:aws:iam::{account_id}:role/{config.project_name}-dashboard-action-role"
+    # Get role ARN from config (indexed by account ID)
+    role_arn = config.get_action_role_arn(account_id)
+    if not role_arn:
+        # Fallback to convention-based naming if not in config
+        role_arn = f"arn:aws:iam::{account_id}:role/dashborion-action-role"
 
+    sts = boto3.client('sts')
     assumed = sts.assume_role(
         RoleArn=role_arn,
         RoleSessionName=session_name

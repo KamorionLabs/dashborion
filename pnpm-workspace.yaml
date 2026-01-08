@@ -1,0 +1,5 @@
+packages:
+  - "packages/*"
+  - "examples/*"
+  # Note: plugins externes désactivés - plugins sont builtin dans packages/frontend/src/plugins/builtin/
+  # - "plugins/*"

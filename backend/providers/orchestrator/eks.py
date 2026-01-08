@@ -26,14 +26,15 @@ class EKSProvider(OrchestratorProvider):
     Uses Kubernetes API to manage deployments in EKS clusters.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
         self._k8s_clients = {}  # Cache K8s clients per environment
 
     def _get_eks_client(self, env: str):
         """Get EKS client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('eks', env_config.account_id, env_config.region)
@@ -51,7 +52,7 @@ class EKSProvider(OrchestratorProvider):
             from kubernetes import client as k8s_client
             from kubernetes.client import Configuration
 
-            env_config = self.config.get_environment(env)
+            env_config = self.config.get_environment(self.project, env)
             eks = self._get_eks_client(env)
 
             # Get cluster info
@@ -149,7 +150,7 @@ class EKSProvider(OrchestratorProvider):
 
     def get_services(self, env: str) -> Dict[str, Service]:
         """Get all services (deployments) for an environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -173,7 +174,7 @@ class EKSProvider(OrchestratorProvider):
 
     def get_service(self, env: str, service: str) -> Service:
         """Get service (deployment) information"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
 
@@ -346,7 +347,7 @@ class EKSProvider(OrchestratorProvider):
 
     def get_task_details(self, env: str, service: str, task_id: str) -> dict:
         """Get detailed pod information"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -442,7 +443,7 @@ class EKSProvider(OrchestratorProvider):
 
     def scale_service(self, env: str, service: str, replicas: int, user_email: str) -> dict:
         """Scale deployment to specified replica count"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -475,7 +476,7 @@ class EKSProvider(OrchestratorProvider):
 
     def force_deployment(self, env: str, service: str, user_email: str) -> dict:
         """Force a rollout restart"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -517,7 +518,7 @@ class EKSProvider(OrchestratorProvider):
 
     def get_infrastructure(self, env: str) -> dict:
         """Get infrastructure topology for an environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -555,7 +556,7 @@ class EKSProvider(OrchestratorProvider):
 
     def get_metrics(self, env: str, service: str) -> dict:
         """Get service metrics from CloudWatch Container Insights"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 

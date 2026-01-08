@@ -15,27 +15,28 @@ class VPCProvider(NetworkProvider):
     Handles VPC, subnets, NAT gateways, routing, and security.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def _get_ec2_client(self, env: str):
         """Get EC2 client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('ec2', env_config.account_id, env_config.region)
 
     def get_network_info(self, env: str) -> dict:
         """Get VPC and basic network info (subnets, NAT gateways, connectivity summary)"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         account_id = env_config.account_id
         ec2 = self._get_ec2_client(env)
 
-        vpc_name = f"{self.config.project_name}-{env}"
+        vpc_name = f"{self.project}-{env}"
 
         vpcs = ec2.describe_vpcs(
             Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}]
@@ -192,7 +193,7 @@ class VPCProvider(NetworkProvider):
         Get ENIs (Elastic Network Interfaces) for a VPC or subnet.
         Supports filtering by subnet and searching by IP address.
         """
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -202,7 +203,7 @@ class VPCProvider(NetworkProvider):
         try:
             # Get VPC ID if not provided
             if not vpc_id:
-                vpc_name = f"{self.config.project_name}-{env}"
+                vpc_name = f"{self.project}-{env}"
                 vpcs = ec2.describe_vpcs(Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}])
                 if not vpcs.get('Vpcs'):
                     return {'error': f'VPC {vpc_name} not found'}
@@ -365,7 +366,7 @@ class VPCProvider(NetworkProvider):
 
     def get_routing_details(self, env: str, service_security_groups: List[str] = None) -> dict:
         """Get detailed routing and security information (called on demand via toggle)"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -373,7 +374,7 @@ class VPCProvider(NetworkProvider):
         ec2 = self._get_ec2_client(env)
 
         # Get VPC ID
-        vpc_name = f"{self.config.project_name}-{env}"
+        vpc_name = f"{self.project}-{env}"
         vpcs = ec2.describe_vpcs(Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}])
         if not vpcs.get('Vpcs'):
             return {'error': f'VPC {vpc_name} not found'}
@@ -773,7 +774,7 @@ class VPCProvider(NetworkProvider):
 
     def get_security_group(self, env: str, sg_id: str) -> dict:
         """Get detailed Security Group information including rules"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 

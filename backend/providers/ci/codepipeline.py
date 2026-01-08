@@ -26,8 +26,9 @@ class CodePipelineProvider(CIProvider):
     Handles build and deploy pipelines in shared-services account.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
         self.shared_account = config.shared_services_account
         self.github_org = config.github_org
@@ -50,12 +51,12 @@ class CodePipelineProvider(CIProvider):
 
     def get_build_pipeline(self, service: str) -> Pipeline:
         """Get build pipeline information for a service"""
-        pipeline_name = self.config.get_build_pipeline_name(service)
+        pipeline_name = self.config.get_build_pipeline_name(self.project, service)
         return self._get_pipeline_info('build', pipeline_name, service)
 
     def get_deploy_pipeline(self, env: str, service: str) -> Pipeline:
         """Get deploy pipeline information for a service in an environment"""
-        pipeline_name = self.config.get_deploy_pipeline_name(env, service)
+        pipeline_name = self.config.get_deploy_pipeline_name(self.project, env, service)
         return self._get_pipeline_info('deploy', pipeline_name, service, env)
 
     def _get_pipeline_info(self, pipeline_type: str, pipeline_name: str, service: str, env: str = None) -> Pipeline:
@@ -155,8 +156,8 @@ class CodePipelineProvider(CIProvider):
                     # Build GitHub URL if we have org configured
                     if commit_sha and self.github_org and not commit_sha.startswith('sha256:'):
                         # Extract service from pipeline name
-                        service = pipeline_name.replace(f'{self.config.project_name}-build-', '')
-                        repo_name = self.config.get_ecr_repo(service)
+                        service = pipeline_name.replace(f'{self.project}-build-', '')
+                        repo_name = self.config.get_ecr_repo(self.project, service)
                         commit_url = f"https://github.com/{self.github_org}/{repo_name}/commit/{commit_sha}"
 
                 # Determine trigger type
@@ -191,7 +192,7 @@ class CodePipelineProvider(CIProvider):
 
     def trigger_build(self, service: str, user_email: str, image_tag: str = None, source_revision: str = None) -> dict:
         """Trigger a build pipeline"""
-        pipeline_name = self.config.get_build_pipeline_name(service)
+        pipeline_name = self.config.get_build_pipeline_name(self.project, service)
 
         try:
             # Use STS assume-role with email in RoleSessionName for CloudTrail attribution
@@ -251,7 +252,7 @@ class CodePipelineProvider(CIProvider):
 
     def trigger_deploy(self, env: str, service: str, user_email: str) -> dict:
         """Trigger a deploy pipeline"""
-        pipeline_name = self.config.get_deploy_pipeline_name(env, service)
+        pipeline_name = self.config.get_deploy_pipeline_name(self.project, env, service)
 
         try:
             sanitized_email = user_email.replace('@', '-at-').replace('.', '-dot-')[:64] if user_email else 'unknown'
@@ -297,7 +298,7 @@ class CodePipelineProvider(CIProvider):
 
         try:
             # CodeBuild project naming pattern
-            build_project = f"{self.config.project_name}-build-{service}-arm64"
+            build_project = f"{self.project}-build-{service}-arm64"
 
             builds = codebuild.list_builds_for_project(
                 projectName=build_project,
@@ -336,7 +337,7 @@ class CodePipelineProvider(CIProvider):
     def get_images(self, service: str) -> List[ContainerImage]:
         """Get container images for a service from ECR"""
         ecr = self._get_ecr_client()
-        repo_name = self.config.get_ecr_repo(service)
+        repo_name = self.config.get_ecr_repo(self.project, service)
 
         try:
             # Fetch all images with pagination

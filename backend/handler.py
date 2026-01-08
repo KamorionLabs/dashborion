@@ -1,6 +1,23 @@
 """
-Operations Dashboard - Lambda Handler (Refactored)
+Operations Dashboard - Lambda Handler (Multi-Project)
 Main entry point using provider abstraction layer.
+
+Routes:
+  - /api/health - Health check
+  - /api/config - Dashboard configuration
+  - /api/{project}/services/{env} - List services
+  - /api/{project}/services/{env}/{service} - Service details
+  - /api/{project}/details/{env}/{service} - Extended service details
+  - /api/{project}/pipelines/{type}/{service}/{env?} - Pipeline info
+  - /api/{project}/images/{service} - ECR images
+  - /api/{project}/metrics/{env}/{service} - Service metrics
+  - /api/{project}/infrastructure/{env} - Infrastructure overview
+  - /api/{project}/tasks/{env}/{service}/{task_id} - Task details
+  - /api/{project}/logs/{env}/{service} - Service logs
+  - /api/{project}/events/{env} - Events timeline
+  - /api/{project}/actions/* - Actions (deploy, scale, etc.)
+  - /api/auth/* - Authentication endpoints
+  - /api/admin/* - Admin endpoints
 """
 
 import json
@@ -37,17 +54,18 @@ except ImportError:
     AUTH_HANDLERS_AVAILABLE = False
 
 
-def get_providers():
-    """Get configured providers"""
+def get_providers(project: str):
+    """Get configured providers for a project"""
     config = get_config()
     return {
-        'ci': ProviderFactory.get_ci_provider(config),
-        'orchestrator': ProviderFactory.get_orchestrator_provider(config),
-        'events': ProviderFactory.get_events_provider(config),
-        'database': ProviderFactory.get_database_provider(config),
-        'cdn': ProviderFactory.get_cdn_provider(config),
-        'infrastructure': InfrastructureAggregator(config),
-        'config': config
+        'ci': ProviderFactory.get_ci_provider(config, project),
+        'orchestrator': ProviderFactory.get_orchestrator_provider(config, project),
+        'events': ProviderFactory.get_events_provider(config, project),
+        'database': ProviderFactory.get_database_provider(config, project),
+        'cdn': ProviderFactory.get_cdn_provider(config, project),
+        'infrastructure': InfrastructureAggregator(config, project),
+        'config': config,
+        'project': project
     }
 
 
@@ -74,15 +92,7 @@ def lambda_handler(event, context):
     user_email = get_user_email(event)
 
     try:
-        # Get providers
-        providers = get_providers()
-        ci = providers['ci']
-        orchestrator = providers['orchestrator']
-        events_provider = providers['events']
-        database = providers['database']
-        cdn = providers['cdn']
-        infrastructure = providers['infrastructure']
-        config = providers['config']
+        config = get_config()
 
         # Parse JSON body for POST requests
         body = {}
@@ -97,7 +107,7 @@ def lambda_handler(event, context):
         result = None
 
         # =================================================================
-        # ROUTE HANDLING
+        # GLOBAL ROUTES (no project context)
         # =================================================================
 
         # Health check
@@ -113,238 +123,18 @@ def lambda_handler(event, context):
         elif path == '/api/config':
             result = config.to_dict()
 
-        # -------------------------------------------------------------
-        # SERVICES ENDPOINTS
-        # -------------------------------------------------------------
-        elif path == '/api/services' or path == '/api/services/':
-            # Get all services across all environments
-            result = {
-                'environments': {},
-                'timestamp': datetime.utcnow().isoformat(),
-                'config': config.to_dict()
-            }
-            for env_name, env_config in config.environments.items():
-                try:
-                    services = orchestrator.get_services(env_name)
-                    result['environments'][env_name] = {
-                        'accountId': env_config.account_id,
-                        'services': {
-                            svc_name: _format_service_summary(svc)
-                            for svc_name, svc in services.items()
-                            if not isinstance(svc, dict) or 'error' not in svc
-                        }
-                    }
-                except Exception as e:
-                    result['environments'][env_name] = {'error': str(e)}
-
-        elif path.startswith('/api/services/'):
-            parts = path.split('/')
-            if len(parts) == 4:
-                # /api/services/{env}
-                env = parts[3]
-                services = orchestrator.get_services(env)
-                env_config = config.get_environment(env)
-                result = {
-                    'accountId': env_config.account_id if env_config else None,
-                    'services': {
-                        svc_name: _format_service_summary(svc)
-                        for svc_name, svc in services.items()
-                        if not isinstance(svc, dict) or 'error' not in svc
-                    },
-                    'timestamp': datetime.utcnow().isoformat()
-                }
-            elif len(parts) >= 5:
-                # /api/services/{env}/{service}
-                env = parts[3]
-                service = parts[4]
-                svc = orchestrator.get_service(env, service)
-                result = _format_service(svc)
-            else:
-                result = {'error': 'Invalid path'}
-
-        # -------------------------------------------------------------
-        # DETAILS ENDPOINT (detailed service info)
-        # -------------------------------------------------------------
-        elif path.startswith('/api/details/'):
-            parts = path.split('/')
-            if len(parts) >= 5:
-                env = parts[3]
-                service = parts[4]
-                details = orchestrator.get_service_details(env, service)
-                result = _format_service_details(details)
-            else:
-                result = {'error': 'Invalid path. Use /api/details/{env}/{service}'}
-
-        # -------------------------------------------------------------
-        # PIPELINES ENDPOINTS
-        # -------------------------------------------------------------
-        elif path.startswith('/api/pipelines/'):
-            parts = path.split('/')
-            if len(parts) >= 5:
-                pipeline_type = parts[3]  # build or deploy
-                service = parts[4]
-                env = parts[5] if len(parts) > 5 else None
-
-                if pipeline_type == 'build':
-                    pipeline = ci.get_build_pipeline(service)
-                    result = _format_pipeline(pipeline)
-                else:
-                    if not env:
-                        result = {'error': 'Environment required for deploy pipeline'}
-                    else:
-                        pipeline = ci.get_deploy_pipeline(env, service)
-                        result = _format_pipeline(pipeline)
-            else:
-                result = {'error': 'Invalid path'}
-
-        # -------------------------------------------------------------
-        # IMAGES ENDPOINT
-        # -------------------------------------------------------------
-        elif path.startswith('/api/images/'):
-            parts = path.split('/')
-            if len(parts) >= 4:
-                service = parts[3]
-                images = ci.get_images(service)
-                result = {
-                    'repositoryName': config.get_ecr_repo(service),
-                    'images': [_format_image(img) for img in images]
-                }
-            else:
-                result = {'error': 'Invalid path'}
-
-        # -------------------------------------------------------------
-        # METRICS ENDPOINT
-        # -------------------------------------------------------------
-        elif path.startswith('/api/metrics/'):
-            parts = path.split('/')
-            if len(parts) >= 5:
-                env = parts[3]
-                service = parts[4]
-                result = orchestrator.get_metrics(env, service)
-            else:
-                result = {'error': 'Invalid path'}
-
-        # -------------------------------------------------------------
-        # INFRASTRUCTURE ENDPOINT
-        # -------------------------------------------------------------
-        elif path.startswith('/api/infrastructure/'):
-            parts = path.split('/')
-            if len(parts) >= 4:
-                env = parts[3]
-                # Parse query parameters
-                query_params = event.get('queryStringParameters') or {}
-
-                # Check if requesting routing details (lazy-loaded via toggle)
-                if len(parts) >= 5 and parts[4] == 'routing':
-                    # /api/infrastructure/{env}/routing - detailed routing/security info
-                    # Parse security groups list (comma-separated) - optional filter for SGs
-                    sg_str = query_params.get('securityGroups', '')
-                    security_groups_list = sg_str.split(',') if sg_str else None
-
-                    result = infrastructure.get_routing_details(env, security_groups_list)
-                elif len(parts) >= 5 and parts[4] == 'enis':
-                    # /api/infrastructure/{env}/enis - list ENIs with optional filters
-                    # Query params: subnetId, searchIp, vpcId
-                    subnet_id = query_params.get('subnetId')
-                    search_ip = query_params.get('searchIp')
-                    vpc_id = query_params.get('vpcId')
-
-                    result = infrastructure.get_enis(env, vpc_id, subnet_id, search_ip)
-                elif len(parts) >= 6 and parts[4] == 'security-group':
-                    # /api/infrastructure/{env}/security-group/{sg_id} - get SG details with rules
-                    sg_id = parts[5]
-                    result = infrastructure.get_security_group(env, sg_id)
-                else:
-                    # /api/infrastructure/{env} - main infrastructure info
-
-                    # Parse discoveryTags (JSON-encoded object)
-                    discovery_tags = None
-                    discovery_tags_str = query_params.get('discoveryTags', '')
-                    if discovery_tags_str:
-                        try:
-                            discovery_tags = json.loads(discovery_tags_str)
-                        except json.JSONDecodeError:
-                            discovery_tags = None
-
-                    # Parse services list (comma-separated)
-                    services_str = query_params.get('services', '')
-                    services_list = services_str.split(',') if services_str else None
-
-                    # Parse domain_config (JSON-encoded object)
-                    domain_config = None
-                    domain_config_str = query_params.get('domainConfig', '')
-                    if domain_config_str:
-                        try:
-                            domain_config = json.loads(domain_config_str)
-                        except json.JSONDecodeError:
-                            domain_config = None
-
-                    # Parse databases list (comma-separated)
-                    databases_str = query_params.get('databases', '')
-                    databases_list = databases_str.split(',') if databases_str else None
-
-                    # Parse caches list (comma-separated)
-                    caches_str = query_params.get('caches', '')
-                    caches_list = caches_str.split(',') if caches_str else None
-
-                    result = infrastructure.get_infrastructure(
-                        env,
-                        discovery_tags=discovery_tags,
-                        services=services_list,
-                        domain_config=domain_config,
-                        databases=databases_list,
-                        caches=caches_list
-                    )
-            else:
-                result = {'error': 'Invalid path. Use /api/infrastructure/{env} or /api/infrastructure/{env}/routing'}
-
-        # -------------------------------------------------------------
-        # TASKS ENDPOINT
-        # -------------------------------------------------------------
-        elif path.startswith('/api/tasks/'):
-            parts = path.split('/')
-            if len(parts) >= 6:
-                env = parts[3]
-                service = parts[4]
-                task_id = parts[5]
-                result = orchestrator.get_task_details(env, service, task_id)
-            else:
-                result = {'error': 'Invalid path. Use /api/tasks/{env}/{service}/{task_id}'}
-
-        # -------------------------------------------------------------
-        # LOGS ENDPOINT
-        # -------------------------------------------------------------
-        elif path.startswith('/api/logs/'):
-            parts = path.split('/')
-            if len(parts) >= 5:
-                env = parts[3]
-                service = parts[4]
-                logs = orchestrator.get_service_logs(env, service)
-                result = {
-                    'environment': env,
-                    'service': service,
-                    'logs': logs
-                }
-            else:
-                result = {'error': 'Invalid path'}
-
-        # -------------------------------------------------------------
-        # AUTH ENDPOINTS (Device Flow, Token, User Info)
-        # -------------------------------------------------------------
+        # Auth endpoints (no project context)
         elif path.startswith('/api/auth/'):
             if AUTH_HANDLERS_AVAILABLE:
                 auth_response = route_auth_request(event, context)
                 if auth_response:
-                    # Auth handlers return full API Gateway response
                     return auth_response
                 else:
                     result = {'error': f'Unknown auth endpoint: {method} {path}'}
             else:
                 result = {'error': 'Auth handlers not available'}
 
-        # -------------------------------------------------------------
-        # ADMIN ENDPOINTS (Permission Management)
-        # -------------------------------------------------------------
+        # Admin endpoints (no project context)
         elif path.startswith('/api/admin/'):
             if ADMIN_HANDLERS_AVAILABLE:
                 query_params = event.get('queryStringParameters') or {}
@@ -352,113 +142,34 @@ def lambda_handler(event, context):
             else:
                 result = {'error': 'Admin handlers not available'}
 
-        # -------------------------------------------------------------
-        # EVENTS TIMELINE ENDPOINTS
-        # -------------------------------------------------------------
-        elif path.startswith('/api/events/'):
+        # =================================================================
+        # PROJECT-SCOPED ROUTES: /api/{project}/...
+        # =================================================================
+        elif path.startswith('/api/') and len(path.split('/')) >= 4:
             parts = path.split('/')
+            # parts[0] = '', parts[1] = 'api', parts[2] = project, parts[3] = resource
+            project = parts[2]
+            resource = parts[3] if len(parts) > 3 else None
 
-            # /api/events/{env}/enrich - POST to enrich events with CloudTrail
-            if len(parts) >= 5 and parts[4] == 'enrich':
-                if method != 'POST':
-                    result = {'error': 'Enrich endpoint requires POST with events in body'}
-                else:
-                    env = parts[3]
-                    result = events_provider.enrich_events(body, env=env)
-
-            # /api/events/{env}/task-diff - POST to compute task definition diffs
-            elif len(parts) >= 5 and parts[4] == 'task-diff':
-                if method != 'POST':
-                    result = {'error': 'Task-diff endpoint requires POST with items in body'}
-                else:
-                    env = parts[3]
-                    items = body.get('items', [])
-                    result = _get_task_definition_diffs(orchestrator, config, env, items)
-
-            elif len(parts) >= 4:
-                # /api/events/{env}?hours=24&types=build,deploy&services=backend,frontend
-                env = parts[3]
-                query_params = event.get('queryStringParameters') or {}
-                hours = int(query_params.get('hours', 24))
-                hours = min(max(hours, 1), 168)  # 1h to 7 days
-                types_str = query_params.get('types', '')
-                event_types = types_str.split(',') if types_str else None
-                services_str = query_params.get('services', '')
-                services = services_str.split(',') if services_str else None
-                result = events_provider.get_events(env, hours=hours, event_types=event_types, services=services)
+            # Validate project exists
+            project_config = config.get_project(project)
+            if not project_config:
+                result = {'error': f'Unknown project: {project}'}
             else:
-                result = {'error': 'Invalid path. Use /api/events/{env}'}
+                # Get providers for this project
+                providers = get_providers(project)
+                ci = providers['ci']
+                orchestrator = providers['orchestrator']
+                events_provider = providers['events']
+                database = providers['database']
+                cdn = providers['cdn']
+                infrastructure = providers['infrastructure']
 
-        # -------------------------------------------------------------
-        # ACTION ENDPOINTS (POST only)
-        # -------------------------------------------------------------
-        elif path.startswith('/api/actions/'):
-            if method != 'POST':
-                result = {'error': 'Actions require POST method'}
-            else:
-                parts = path.split('/')
-
-                if len(parts) >= 5 and parts[3] == 'build':
-                    # POST /api/actions/build/{service}
-                    service = parts[4]
-                    image_tag = body.get('imageTag', 'latest')
-                    source_revision = body.get('sourceRevision', '')
-                    result = ci.trigger_build(service, user_email, image_tag, source_revision)
-
-                elif len(parts) >= 6 and parts[3] == 'deploy':
-                    # POST /api/actions/deploy/{env}/{service}/{action}
-                    env = parts[4]
-                    service = parts[5]
-                    action = parts[6] if len(parts) > 6 else 'reload'
-
-                    if action == 'reload':
-                        result = orchestrator.force_deployment(env, service, user_email)
-                    elif action == 'latest':
-                        result = ci.trigger_deploy(env, service, user_email)
-                    elif action == 'stop':
-                        result = orchestrator.scale_service(env, service, 0, user_email)
-                    elif action == 'start':
-                        desired_count = int(body.get('desiredCount', 1))
-                        if desired_count < 1 or desired_count > 10:
-                            result = {'error': 'desiredCount must be between 1 and 10'}
-                        else:
-                            result = orchestrator.scale_service(env, service, desired_count, user_email)
-                    else:
-                        result = {'error': f'Unknown action: {action}'}
-
-                elif len(parts) >= 5 and parts[3] == 'rds':
-                    # POST /api/actions/rds/{env}/{action}
-                    env = parts[4]
-                    action = parts[5] if len(parts) > 5 else None
-
-                    if not database:
-                        result = {'error': 'Database provider not configured'}
-                    elif action == 'stop':
-                        result = database.stop_database(env, user_email)
-                    elif action == 'start':
-                        result = database.start_database(env, user_email)
-                    else:
-                        result = {'error': 'Use stop or start for RDS action'}
-
-                elif len(parts) >= 5 and parts[3] == 'cloudfront':
-                    # POST /api/actions/cloudfront/{env}/invalidate
-                    env = parts[4]
-                    action = parts[5] if len(parts) > 5 else None
-
-                    if not cdn:
-                        result = {'error': 'CDN provider not configured'}
-                    elif action == 'invalidate':
-                        distribution_id = body.get('distributionId')
-                        paths = body.get('paths', ['/*'])
-                        if not distribution_id:
-                            result = {'error': 'distributionId is required'}
-                        else:
-                            result = cdn.invalidate_cache(env, distribution_id, paths, user_email)
-                    else:
-                        result = {'error': 'Use invalidate for CloudFront action'}
-
-                else:
-                    result = {'error': 'Invalid action path'}
+                # Route to appropriate handler
+                result = route_project_request(
+                    project, resource, parts, method, body, event,
+                    config, ci, orchestrator, events_provider, database, cdn, infrastructure, user_email
+                )
 
         else:
             result = {'error': f'Unknown path: {path}'}
@@ -482,17 +193,327 @@ def lambda_handler(event, context):
         }
 
 
+def route_project_request(project, resource, parts, method, body, event,
+                          config, ci, orchestrator, events_provider, database, cdn, infrastructure, user_email):
+    """Route project-scoped requests"""
+    query_params = event.get('queryStringParameters') or {}
+
+    # -------------------------------------------------------------
+    # SERVICES ENDPOINTS: /api/{project}/services/...
+    # -------------------------------------------------------------
+    if resource == 'services':
+        if len(parts) == 4:
+            # /api/{project}/services - list all environments
+            project_config = config.get_project(project)
+            result = {
+                'project': project,
+                'environments': {},
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            for env_name, env_config in project_config.environments.items():
+                try:
+                    services = orchestrator.get_services(env_name)
+                    result['environments'][env_name] = {
+                        'accountId': env_config.account_id,
+                        'services': {
+                            svc_name: _format_service_summary(svc)
+                            for svc_name, svc in services.items()
+                            if not isinstance(svc, dict) or 'error' not in svc
+                        }
+                    }
+                except Exception as e:
+                    result['environments'][env_name] = {'error': str(e)}
+            return result
+
+        elif len(parts) == 5:
+            # /api/{project}/services/{env}
+            env = parts[4]
+            env_config = config.get_environment(project, env)
+            if not env_config:
+                return {'error': f'Unknown environment: {env} for project {project}'}
+
+            services = orchestrator.get_services(env)
+            return {
+                'project': project,
+                'environment': env,
+                'accountId': env_config.account_id,
+                'services': {
+                    svc_name: _format_service_summary(svc)
+                    for svc_name, svc in services.items()
+                    if not isinstance(svc, dict) or 'error' not in svc
+                },
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+        elif len(parts) >= 6:
+            # /api/{project}/services/{env}/{service}
+            env = parts[4]
+            service = parts[5]
+            svc = orchestrator.get_service(env, service)
+            return _format_service(svc)
+
+    # -------------------------------------------------------------
+    # DETAILS ENDPOINT: /api/{project}/details/{env}/{service}
+    # -------------------------------------------------------------
+    elif resource == 'details':
+        if len(parts) >= 6:
+            env = parts[4]
+            service = parts[5]
+            details = orchestrator.get_service_details(env, service)
+            return _format_service_details(details)
+        return {'error': 'Invalid path. Use /api/{project}/details/{env}/{service}'}
+
+    # -------------------------------------------------------------
+    # PIPELINES ENDPOINTS: /api/{project}/pipelines/{type}/{service}/{env?}
+    # -------------------------------------------------------------
+    elif resource == 'pipelines':
+        if len(parts) >= 6:
+            pipeline_type = parts[4]  # build or deploy
+            service = parts[5]
+            env = parts[6] if len(parts) > 6 else None
+
+            if pipeline_type == 'build':
+                pipeline = ci.get_build_pipeline(service)
+                return _format_pipeline(pipeline)
+            else:
+                if not env:
+                    return {'error': 'Environment required for deploy pipeline'}
+                pipeline = ci.get_deploy_pipeline(env, service)
+                return _format_pipeline(pipeline)
+        return {'error': 'Invalid path'}
+
+    # -------------------------------------------------------------
+    # IMAGES ENDPOINT: /api/{project}/images/{service}
+    # -------------------------------------------------------------
+    elif resource == 'images':
+        if len(parts) >= 5:
+            service = parts[4]
+            images = ci.get_images(service)
+            return {
+                'project': project,
+                'repositoryName': config.get_ecr_repo(project, service),
+                'images': [_format_image(img) for img in images]
+            }
+        return {'error': 'Invalid path'}
+
+    # -------------------------------------------------------------
+    # METRICS ENDPOINT: /api/{project}/metrics/{env}/{service}
+    # -------------------------------------------------------------
+    elif resource == 'metrics':
+        if len(parts) >= 6:
+            env = parts[4]
+            service = parts[5]
+            return orchestrator.get_metrics(env, service)
+        return {'error': 'Invalid path'}
+
+    # -------------------------------------------------------------
+    # INFRASTRUCTURE ENDPOINT: /api/{project}/infrastructure/{env}
+    # -------------------------------------------------------------
+    elif resource == 'infrastructure':
+        if len(parts) >= 5:
+            env = parts[4]
+            env_config = config.get_environment(project, env)
+            if not env_config:
+                return {'error': f'Unknown environment: {env} for project {project}'}
+
+            # Check for sub-resources
+            if len(parts) >= 6:
+                sub_resource = parts[5]
+
+                if sub_resource == 'routing':
+                    # /api/{project}/infrastructure/{env}/routing
+                    sg_str = query_params.get('securityGroups', '')
+                    security_groups_list = sg_str.split(',') if sg_str else None
+                    return infrastructure.get_routing_details(env, security_groups_list)
+
+                elif sub_resource == 'enis':
+                    # /api/{project}/infrastructure/{env}/enis
+                    subnet_id = query_params.get('subnetId')
+                    search_ip = query_params.get('searchIp')
+                    vpc_id = query_params.get('vpcId')
+                    return infrastructure.get_enis(env, vpc_id, subnet_id, search_ip)
+
+                elif sub_resource == 'security-group' and len(parts) >= 7:
+                    # /api/{project}/infrastructure/{env}/security-group/{sg_id}
+                    sg_id = parts[6]
+                    return infrastructure.get_security_group(env, sg_id)
+
+            # /api/{project}/infrastructure/{env} - main infrastructure info
+            discovery_tags = None
+            discovery_tags_str = query_params.get('discoveryTags', '')
+            if discovery_tags_str:
+                try:
+                    discovery_tags = json.loads(discovery_tags_str)
+                except json.JSONDecodeError:
+                    discovery_tags = None
+
+            services_str = query_params.get('services', '')
+            services_list = services_str.split(',') if services_str else None
+
+            domain_config = None
+            domain_config_str = query_params.get('domainConfig', '')
+            if domain_config_str:
+                try:
+                    domain_config = json.loads(domain_config_str)
+                except json.JSONDecodeError:
+                    domain_config = None
+
+            databases_str = query_params.get('databases', '')
+            databases_list = databases_str.split(',') if databases_str else None
+
+            caches_str = query_params.get('caches', '')
+            caches_list = caches_str.split(',') if caches_str else None
+
+            return infrastructure.get_infrastructure(
+                env,
+                discovery_tags=discovery_tags,
+                services=services_list,
+                domain_config=domain_config,
+                databases=databases_list,
+                caches=caches_list
+            )
+
+        return {'error': 'Invalid path. Use /api/{project}/infrastructure/{env}'}
+
+    # -------------------------------------------------------------
+    # TASKS ENDPOINT: /api/{project}/tasks/{env}/{service}/{task_id}
+    # -------------------------------------------------------------
+    elif resource == 'tasks':
+        if len(parts) >= 7:
+            env = parts[4]
+            service = parts[5]
+            task_id = parts[6]
+            return orchestrator.get_task_details(env, service, task_id)
+        return {'error': 'Invalid path. Use /api/{project}/tasks/{env}/{service}/{task_id}'}
+
+    # -------------------------------------------------------------
+    # LOGS ENDPOINT: /api/{project}/logs/{env}/{service}
+    # -------------------------------------------------------------
+    elif resource == 'logs':
+        if len(parts) >= 6:
+            env = parts[4]
+            service = parts[5]
+            logs = orchestrator.get_service_logs(env, service)
+            return {
+                'project': project,
+                'environment': env,
+                'service': service,
+                'logs': logs
+            }
+        return {'error': 'Invalid path'}
+
+    # -------------------------------------------------------------
+    # EVENTS TIMELINE: /api/{project}/events/{env}
+    # -------------------------------------------------------------
+    elif resource == 'events':
+        # /api/{project}/events/{env}/enrich - POST to enrich events with CloudTrail
+        if len(parts) >= 6 and parts[5] == 'enrich':
+            if method != 'POST':
+                return {'error': 'Enrich endpoint requires POST with events in body'}
+            env = parts[4]
+            return events_provider.enrich_events(body, env=env)
+
+        # /api/{project}/events/{env}/task-diff - POST to compute task definition diffs
+        elif len(parts) >= 6 and parts[5] == 'task-diff':
+            if method != 'POST':
+                return {'error': 'Task-diff endpoint requires POST with items in body'}
+            env = parts[4]
+            items = body.get('items', [])
+            return _get_task_definition_diffs(orchestrator, config, project, env, items)
+
+        elif len(parts) >= 5:
+            # /api/{project}/events/{env}?hours=24&types=build,deploy&services=backend,frontend
+            env = parts[4]
+            hours = int(query_params.get('hours', 24))
+            hours = min(max(hours, 1), 168)  # 1h to 7 days
+            types_str = query_params.get('types', '')
+            event_types = types_str.split(',') if types_str else None
+            services_str = query_params.get('services', '')
+            services = services_str.split(',') if services_str else None
+            return events_provider.get_events(env, hours=hours, event_types=event_types, services=services)
+
+        return {'error': 'Invalid path. Use /api/{project}/events/{env}'}
+
+    # -------------------------------------------------------------
+    # ACTION ENDPOINTS: /api/{project}/actions/...
+    # -------------------------------------------------------------
+    elif resource == 'actions':
+        if method != 'POST':
+            return {'error': 'Actions require POST method'}
+
+        if len(parts) >= 6 and parts[4] == 'build':
+            # POST /api/{project}/actions/build/{service}
+            service = parts[5]
+            image_tag = body.get('imageTag', 'latest')
+            source_revision = body.get('sourceRevision', '')
+            return ci.trigger_build(service, user_email, image_tag, source_revision)
+
+        elif len(parts) >= 7 and parts[4] == 'deploy':
+            # POST /api/{project}/actions/deploy/{env}/{service}/{action}
+            env = parts[5]
+            service = parts[6]
+            action = parts[7] if len(parts) > 7 else 'reload'
+
+            if action == 'reload':
+                return orchestrator.force_deployment(env, service, user_email)
+            elif action == 'latest':
+                return ci.trigger_deploy(env, service, user_email)
+            elif action == 'stop':
+                return orchestrator.scale_service(env, service, 0, user_email)
+            elif action == 'start':
+                desired_count = int(body.get('desiredCount', 1))
+                if desired_count < 1 or desired_count > 10:
+                    return {'error': 'desiredCount must be between 1 and 10'}
+                return orchestrator.scale_service(env, service, desired_count, user_email)
+            else:
+                return {'error': f'Unknown action: {action}'}
+
+        elif len(parts) >= 6 and parts[4] == 'rds':
+            # POST /api/{project}/actions/rds/{env}/{action}
+            env = parts[5]
+            action = parts[6] if len(parts) > 6 else None
+
+            if not database:
+                return {'error': 'Database provider not configured'}
+            elif action == 'stop':
+                return database.stop_database(env, user_email)
+            elif action == 'start':
+                return database.start_database(env, user_email)
+            else:
+                return {'error': 'Use stop or start for RDS action'}
+
+        elif len(parts) >= 6 and parts[4] == 'cloudfront':
+            # POST /api/{project}/actions/cloudfront/{env}/invalidate
+            env = parts[5]
+            action = parts[6] if len(parts) > 6 else None
+
+            if not cdn:
+                return {'error': 'CDN provider not configured'}
+            elif action == 'invalidate':
+                distribution_id = body.get('distributionId')
+                paths = body.get('paths', ['/*'])
+                if not distribution_id:
+                    return {'error': 'distributionId is required'}
+                return cdn.invalidate_cache(env, distribution_id, paths, user_email)
+            else:
+                return {'error': 'Use invalidate for CloudFront action'}
+
+        return {'error': 'Invalid action path'}
+
+    return {'error': f'Unknown resource: {resource}'}
+
+
 # =============================================================================
 # TASK DEFINITION DIFF HELPER
 # =============================================================================
 
-def _get_task_definition_diffs(orchestrator, config, env: str, items: list) -> dict:
+def _get_task_definition_diffs(orchestrator, config, project: str, env: str, items: list) -> dict:
     """Get task definition diffs for a batch of events"""
     from utils.aws import get_cross_account_client
 
-    env_config = config.get_environment(env)
+    env_config = config.get_environment(project, env)
     if not env_config:
-        return {'error': f'Unknown environment: {env}'}
+        return {'error': f'Unknown environment: {env} for project {project}'}
 
     try:
         ecs = get_cross_account_client('ecs', env_config.account_id, env_config.region)

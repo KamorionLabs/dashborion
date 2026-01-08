@@ -1,6 +1,6 @@
 """
 Dynamic configuration system for the Operations Dashboard.
-Supports multi-client, multi-provider configurations loaded from environment variables.
+Supports multi-project, multi-environment configurations loaded from environment variables.
 """
 
 import os
@@ -13,7 +13,7 @@ from functools import lru_cache
 @dataclass
 class NamingPattern:
     """Resource naming patterns - supports placeholders {project}, {env}, {service}"""
-    cluster: str = "{project}-{env}-cluster"
+    cluster: str = "{project}-{env}"
     service: str = "{project}-{env}-{service}"
     task_family: str = "{project}-{env}-{service}"
     build_pipeline: str = "{project}-build-{service}"
@@ -33,7 +33,7 @@ class NamingPattern:
 
 @dataclass
 class EnvironmentConfig:
-    """Configuration for a single environment"""
+    """Configuration for a single environment within a project"""
     account_id: str
     services: List[str]
     region: str = "eu-west-3"
@@ -42,11 +42,41 @@ class EnvironmentConfig:
 
     def to_dict(self) -> dict:
         return {
-            'account_id': self.account_id,
+            'accountId': self.account_id,
             'services': self.services,
             'region': self.region,
-            'cluster_name': self.cluster_name,
+            'clusterName': self.cluster_name,
             'namespace': self.namespace
+        }
+
+
+@dataclass
+class CrossAccountRole:
+    """IAM roles for cross-account access"""
+    read_role_arn: str
+    action_role_arn: str
+
+
+@dataclass
+class ProjectConfig:
+    """Configuration for a single project"""
+    name: str
+    display_name: str
+    environments: Dict[str, EnvironmentConfig]
+    idp_group_mapping: Optional[Dict[str, Any]] = None
+
+    def get_environment(self, env: str) -> Optional[EnvironmentConfig]:
+        """Get environment configuration by name"""
+        return self.environments.get(env)
+
+    def to_dict(self) -> dict:
+        return {
+            'name': self.name,
+            'displayName': self.display_name,
+            'environments': {
+                env: cfg.to_dict()
+                for env, cfg in self.environments.items()
+            }
         }
 
 
@@ -108,11 +138,11 @@ class OrchestratorConfig:
 @dataclass
 class DashboardConfig:
     """Main dashboard configuration"""
-    project_name: str
     region: str
     shared_services_account: str
     sso_portal_url: str
-    environments: Dict[str, EnvironmentConfig]
+    projects: Dict[str, ProjectConfig]
+    cross_account_roles: Dict[str, CrossAccountRole]  # Indexed by account ID
     naming_pattern: NamingPattern
     ci_provider: CIProviderConfig
     orchestrator: OrchestratorConfig
@@ -133,49 +163,61 @@ class DashboardConfig:
         'eks_workload': "https://{region}.console.aws.amazon.com/eks/home?region={region}#/clusters/{cluster}/workloads?namespace={namespace}",
     })
 
-    def get_environment(self, env: str) -> Optional[EnvironmentConfig]:
-        """Get environment configuration by name"""
-        return self.environments.get(env)
+    def get_project(self, project: str) -> Optional[ProjectConfig]:
+        """Get project configuration by name"""
+        return self.projects.get(project)
 
-    def get_cluster_name(self, env: str) -> str:
-        """Get cluster name for an environment"""
-        env_config = self.get_environment(env)
+    def get_environment(self, project: str, env: str) -> Optional[EnvironmentConfig]:
+        """Get environment configuration for a project"""
+        proj = self.get_project(project)
+        if proj:
+            return proj.get_environment(env)
+        return None
+
+    def get_cross_account_role(self, account_id: str) -> Optional[CrossAccountRole]:
+        """Get cross-account role by AWS account ID"""
+        return self.cross_account_roles.get(account_id)
+
+    def get_cluster_name(self, project: str, env: str) -> str:
+        """Get cluster name for a project/environment"""
+        env_config = self.get_environment(project, env)
         if env_config and env_config.cluster_name:
             return env_config.cluster_name
-        return self.naming_pattern.format('cluster', project=self.project_name, env=env)
+        return self.naming_pattern.format('cluster', project=project, env=env)
 
-    def get_service_name(self, env: str, service: str) -> str:
+    def get_service_name(self, project: str, env: str, service: str) -> str:
         """Get full service name"""
-        return self.naming_pattern.format('service', project=self.project_name, env=env, service=service)
+        return self.naming_pattern.format('service', project=project, env=env, service=service)
 
-    def get_log_group(self, env: str, service: str) -> str:
+    def get_log_group(self, project: str, env: str, service: str) -> str:
         """Get CloudWatch log group"""
-        return self.naming_pattern.format('log_group', project=self.project_name, env=env, service=service)
+        return self.naming_pattern.format('log_group', project=project, env=env, service=service)
 
-    def get_build_pipeline_name(self, service: str) -> str:
+    def get_build_pipeline_name(self, project: str, service: str) -> str:
         """Get build pipeline name"""
-        return self.naming_pattern.format('build_pipeline', project=self.project_name, service=service)
+        return self.naming_pattern.format('build_pipeline', project=project, service=service)
 
-    def get_deploy_pipeline_name(self, env: str, service: str) -> str:
+    def get_deploy_pipeline_name(self, project: str, env: str, service: str) -> str:
         """Get deploy pipeline name"""
-        return self.naming_pattern.format('deploy_pipeline', project=self.project_name, env=env, service=service)
+        return self.naming_pattern.format('deploy_pipeline', project=project, env=env, service=service)
 
-    def get_ecr_repo(self, service: str) -> str:
+    def get_ecr_repo(self, project: str, service: str) -> str:
         """Get ECR repository name"""
-        return self.naming_pattern.format('ecr_repo', project=self.project_name, service=service)
+        return self.naming_pattern.format('ecr_repo', project=project, service=service)
 
-    def get_db_identifier(self, env: str) -> str:
+    def get_db_identifier(self, project: str, env: str) -> str:
         """Get RDS database identifier"""
-        return self.naming_pattern.format('db_identifier', project=self.project_name, env=env)
+        return self.naming_pattern.format('db_identifier', project=project, env=env)
 
-    def get_cross_account_role(self, env: str, role_type: str = 'read') -> str:
-        """Get cross-account IAM role ARN"""
-        env_config = self.get_environment(env)
-        if not env_config:
-            raise ValueError(f"Unknown environment: {env}")
+    def get_read_role_arn(self, account_id: str) -> Optional[str]:
+        """Get read role ARN for an account"""
+        role = self.get_cross_account_role(account_id)
+        return role.read_role_arn if role else None
 
-        role_name = f"{self.project_name}-dashboard-{role_type}-role"
-        return f"arn:aws:iam::{env_config.account_id}:role/{role_name}"
+    def get_action_role_arn(self, account_id: str) -> Optional[str]:
+        """Get action role ARN for an account"""
+        role = self.get_cross_account_role(account_id)
+        return role.action_role_arn if role else None
 
     def build_console_url(self, url_type: str, **kwargs) -> str:
         """Build a console URL from template"""
@@ -187,19 +229,14 @@ class DashboardConfig:
     def to_dict(self) -> dict:
         """Convert config to dictionary for API response"""
         return {
-            'projectName': self.project_name,
             'region': self.region,
             'ssoPortalUrl': self.sso_portal_url,
             'ciProvider': self.ci_provider.type,
             'orchestrator': self.orchestrator.type,
             'githubOrg': self.github_org,
-            'environments': {
-                env: {
-                    'accountId': cfg.account_id,
-                    'services': cfg.services,
-                    'region': cfg.region
-                }
-                for env, cfg in self.environments.items()
+            'projects': {
+                name: proj.to_dict()
+                for name, proj in self.projects.items()
             }
         }
 
@@ -212,21 +249,46 @@ def get_config() -> DashboardConfig:
     """
 
     # Core settings
-    project_name = os.environ.get('PROJECT_NAME', 'myproject')
     region = os.environ.get('AWS_REGION_DEFAULT', os.environ.get('AWS_REGION', 'eu-west-3'))
     shared_services_account = os.environ.get('SHARED_SERVICES_ACCOUNT', '')
     sso_portal_url = os.environ.get('SSO_PORTAL_URL', '')
 
-    # Parse environments JSON
-    environments_raw = json.loads(os.environ.get('ENVIRONMENTS', '{}'))
-    environments = {}
-    for env_name, env_data in environments_raw.items():
-        environments[env_name] = EnvironmentConfig(
-            account_id=env_data.get('account_id', ''),
-            services=env_data.get('services', []),
-            region=env_data.get('region', region),
-            cluster_name=env_data.get('cluster_name'),
-            namespace=env_data.get('namespace')
+    # Parse projects JSON
+    projects_raw = json.loads(os.environ.get('PROJECTS', '{}'))
+    projects = {}
+    for project_name, project_data in projects_raw.items():
+        # Skip comment entries
+        if project_name.startswith('_'):
+            continue
+
+        environments = {}
+        envs_data = project_data.get('environments', {})
+        for env_name, env_data in envs_data.items():
+            environments[env_name] = EnvironmentConfig(
+                account_id=env_data.get('accountId', ''),
+                services=env_data.get('services', []),
+                region=env_data.get('region', region),
+                cluster_name=env_data.get('clusterName'),
+                namespace=env_data.get('namespace')
+            )
+
+        projects[project_name] = ProjectConfig(
+            name=project_name,
+            display_name=project_data.get('displayName', project_name),
+            environments=environments,
+            idp_group_mapping=project_data.get('idpGroupMapping')
+        )
+
+    # Parse cross-account roles JSON (indexed by account ID)
+    roles_raw = json.loads(os.environ.get('CROSS_ACCOUNT_ROLES', '{}'))
+    cross_account_roles = {}
+    for account_id, role_data in roles_raw.items():
+        # Skip comment entries
+        if account_id.startswith('_'):
+            continue
+        cross_account_roles[account_id] = CrossAccountRole(
+            read_role_arn=role_data.get('readRoleArn', ''),
+            action_role_arn=role_data.get('actionRoleArn', '')
         )
 
     # Parse naming pattern
@@ -261,11 +323,11 @@ def get_config() -> DashboardConfig:
     github_org = os.environ.get('GITHUB_ORG', ci_provider.github_owner)
 
     return DashboardConfig(
-        project_name=project_name,
         region=region,
         shared_services_account=shared_services_account,
         sso_portal_url=sso_portal_url,
-        environments=environments,
+        projects=projects,
+        cross_account_roles=cross_account_roles,
         naming_pattern=naming_pattern,
         ci_provider=ci_provider,
         orchestrator=orchestrator,
@@ -278,15 +340,20 @@ def clear_config_cache():
     get_config.cache_clear()
 
 
-# Helper functions for backwards compatibility with existing code
-def get_environments() -> Dict[str, EnvironmentConfig]:
-    """Get all environment configurations"""
-    return get_config().environments
+# Helper functions
+def get_projects() -> Dict[str, ProjectConfig]:
+    """Get all project configurations"""
+    return get_config().projects
 
 
-def get_project_name() -> str:
-    """Get project name"""
-    return get_config().project_name
+def get_project(project: str) -> Optional[ProjectConfig]:
+    """Get a specific project configuration"""
+    return get_config().get_project(project)
+
+
+def get_environment(project: str, env: str) -> Optional[EnvironmentConfig]:
+    """Get environment configuration for a project"""
+    return get_config().get_environment(project, env)
 
 
 def get_region() -> str:

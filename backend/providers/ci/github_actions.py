@@ -25,8 +25,9 @@ class GitHubActionsProvider(CIProvider):
     Uses GitHub REST API to interact with workflows.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.github_owner = config.ci_provider.github_owner
         self.repo_pattern = config.ci_provider.github_repo_pattern
         self.token_secret = config.ci_provider.github_token_secret
@@ -50,7 +51,7 @@ class GitHubActionsProvider(CIProvider):
     def _get_repo_name(self, service: str) -> str:
         """Get repository name from pattern"""
         return self.repo_pattern.format(
-            project=self.config.project_name,
+            project=self.project,
             service=service
         )
 

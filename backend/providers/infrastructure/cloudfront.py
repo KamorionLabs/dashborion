@@ -16,26 +16,27 @@ class CloudFrontProvider(CDNProvider):
     AWS CloudFront implementation of the CDN provider.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def _get_cloudfront_client(self, env: str):
         """Get CloudFront client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('cloudfront', env_config.account_id)
 
     def get_distribution(self, env: str) -> dict:
         """Get CloudFront distribution for an environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         try:
             cloudfront = self._get_cloudfront_client(env)
-            domain_suffix = f"{env}.{self.config.project_name}"
+            domain_suffix = f"{env}.{self.project}"
 
             distributions = cloudfront.list_distributions()
             for dist in distributions.get('DistributionList', {}).get('Items', []):
@@ -114,7 +115,7 @@ class CloudFrontProvider(CDNProvider):
 
     def invalidate_cache(self, env: str, distribution_id: str, paths: List[str], user_email: str) -> dict:
         """Create CloudFront cache invalidation"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 

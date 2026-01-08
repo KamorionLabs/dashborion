@@ -393,23 +393,23 @@ class ProviderFactory:
         cls._cdn_providers[provider_type] = provider_class
 
     @classmethod
-    def get_ci_provider(cls, config) -> CIProvider:
+    def get_ci_provider(cls, config, project: str) -> CIProvider:
         """Get CI provider instance based on config"""
         provider_type = config.ci_provider.type
         if provider_type not in cls._ci_providers:
             raise ValueError(f"Unknown CI provider type: {provider_type}")
-        return cls._ci_providers[provider_type](config)
+        return cls._ci_providers[provider_type](config, project)
 
     @classmethod
-    def get_orchestrator_provider(cls, config) -> OrchestratorProvider:
+    def get_orchestrator_provider(cls, config, project: str) -> OrchestratorProvider:
         """Get orchestrator provider instance based on config"""
         provider_type = config.orchestrator.type
         if provider_type not in cls._orchestrator_providers:
             raise ValueError(f"Unknown orchestrator type: {provider_type}")
-        return cls._orchestrator_providers[provider_type](config)
+        return cls._orchestrator_providers[provider_type](config, project)
 
     @classmethod
-    def get_events_provider(cls, config) -> EventsProvider:
+    def get_events_provider(cls, config, project: str) -> EventsProvider:
         """Get events provider instance"""
         # Default to combined provider that aggregates from CI + orchestrator
         provider_type = getattr(config, 'events_provider_type', 'combined')
@@ -418,23 +418,23 @@ class ProviderFactory:
             provider_type = 'combined'
         if provider_type not in cls._events_providers:
             raise ValueError(f"No events provider registered")
-        return cls._events_providers[provider_type](config)
+        return cls._events_providers[provider_type](config, project)
 
     @classmethod
-    def get_database_provider(cls, config) -> Optional[DatabaseProvider]:
+    def get_database_provider(cls, config, project: str) -> Optional[DatabaseProvider]:
         """Get database provider instance"""
         provider_type = getattr(config, 'database_provider_type', 'rds')
         if provider_type not in cls._database_providers:
             return None
-        return cls._database_providers[provider_type](config)
+        return cls._database_providers[provider_type](config, project)
 
     @classmethod
-    def get_cdn_provider(cls, config) -> Optional[CDNProvider]:
+    def get_cdn_provider(cls, config, project: str) -> Optional[CDNProvider]:
         """Get CDN provider instance"""
         provider_type = getattr(config, 'cdn_provider_type', 'cloudfront')
         if provider_type not in cls._cdn_providers:
             return None
-        return cls._cdn_providers[provider_type](config)
+        return cls._cdn_providers[provider_type](config, project)
 
     @classmethod
     def register_network_provider(cls, provider_type: str, provider_class: type):
@@ -452,25 +452,25 @@ class ProviderFactory:
         cls._cache_providers[provider_type] = provider_class
 
     @classmethod
-    def get_network_provider(cls, config) -> Optional['NetworkProvider']:
+    def get_network_provider(cls, config, project: str) -> Optional['NetworkProvider']:
         """Get network provider instance"""
         provider_type = getattr(config, 'network_provider_type', 'vpc')
         if provider_type not in cls._network_providers:
             return None
-        return cls._network_providers[provider_type](config)
+        return cls._network_providers[provider_type](config, project)
 
     @classmethod
-    def get_loadbalancer_provider(cls, config) -> Optional['LoadBalancerProvider']:
+    def get_loadbalancer_provider(cls, config, project: str) -> Optional['LoadBalancerProvider']:
         """Get load balancer provider instance"""
         provider_type = getattr(config, 'loadbalancer_provider_type', 'alb')
         if provider_type not in cls._loadbalancer_providers:
             return None
-        return cls._loadbalancer_providers[provider_type](config)
+        return cls._loadbalancer_providers[provider_type](config, project)
 
     @classmethod
-    def get_cache_provider(cls, config) -> Optional['CacheProvider']:
+    def get_cache_provider(cls, config, project: str) -> Optional['CacheProvider']:
         """Get cache provider instance"""
         provider_type = getattr(config, 'cache_provider_type', 'elasticache')
         if provider_type not in cls._cache_providers:
             return None
-        return cls._cache_providers[provider_type](config)
+        return cls._cache_providers[provider_type](config, project)

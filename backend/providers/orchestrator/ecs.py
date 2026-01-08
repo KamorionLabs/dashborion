@@ -50,30 +50,31 @@ class ECSProvider(OrchestratorProvider):
     AWS ECS Fargate implementation of the orchestrator provider.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def _get_ecs_client(self, env: str):
         """Get ECS client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('ecs', env_config.account_id, env_config.region)
 
     def _get_logs_client(self, env: str):
         """Get CloudWatch Logs client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         return get_cross_account_client('logs', env_config.account_id, env_config.region)
 
     def _get_cloudwatch_client(self, env: str):
         """Get CloudWatch client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         return get_cross_account_client('cloudwatch', env_config.account_id, env_config.region)
 
     def _get_secretsmanager_client(self, env: str):
         """Get Secrets Manager client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         return get_cross_account_client('secretsmanager', env_config.account_id, env_config.region)
 
     def _get_secret_name(self, secretsmanager, secret_arn: str, cache: dict) -> str:
@@ -92,7 +93,7 @@ class ECSProvider(OrchestratorProvider):
 
     def get_services(self, env: str) -> Dict[str, Service]:
         """Get all services for an environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -102,10 +103,10 @@ class ECSProvider(OrchestratorProvider):
                 result[service_name] = self.get_service(env, service_name)
             except Exception as e:
                 result[service_name] = Service(
-                    name=self.config.get_service_name(env, service_name),
+                    name=self.config.get_service_name(self.project, env, service_name),
                     service=service_name,
                     environment=env,
-                    cluster_name=self.config.get_cluster_name(env),
+                    cluster_name=self.config.get_cluster_name(self.project, env),
                     status='error',
                     desired_count=0,
                     running_count=0
@@ -115,13 +116,13 @@ class ECSProvider(OrchestratorProvider):
 
     def get_service(self, env: str, service: str) -> Service:
         """Get service information"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
 
         ecs = self._get_ecs_client(env)
-        cluster_name = self.config.get_cluster_name(env)
-        service_name = self.config.get_service_name(env, service)
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        service_name = self.config.get_service_name(self.project, env, service)
 
         # Get service info
         services_response = ecs.describe_services(
@@ -393,14 +394,14 @@ class ECSProvider(OrchestratorProvider):
         # Get basic service info first
         svc = self.get_service(env, service)
 
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         ecs = self._get_ecs_client(env)
         logs = self._get_logs_client(env)
         secretsmanager = self._get_secretsmanager_client(env)
         secret_name_cache = {}  # Cache to avoid repeated API calls
 
-        cluster_name = self.config.get_cluster_name(env)
-        service_name = self.config.get_service_name(env, service)
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        service_name = self.config.get_service_name(self.project, env, service)
 
         # Get task definition details
         services_response = ecs.describe_services(
@@ -484,7 +485,7 @@ class ECSProvider(OrchestratorProvider):
         all_vars = sorted(all_vars, key=lambda x: x['name'])
 
         # Get recent logs
-        log_group = self.config.get_log_group(env, service)
+        log_group = self.config.get_log_group(self.project, env, service)
         recent_logs = self._get_recent_logs(logs, log_group)
 
         # Get ECS events
@@ -595,15 +596,15 @@ class ECSProvider(OrchestratorProvider):
 
     def get_task_details(self, env: str, service: str, task_id: str) -> dict:
         """Get detailed task information"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         ecs = self._get_ecs_client(env)
         logs = self._get_logs_client(env)
 
-        cluster_name = self.config.get_cluster_name(env)
-        service_name = self.config.get_service_name(env, service)
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        service_name = self.config.get_service_name(self.project, env, service)
 
         try:
             task_arn = f"arn:aws:ecs:{env_config.region}:{env_config.account_id}:task/{cluster_name}/{task_id}"
@@ -659,7 +660,7 @@ class ECSProvider(OrchestratorProvider):
                             eni_id = detail.get('value')
 
             # Get logs
-            log_group = self.config.get_log_group(env, service)
+            log_group = self.config.get_log_group(self.project, env, service)
             log_stream = f"ecs/{service}/{task_id}"
             task_logs = self._get_task_logs(logs, log_group, log_stream)
 
@@ -749,17 +750,17 @@ class ECSProvider(OrchestratorProvider):
     def get_service_logs(self, env: str, service: str, lines: int = 50) -> List[dict]:
         """Get recent logs for a service"""
         logs = self._get_logs_client(env)
-        log_group = self.config.get_log_group(env, service)
+        log_group = self.config.get_log_group(self.project, env, service)
         return self._get_recent_logs(logs, log_group, lines)
 
     def scale_service(self, env: str, service: str, replicas: int, user_email: str) -> dict:
         """Scale service to specified replica count"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
-        cluster_name = self.config.get_cluster_name(env)
-        service_name = self.config.get_service_name(env, service)
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        service_name = self.config.get_service_name(self.project, env, service)
 
         try:
             ecs = get_action_client('ecs', env_config.account_id, user_email, env_config.region)
@@ -783,12 +784,12 @@ class ECSProvider(OrchestratorProvider):
 
     def force_deployment(self, env: str, service: str, user_email: str) -> dict:
         """Force a new deployment (reload)"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
-        cluster_name = self.config.get_cluster_name(env)
-        service_name = self.config.get_service_name(env, service)
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        service_name = self.config.get_service_name(self.project, env, service)
 
         try:
             ecs = get_action_client('ecs', env_config.account_id, user_email, env_config.region)
@@ -821,7 +822,7 @@ class ECSProvider(OrchestratorProvider):
             databases: List of database types to look for (e.g., ["postgres", "mysql"])
             caches: List of cache types to look for (e.g., ["redis"])
         """
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -840,8 +841,8 @@ class ECSProvider(OrchestratorProvider):
         elasticache = get_cross_account_client('elasticache', account_id, env_config.region)
         ec2 = get_cross_account_client('ec2', account_id, env_config.region)
 
-        cluster_name = self.config.get_cluster_name(env)
-        domain_suffix = f"{env}.{self.config.project_name}.kamorion.cloud"
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        domain_suffix = f"{env}.{self.project}.kamorion.cloud"
 
         # Domain patterns - use domain_config or fallback to defaults
         if domain_config and domain_config.get('domains'):
@@ -1029,7 +1030,7 @@ class ECSProvider(OrchestratorProvider):
             services: List of service names to filter target groups (e.g., ['backend', 'frontend', 'cms'])
         """
         from urllib.parse import quote
-        alb_name = f"{self.config.project_name}-{env}-alb"
+        alb_name = f"{self.project}-{env}-alb"
 
         albs = elbv2.describe_load_balancers()
         for alb in albs.get('LoadBalancers', []):
@@ -1131,7 +1132,7 @@ class ECSProvider(OrchestratorProvider):
 
     def _get_services_for_infrastructure(self, ecs, env: str, cluster_name: str, account_id: str, services: list = None) -> dict:
         """Get ECS services with task details for infrastructure view"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         services_result = {}
 
         # Use provided services list or fall back to env_config.services
@@ -1139,7 +1140,7 @@ class ECSProvider(OrchestratorProvider):
 
         for svc_name in service_list:
             try:
-                service_name = self.config.get_service_name(env, svc_name)
+                service_name = self.config.get_service_name(self.project, env, svc_name)
                 svc_response = ecs.describe_services(cluster=cluster_name, services=[service_name])
 
                 if not svc_response['services']:
@@ -1258,7 +1259,7 @@ class ECSProvider(OrchestratorProvider):
                 db_tags = []
 
             # Check if discovery_tags match (or fallback to name-based matching)
-            tags_match = matches_discovery_tags(db_tags, discovery_tags) if discovery_tags else (self.config.project_name in db_id and env in db_id)
+            tags_match = matches_discovery_tags(db_tags, discovery_tags) if discovery_tags else (self.project in db_id and env in db_id)
 
             if tags_match:
                 return {
@@ -1319,7 +1320,7 @@ class ECSProvider(OrchestratorProvider):
                 cache_tags = []
 
             # Check if discovery_tags match (or fallback to name-based matching)
-            tags_match = matches_discovery_tags(cache_tags, discovery_tags) if discovery_tags else (self.config.project_name in cluster_id and env in cluster_id)
+            tags_match = matches_discovery_tags(cache_tags, discovery_tags) if discovery_tags else (self.project in cluster_id and env in cluster_id)
 
             if not tags_match:
                 continue
@@ -1394,7 +1395,7 @@ class ECSProvider(OrchestratorProvider):
 
     def _get_network_info(self, ec2, env: str, account_id: str) -> dict:
         """Get VPC and network info"""
-        vpc_name = f"{self.config.project_name}-{env}"
+        vpc_name = f"{self.project}-{env}"
 
         vpcs = ec2.describe_vpcs(
             Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}]
@@ -1547,7 +1548,7 @@ class ECSProvider(OrchestratorProvider):
 
     def get_routing_details(self, env: str, service_security_groups: list = None) -> dict:
         """Get detailed routing and security information (called on demand via toggle)"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -1555,7 +1556,7 @@ class ECSProvider(OrchestratorProvider):
         ec2 = self._get_ec2_client(env)
 
         # Get VPC ID
-        vpc_name = f"{self.config.project_name}-{env}"
+        vpc_name = f"{self.project}-{env}"
         vpcs = ec2.describe_vpcs(Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}])
         if not vpcs.get('Vpcs'):
             return {'error': f'VPC {vpc_name} not found'}
@@ -1909,13 +1910,13 @@ class ECSProvider(OrchestratorProvider):
 
     def get_metrics(self, env: str, service: str) -> dict:
         """Get service metrics (CPU, memory)"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         cloudwatch = self._get_cloudwatch_client(env)
-        cluster_name = self.config.get_cluster_name(env)
-        service_name = self.config.get_service_name(env, service)
+        cluster_name = self.config.get_cluster_name(self.project, env)
+        service_name = self.config.get_service_name(self.project, env, service)
 
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=6)

@@ -42,13 +42,14 @@ class ElastiCacheProvider(CacheProvider):
     Supports Redis, Valkey, and Memcached.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def _get_elasticache_client(self, env: str):
         """Get ElastiCache client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('elasticache', env_config.account_id, env_config.region)
@@ -61,7 +62,7 @@ class ElastiCacheProvider(CacheProvider):
             discovery_tags: Dict of {tag_key: tag_value} to filter resources
             cache_types: List of cache types to look for (e.g., ["redis", "valkey"])
         """
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -94,7 +95,7 @@ class ElastiCacheProvider(CacheProvider):
                     cache_tags = []
 
                 # Check if discovery_tags match (or fallback to name-based matching)
-                tags_match = matches_discovery_tags(cache_tags, discovery_tags) if discovery_tags else (self.config.project_name in cluster_id and env in cluster_id)
+                tags_match = matches_discovery_tags(cache_tags, discovery_tags) if discovery_tags else (self.project in cluster_id and env in cluster_id)
 
                 if not tags_match:
                     continue

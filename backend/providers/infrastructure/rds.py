@@ -14,32 +14,33 @@ class RDSProvider(DatabaseProvider):
     AWS RDS implementation of the database provider.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def _get_rds_client(self, env: str):
         """Get RDS client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('rds', env_config.account_id, env_config.region)
 
     def get_database_status(self, env: str) -> dict:
         """Get RDS database status for an environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         try:
             rds = self._get_rds_client(env)
-            db_identifier = self.config.get_db_identifier(env)
+            db_identifier = self.config.get_db_identifier(self.project, env)
 
             db_instances = rds.describe_db_instances()
             for db in db_instances.get('DBInstances', []):
                 db_id = db['DBInstanceIdentifier']
                 # Match by pattern or exact name
-                if db_id == db_identifier or (self.config.project_name in db_id and env in db_id):
+                if db_id == db_identifier or (self.project in db_id and env in db_id):
                     return {
                         'identifier': db_id,
                         'engine': db['Engine'],
@@ -87,11 +88,11 @@ class RDSProvider(DatabaseProvider):
 
     def _control_database(self, env: str, action: str, user_email: str) -> dict:
         """Start or stop RDS database instance"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
-        db_identifier = self.config.get_db_identifier(env)
+        db_identifier = self.config.get_db_identifier(self.project, env)
 
         try:
             rds = get_action_client('rds', env_config.account_id, user_email, env_config.region)
@@ -102,7 +103,7 @@ class RDSProvider(DatabaseProvider):
                 read_rds = self._get_rds_client(env)
                 db_instances = read_rds.describe_db_instances()
                 for db in db_instances.get('DBInstances', []):
-                    if self.config.project_name in db['DBInstanceIdentifier'] and env in db['DBInstanceIdentifier']:
+                    if self.project in db['DBInstanceIdentifier'] and env in db['DBInstanceIdentifier']:
                         db_identifier = db['DBInstanceIdentifier']
                         break
 

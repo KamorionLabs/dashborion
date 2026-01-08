@@ -15,13 +15,14 @@ class ALBProvider(LoadBalancerProvider):
     AWS Application Load Balancer implementation of the load balancer provider.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
     def _get_elbv2_client(self, env: str):
         """Get ELBv2 client for environment"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
         return get_cross_account_client('elbv2', env_config.account_id, env_config.region)
@@ -33,14 +34,14 @@ class ALBProvider(LoadBalancerProvider):
             env: Environment name
             services: List of service names to filter target groups (e.g., ['backend', 'frontend', 'cms'])
         """
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         account_id = env_config.account_id
         elbv2 = self._get_elbv2_client(env)
 
-        alb_name = f"{self.config.project_name}-{env}-alb"
+        alb_name = f"{self.project}-{env}-alb"
 
         try:
             albs = elbv2.describe_load_balancers()

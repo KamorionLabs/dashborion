@@ -15,16 +15,17 @@ class InfrastructureAggregator:
     to provide a unified infrastructure topology view.
     """
 
-    def __init__(self, config: DashboardConfig):
+    def __init__(self, config: DashboardConfig, project: str):
         self.config = config
+        self.project = project
         self.region = config.region
 
         # Get individual providers
-        self.network_provider = ProviderFactory.get_network_provider(config)
-        self.loadbalancer_provider = ProviderFactory.get_loadbalancer_provider(config)
-        self.cdn_provider = ProviderFactory.get_cdn_provider(config)
-        self.database_provider = ProviderFactory.get_database_provider(config)
-        self.cache_provider = ProviderFactory.get_cache_provider(config)
+        self.network_provider = ProviderFactory.get_network_provider(config, project)
+        self.loadbalancer_provider = ProviderFactory.get_loadbalancer_provider(config, project)
+        self.cdn_provider = ProviderFactory.get_cdn_provider(config, project)
+        self.database_provider = ProviderFactory.get_database_provider(config, project)
+        self.cache_provider = ProviderFactory.get_cache_provider(config, project)
 
     def get_infrastructure(self, env: str, discovery_tags: dict = None, services: list = None,
                            domain_config: dict = None, databases: list = None, caches: list = None) -> dict:
@@ -38,7 +39,7 @@ class InfrastructureAggregator:
             databases: List of database types to look for (e.g., ["postgres", "mysql"])
             caches: List of cache types to look for (e.g., ["redis"])
         """
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
@@ -48,7 +49,7 @@ class InfrastructureAggregator:
         caches = caches if caches is not None else ['redis']
 
         account_id = env_config.account_id
-        domain_suffix = f"{env}.{self.config.project_name}.kamorion.cloud"
+        domain_suffix = f"{env}.{self.project}.kamorion.cloud"
 
         # Domain patterns - use domain_config or fallback to defaults
         if domain_config and domain_config.get('domains'):
@@ -126,11 +127,11 @@ class InfrastructureAggregator:
 
         # ECS Services - still from orchestrator provider (keeps ECS-specific logic together)
         try:
-            orchestrator = ProviderFactory.get_orchestrator_provider(self.config)
+            orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
             result['services'] = orchestrator._get_services_for_infrastructure(
                 orchestrator._get_ecs_client(env),
                 env,
-                self.config.get_cluster_name(env),
+                self.config.get_cluster_name(self.project, env),
                 account_id,
                 services
             )
@@ -170,7 +171,7 @@ class InfrastructureAggregator:
             account_id: AWS account ID
             domain_prefixes: List of domain prefixes to match (e.g., ['fr', 'back', 'cms'])
         """
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         cloudfront = get_cross_account_client('cloudfront', account_id)
 
         distributions = cloudfront.list_distributions()
@@ -243,7 +244,7 @@ class InfrastructureAggregator:
 
     def _get_rds_for_infrastructure(self, env: str, account_id: str, discovery_tags: dict = None, databases: list = None) -> dict:
         """Get RDS database info (filtered by discovery_tags and database type)"""
-        env_config = self.config.get_environment(env)
+        env_config = self.config.get_environment(self.project, env)
         rds = get_cross_account_client('rds', account_id, env_config.region)
         databases = databases or ['postgres']
 
@@ -271,7 +272,7 @@ class InfrastructureAggregator:
 
             # Check if discovery_tags match (or fallback to name-based matching)
             from providers.infrastructure.elasticache import matches_discovery_tags
-            tags_match = matches_discovery_tags(db_tags, discovery_tags) if discovery_tags else (self.config.project_name in db_id and env in db_id)
+            tags_match = matches_discovery_tags(db_tags, discovery_tags) if discovery_tags else (self.project in db_id and env in db_id)
 
             if tags_match:
                 return {
