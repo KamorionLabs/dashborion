@@ -3,18 +3,22 @@ AWS utility functions for cross-account access and console URLs.
 """
 
 import boto3
-from functools import lru_cache
+import time
 from urllib.parse import quote
 from typing import Optional
 
 from config import get_config
 
 
-@lru_cache(maxsize=32)
+# Cache for cross-account clients with TTL (50 minutes, credentials expire after 1 hour)
+_client_cache = {}
+_CACHE_TTL_SECONDS = 50 * 60  # 50 minutes
+
+
 def get_cross_account_client(service: str, account_id: str, region: str = None):
     """
     Get boto3 client with cross-account role assumption.
-    Results are cached to avoid repeated STS calls.
+    Results are cached with TTL to avoid repeated STS calls while respecting token expiration.
 
     Args:
         service: AWS service name (e.g., 'ecs', 'logs')
@@ -28,9 +32,20 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
     region = region or config.region
     shared_account = config.shared_services_account
 
-    # If same account as shared-services, use direct client
+    # If same account as shared-services, use direct client (no caching needed)
     if account_id == shared_account:
         return boto3.client(service, region_name=region)
+
+    # Check cache
+    cache_key = (service, account_id, region)
+    now = time.time()
+
+    if cache_key in _client_cache:
+        cached_client, cached_time = _client_cache[cache_key]
+        if now - cached_time < _CACHE_TTL_SECONDS:
+            return cached_client
+        # Cache expired, remove it
+        del _client_cache[cache_key]
 
     # Get role ARN from config (indexed by account ID)
     role_arn = config.get_read_role_arn(account_id)
@@ -47,13 +62,18 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
     )
 
     credentials = assumed['Credentials']
-    return boto3.client(
+    client = boto3.client(
         service,
         region_name=region,
         aws_access_key_id=credentials['AccessKeyId'],
         aws_secret_access_key=credentials['SecretAccessKey'],
         aws_session_token=credentials['SessionToken']
     )
+
+    # Cache the client with timestamp
+    _client_cache[cache_key] = (client, now)
+
+    return client
 
 
 def get_action_client(service: str, account_id: str, user_email: str, region: str = None):
@@ -135,4 +155,5 @@ def get_user_email(event: dict) -> str:
 
 def clear_client_cache():
     """Clear the cross-account client cache"""
-    get_cross_account_client.cache_clear()
+    global _client_cache
+    _client_cache = {}
