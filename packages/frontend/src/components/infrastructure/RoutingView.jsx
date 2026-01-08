@@ -101,6 +101,45 @@ export default function RoutingView({
   const vpnConnections = routingData?.connectivity?.vpnConnections || []
   const tgwAttachments = routingData?.connectivity?.transitGatewayAttachments || []
 
+  // Helper to derive descriptive name for route table based on its routes and subnet associations
+  const getRouteTableDisplayName = (rt) => {
+    // Check default route target to determine type
+    const defaultRoute = rt.routes?.find(r => r.destination === '0.0.0.0/0')
+    const hasIgwRoute = defaultRoute?.targetType === 'internet-gateway'
+    const hasNatRoute = defaultRoute?.targetType === 'nat-gateway' || defaultRoute?.targetType === 'instance'
+
+    // Try to infer from subnet associations using subnetsByAz
+    const associatedSubnetTypes = new Set()
+    if (network?.subnetsByAz && rt.subnetAssociations?.length > 0) {
+      for (const [az, azSubnets] of Object.entries(network.subnetsByAz)) {
+        azSubnets?.forEach(s => {
+          if (rt.subnetAssociations.includes(s.id)) {
+            associatedSubnetTypes.add(s.type)
+          }
+        })
+      }
+    }
+
+    // Determine display name based on characteristics
+    if (rt.isMain) {
+      return 'Main RT (VPC default)'
+    }
+    if (hasIgwRoute || associatedSubnetTypes.has('public')) {
+      return 'Public RT'
+    }
+    if (hasNatRoute && associatedSubnetTypes.has('private')) {
+      return 'Private RT'
+    }
+    if (associatedSubnetTypes.has('database')) {
+      return 'Database RT'
+    }
+    if (hasNatRoute) {
+      return 'Private RT'
+    }
+    // Fallback: show short ID
+    return rt.id.replace('rtb-', '').substring(0, 12)
+  }
+
   // Helper to check if component is selected
   const isSelected = (type, id) => {
     return selectedComponent?.type === type &&
@@ -284,7 +323,6 @@ export default function RoutingView({
             {routeTables.map((rt, idx) => {
               const rtWidth = leftPanelWidth - 20
               const rtY = idx * 58
-              const isMain = rt.isMain
               const highlighted = isRouteTableHighlighted(rt.id)
 
               return (
@@ -307,12 +345,8 @@ export default function RoutingView({
                     <AwsRouter style={{ width: 28, height: 28 }} />
                   </foreignObject>
                   <text x="40" y="20" fill="#e2e8f0" fontSize="11" fontWeight="bold">
-                    {rt.name?.substring(0, 18) || rt.id.substring(4, 18)}
+                    {getRouteTableDisplayName(rt)}
                   </text>
-                  {isMain && (
-                    <rect x={rtWidth - 40} y="6" width="35" height="16" rx="3" fill="#06b6d4" />
-                  )}
-                  {isMain && <text x={rtWidth - 22} y="17" fill="white" fontSize="9" textAnchor="middle">Main</text>}
                   <text x="40" y="38" fill="#9ca3af" fontSize="10">
                     {(rt.subnetAssociations?.length || 0)} subnets • {(rt.routes?.length || 0)} routes
                   </text>

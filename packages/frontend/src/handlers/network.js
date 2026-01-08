@@ -4,13 +4,45 @@
 import { registerResourceHandler } from '../utils/infraResourceHandlers'
 
 // Subnets
+// Note: Subnet data may come from network.subnets (flat array) or network.subnetsByAz (by AZ with type)
 registerResourceHandler('subnet', {
   getId: (data) => data?.subnetId || data?.id,
   findInInfra: (id, infraData) => {
+    // First try flat subnets array
     const subnets = infraData?.network?.subnets
-    return subnets?.find(s => s.subnetId === id || s.id === id)
+    let found = subnets?.find(s => s.subnetId === id || s.id === id)
+    if (found) return found
+
+    // If not found or missing type, search in subnetsByAz which has the type field
+    const subnetsByAz = infraData?.network?.subnetsByAz
+    if (subnetsByAz) {
+      for (const [az, azSubnets] of Object.entries(subnetsByAz)) {
+        const subnet = azSubnets?.find(s => s.subnetId === id || s.id === id)
+        if (subnet) {
+          // Return with az and ensure subnetType is set from type
+          return {
+            ...subnet,
+            az,
+            subnetType: subnet.subnetType || subnet.type,
+            vpcId: infraData?.network?.vpcId
+          }
+        }
+      }
+    }
+    return null
   },
-  findAll: (infraData) => infraData?.network?.subnets,
+  findAll: (infraData) => {
+    // Prefer subnetsByAz as it has type info, flatten to array
+    const subnetsByAz = infraData?.network?.subnetsByAz
+    if (subnetsByAz) {
+      const all = []
+      for (const [az, azSubnets] of Object.entries(subnetsByAz)) {
+        azSubnets?.forEach(s => all.push({ ...s, az, subnetType: s.subnetType || s.type }))
+      }
+      return all
+    }
+    return infraData?.network?.subnets
+  },
 })
 
 // Route Tables
