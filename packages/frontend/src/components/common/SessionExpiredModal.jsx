@@ -10,7 +10,7 @@ export default function SessionExpiredModal({ onReconnect }) {
           </div>
           <div>
             <h2 className="text-lg font-semibold text-white">Session Expired</h2>
-            <p className="text-sm text-gray-400">Your SSO session has expired</p>
+            <p className="text-sm text-gray-400">Your session has expired</p>
           </div>
         </div>
         <p className="text-gray-300 mb-6">

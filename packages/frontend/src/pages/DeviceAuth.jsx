@@ -34,8 +34,8 @@ const DeviceAuth = () => {
       // Save the current URL to redirect back after login
       const returnUrl = window.location.pathname + window.location.search;
       sessionStorage.setItem('authReturnUrl', returnUrl);
-      // Redirect to SAML login
-      window.location.href = '/saml/login?returnUrl=' + encodeURIComponent(returnUrl);
+      // Redirect to login page (user can choose SSO or credentials)
+      window.location.href = '/login?returnUrl=' + encodeURIComponent(returnUrl);
     }
   }, [authLoading, isAuthenticated]);
 
