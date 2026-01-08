@@ -275,12 +275,119 @@ export default $config({
     let s3Bucket: string;
 
     if (config.mode === "managed" && config.frontend) {
-      // Use existing external infrastructure
+      // Use existing external infrastructure (created by Terraform)
       url = `https://${config.frontend.cloudfrontDomain}`;
       cloudfrontId = config.frontend.cloudfrontDistributionId || "";
       s3Bucket = config.frontend.s3Bucket || "";
+
+      // Build and deploy frontend to existing S3 bucket
+      const frontendPath = path.join(process.cwd(), "packages/frontend");
+      const frontendDistPath = path.join(frontendPath, "dist");
+
+      // Build frontend if source exists
+      if (fs.existsSync(frontendPath) && s3Bucket) {
+        const { execSync } = await import("child_process");
+
+        console.log("Building frontend...");
+        try {
+          execSync("npm run build", {
+            cwd: frontendPath,
+            stdio: "inherit",
+            env: { ...process.env, NODE_ENV: "production" },
+          });
+          console.log("Frontend build complete.");
+        } catch (err) {
+          console.error("Frontend build failed:", err);
+          throw err;
+        }
+      }
+
+      if (fs.existsSync(frontendDistPath) && s3Bucket) {
+        // Deploy frontend using AWS SDK (more reliable than synced-folder with SST)
+        const { S3Client, PutObjectCommand, ListObjectsV2Command, DeleteObjectsCommand } = await import("@aws-sdk/client-s3");
+        const { fromNodeProviderChain } = await import("@aws-sdk/credential-providers");
+        const mime = await import("mime-types");
+
+        const s3Client = new S3Client({
+          region: config.aws?.region || "eu-west-3",
+          credentials: fromNodeProviderChain({ profile: config.aws?.profile }),
+        });
+
+        // Get all files from dist
+        const getAllFiles = (dir: string, base = ""): string[] => {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          const files: string[] = [];
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            const relativePath = base ? `${base}/${entry.name}` : entry.name;
+            if (entry.isDirectory()) {
+              files.push(...getAllFiles(fullPath, relativePath));
+            } else {
+              files.push(relativePath);
+            }
+          }
+          return files;
+        };
+
+        const files = getAllFiles(frontendDistPath);
+        console.log(`Uploading ${files.length} files to s3://${s3Bucket}/...`);
+
+        // Upload all files
+        for (const file of files) {
+          const filePath = path.join(frontendDistPath, file);
+          const content = fs.readFileSync(filePath);
+          const contentType = mime.lookup(file) || "application/octet-stream";
+
+          await s3Client.send(new PutObjectCommand({
+            Bucket: s3Bucket,
+            Key: file,
+            Body: content,
+            ContentType: contentType as string,
+          }));
+        }
+        console.log(`Frontend uploaded to s3://${s3Bucket}/`);
+
+        // Clean up old files not in current build
+        const listResult = await s3Client.send(new ListObjectsV2Command({ Bucket: s3Bucket }));
+        const existingKeys = listResult.Contents?.map(obj => obj.Key!) || [];
+        const toDelete = existingKeys.filter(key => !files.includes(key));
+
+        if (toDelete.length > 0) {
+          await s3Client.send(new DeleteObjectsCommand({
+            Bucket: s3Bucket,
+            Delete: { Objects: toDelete.map(Key => ({ Key })) },
+          }));
+          console.log(`Cleaned up ${toDelete.length} old files`);
+        }
+
+        // CloudFront invalidation
+        if (cloudfrontId) {
+          const { CloudFrontClient, CreateInvalidationCommand } = await import("@aws-sdk/client-cloudfront");
+
+          const cfClient = new CloudFrontClient({
+            region: "us-east-1",
+            credentials: fromNodeProviderChain({ profile: config.aws?.profile }),
+          });
+
+          const callerRef = `sst-${stage}-${Date.now()}`;
+          try {
+            const result = await cfClient.send(new CreateInvalidationCommand({
+              DistributionId: cloudfrontId,
+              InvalidationBatch: {
+                Paths: { Quantity: 1, Items: ["/*"] },
+                CallerReference: callerRef,
+              },
+            }));
+            console.log(`CloudFront invalidation created: ${result.Invalidation?.Id}`);
+          } catch (err) {
+            console.error(`CloudFront invalidation failed:`, err);
+          }
+        }
+      } else {
+        console.log("Warning: Frontend dist not found. Run 'npm run build' in packages/frontend first.");
+      }
     } else {
-      // Would create new infrastructure in standalone mode
+      // Standalone mode - just use API URL directly
       url = api.url;
       cloudfrontId = "";
       s3Bucket = "";
