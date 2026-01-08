@@ -36,6 +36,7 @@ Dashborion is a comprehensive infrastructure visualization and management tool t
 - **Actions**: Force deploy, cache invalidation, start/stop RDS
 - **Native SSO**: Built-in SAML authentication via Lambda@Edge (no external module)
 - **Multi-tenant Authorization**: RBAC with project/environment granularity
+- **Deep-linkable URLs**: Bookmark and share specific views, services, and resources
 
 ### CLI Tool (`dashborion`)
 
@@ -406,6 +407,49 @@ Permissions are scoped by project and environment:
 - `admin` on `bigmat/*` (all environments)
 
 IdP group mapping pattern: `dashborion-{project}-{role}` (e.g., `dashborion-homebox-operator`)
+
+## Deep-Linking URLs
+
+The dashboard supports deep-linkable URLs for bookmarking and sharing specific views:
+
+### URL Structure
+
+```
+/:project/:env?param1=value1&param2=value2
+```
+
+### Available Parameters
+
+| Parameter | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `view` | string | View mode: simple, network, routing | `?view=network` |
+| `service` | string | Selected ECS service | `?service=backend` |
+| `resource` | string | Infrastructure resource type | `?resource=rds` |
+| `id` | string | Resource ID | `?resource=subnet&id=subnet-abc123` |
+| `pipeline` | string | Build pipeline for a service | `?pipeline=backend` |
+| `logs` | string | Comma-separated log tabs | `?logs=backend,frontend` |
+| `events` | boolean | Show events timeline | `?events=true` |
+| `hours` | number | Events time filter | `?hours=48` |
+| `types` | string | Event type filter | `?types=deploy,build` |
+
+### Examples
+
+```
+# Service details panel
+/homebox/staging?service=backend
+
+# Network view with subnet selected
+/homebox/staging?view=network&resource=subnet&id=subnet-0abc123
+
+# Logs panel with multiple tabs
+/homebox/staging?logs=backend,frontend,cms
+
+# Events timeline with filters
+/homebox/staging?events=true&hours=48&types=deploy,error
+
+# Build pipeline details
+/homebox/staging?pipeline=backend
+```
 
 ## API Reference
 
