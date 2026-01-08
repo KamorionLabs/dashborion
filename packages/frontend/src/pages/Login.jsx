@@ -17,8 +17,26 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [showCredentials, setShowCredentials] = useState(false);
 
-  // Get return URL
-  const returnUrl = new URLSearchParams(location.search).get('returnUrl') || '/';
+  // Get return URL - clean up any auth-related URLs to prevent loops
+  const rawReturnUrl = new URLSearchParams(location.search).get('returnUrl') || '/';
+  // Extract the actual destination from nested auth URLs
+  const getCleanReturnUrl = (url) => {
+    // If returnUrl points to /saml/login or /login, extract the nested returnUrl
+    if (url.startsWith('/saml/login') || url.startsWith('/login')) {
+      try {
+        const parsed = new URL(url, window.location.origin);
+        const nestedReturn = parsed.searchParams.get('returnUrl');
+        if (nestedReturn) {
+          return getCleanReturnUrl(nestedReturn); // Recursively clean
+        }
+      } catch {
+        // If parsing fails, just go to root
+      }
+      return '/';
+    }
+    return url;
+  };
+  const returnUrl = getCleanReturnUrl(rawReturnUrl);
 
   // Check if already logged in - validate token before redirecting
   useEffect(() => {
