@@ -383,44 +383,194 @@ export default $config({
       ttl: "ttl",
     });
 
-    // Create the Lambda function for the API
-    // Use root handler.py wrapper that sets up Python path correctly
-    // copyFiles ensures handler.py is at bundle root where Lambda expects it
-    const apiHandler = new sst.aws.Function("ApiHandler", {
-      handler: "handler.lambda_handler",
+    // ==========================================================================
+    // Multi-Lambda Architecture with API Gateway Native Routing
+    // ==========================================================================
+
+    // Common environment variables for all Lambdas
+    const commonEnv = {
+      AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
+      PROJECTS: JSON.stringify(projectsWithServices),
+      CROSS_ACCOUNT_ROLES: JSON.stringify(crossAccountRoles),
+      CORS_ORIGINS: `https://${frontendDomain}`,
+      AUTH_PROVIDER: config.auth?.provider || "simple",
+      TOKENS_TABLE_NAME: tokensTable.name,
+      DEVICE_CODES_TABLE_NAME: deviceCodesTable.name,
+      USERS_TABLE_NAME: usersTable.name,
+      GROUPS_TABLE_NAME: groupsTable.name,
+      PERMISSIONS_TABLE_NAME: permissionsTable.name,
+      AUDIT_TABLE_NAME: auditTable.name,
+      // PYTHONPATH must include backend/ for imports to work
+      PYTHONPATH: "/var/task/backend:/var/task",
+    };
+
+    // Common copyFiles for Python backend
+    const commonCopyFiles = [
+      { from: "backend", to: "backend" },
+    ];
+
+    // Common DynamoDB permissions
+    const commonDynamoPermissions = {
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+      resources: [
+        tokensTable.arn,
+        deviceCodesTable.arn,
+        usersTable.arn,
+        groupsTable.arn,
+        permissionsTable.arn,
+        auditTable.arn,
+        // Include GSI ARNs
+        $interpolate`${tokensTable.arn}/index/*`,
+        $interpolate`${usersTable.arn}/index/*`,
+        $interpolate`${groupsTable.arn}/index/*`,
+        $interpolate`${permissionsTable.arn}/index/*`,
+        $interpolate`${auditTable.arn}/index/*`,
+      ],
+    };
+
+    // Cross-account role assumption permission
+    const assumeRolePermission = {
+      actions: ["sts:AssumeRole"],
+      resources: Object.values(crossAccountRoles).flatMap(r =>
+        [r.readRoleArn, r.actionRoleArn].filter(Boolean) as string[]
+      ),
+    };
+
+    // --------------------------------------------------------------------------
+    // Lambda Authorizer (validates tokens, returns user context)
+    // --------------------------------------------------------------------------
+    const authorizer = new sst.aws.Function("Authorizer", {
+      handler: "backend/authorizer.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "256 MB",
+      timeout: "5 seconds",
+      copyFiles: commonCopyFiles,
+      link: [tokensTable, deviceCodesTable, usersTable, groupsTable, permissionsTable],
+      environment: commonEnv,
+      permissions: [
+        {
+          actions: ["dynamodb:GetItem", "dynamodb:Query"],
+          resources: [
+            tokensTable.arn,
+            usersTable.arn,
+            groupsTable.arn,
+            permissionsTable.arn,
+            $interpolate`${usersTable.arn}/index/*`,
+            $interpolate`${groupsTable.arn}/index/*`,
+            $interpolate`${permissionsTable.arn}/index/*`,
+          ],
+        },
+      ],
+    });
+
+    // Add authorizer to API Gateway and store reference
+    // NOTE: identitySources must be empty to support both:
+    // - Bearer token in Authorization header (CLI device flow)
+    // - SSO headers from Lambda@Edge (x-auth-user-email)
+    // With empty identitySources, the authorizer is called for ALL requests
+    const apiAuthorizer = api.addAuthorizer({
+      name: "DashborionAuth",
+      lambda: {
+        function: authorizer.arn,
+        resultsCacheTtl: "0 seconds", // Disable cache when using multiple auth methods
+        identitySources: [], // Empty = authorizer called for all requests
+      },
+    });
+
+    // Auth options for protected routes - use authorizer ID
+    const authOptions = {
+      auth: {
+        lambda: apiAuthorizer.id,
+      },
+    };
+
+    // --------------------------------------------------------------------------
+    // Health Lambda (public - no auth required)
+    // --------------------------------------------------------------------------
+    const healthHandler = new sst.aws.Function("HealthHandler", {
+      handler: "backend/health/handler.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "128 MB",
+      timeout: "5 seconds",
+      copyFiles: commonCopyFiles,
+      environment: {
+        AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
+      },
+    });
+
+    // --------------------------------------------------------------------------
+    // Auth Lambda (mostly public - handles login/device flow)
+    // --------------------------------------------------------------------------
+    const authHandler = new sst.aws.Function("AuthHandler", {
+      handler: "backend/auth/handler.handler",
       runtime: "python3.12",
       architecture: "arm64",
       memory: "256 MB",
       timeout: "30 seconds",
-      copyFiles: [
-        { from: "handler.py", to: "handler.py" },
-        { from: "backend", to: "backend" },
-      ],
+      copyFiles: commonCopyFiles,
       link: [tokensTable, deviceCodesTable, usersTable, groupsTable, permissionsTable, auditTable],
-      environment: {
-        // Backend expects individual env vars, not a single DASHBORION_CONFIG
-        AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
-        PROJECTS: JSON.stringify(projectsWithServices),
-        CROSS_ACCOUNT_ROLES: JSON.stringify(crossAccountRoles),
-        CORS_ORIGINS: `https://${frontendDomain}`,
-        // Auth configuration
-        AUTH_PROVIDER: config.auth?.provider || "simple",
-        // Table names for auth
-        TOKENS_TABLE_NAME: tokensTable.name,
-        DEVICE_CODES_TABLE_NAME: deviceCodesTable.name,
-        USERS_TABLE_NAME: usersTable.name,
-        GROUPS_TABLE_NAME: groupsTable.name,
-        PERMISSIONS_TABLE_NAME: permissionsTable.name,
-        AUDIT_TABLE_NAME: auditTable.name,
-      },
+      environment: commonEnv,
+      permissions: [commonDynamoPermissions],
+    });
+
+    // --------------------------------------------------------------------------
+    // Services Lambda (protected - ECS services, logs, metrics, deploy actions)
+    // --------------------------------------------------------------------------
+    const servicesHandler = new sst.aws.Function("ServicesHandler", {
+      handler: "backend/services/handler.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "512 MB",
+      timeout: "60 seconds",
+      copyFiles: commonCopyFiles,
+      link: [tokensTable, usersTable, groupsTable, permissionsTable, auditTable],
+      environment: commonEnv,
       permissions: [
-        // Allow assuming cross-account roles
+        commonDynamoPermissions,
+        assumeRolePermission,
+        // CloudWatch Logs (for service logs in cross-account)
         {
-          actions: ["sts:AssumeRole"],
-          resources: Object.values(crossAccountRoles).flatMap(r =>
-            [r.readRoleArn, r.actionRoleArn].filter(Boolean) as string[]
-          ),
+          actions: ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:DescribeLogStreams", "logs:DescribeLogGroups"],
+          resources: ["*"],
         },
+      ],
+    });
+
+    // --------------------------------------------------------------------------
+    // Infrastructure Lambda (protected - VPC, RDS, CloudFront)
+    // --------------------------------------------------------------------------
+    const infrastructureHandler = new sst.aws.Function("InfrastructureHandler", {
+      handler: "backend/infrastructure/handler.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "512 MB",
+      timeout: "60 seconds",
+      copyFiles: commonCopyFiles,
+      link: [tokensTable, usersTable, groupsTable, permissionsTable, auditTable],
+      environment: commonEnv,
+      permissions: [
+        commonDynamoPermissions,
+        assumeRolePermission,
+      ],
+    });
+
+    // --------------------------------------------------------------------------
+    // Pipelines Lambda (protected - CodePipeline, CodeBuild, ECR)
+    // --------------------------------------------------------------------------
+    const pipelinesHandler = new sst.aws.Function("PipelinesHandler", {
+      handler: "backend/pipelines/handler.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "256 MB",
+      timeout: "30 seconds",
+      copyFiles: commonCopyFiles,
+      link: [tokensTable, usersTable, groupsTable, permissionsTable, auditTable],
+      environment: commonEnv,
+      permissions: [
+        commonDynamoPermissions,
+        assumeRolePermission,
         // CodePipeline permissions (shared-services account)
         {
           actions: [
@@ -431,43 +581,125 @@ export default $config({
           ],
           resources: ["arn:aws:codepipeline:eu-west-3:501994300510:homebox-*"],
         },
-        // CodeBuild permissions (for build logs)
+        // CodeBuild permissions
         {
-          actions: [
-            "codebuild:BatchGetBuilds",
-            "codebuild:ListBuildsForProject",
-          ],
+          actions: ["codebuild:BatchGetBuilds", "codebuild:ListBuildsForProject", "codebuild:StartBuild"],
           resources: ["arn:aws:codebuild:eu-west-3:501994300510:project/homebox-*"],
         },
-        // ECR permissions (shared-services account)
+        // ECR permissions
         {
-          actions: [
-            "ecr:DescribeImages",
-            "ecr:DescribeRepositories",
-            "ecr:ListImages",
-          ],
+          actions: ["ecr:DescribeImages", "ecr:DescribeRepositories", "ecr:ListImages"],
           resources: ["arn:aws:ecr:eu-west-3:501994300510:repository/homebox-*"],
         },
-        // CloudWatch Logs permissions (for build/deploy logs)
+        // CloudWatch Logs (for build logs)
         {
-          actions: [
-            "logs:GetLogEvents",
-            "logs:FilterLogEvents",
-            "logs:DescribeLogStreams",
-          ],
+          actions: ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:DescribeLogStreams"],
           resources: ["arn:aws:logs:eu-west-3:501994300510:log-group:/aws/codebuild/homebox-*:*"],
         },
       ],
     });
 
-    // Add routes to API Gateway
-    api.route("GET /api/{proxy+}", apiHandler.arn);
-    api.route("POST /api/{proxy+}", apiHandler.arn);
-    api.route("PUT /api/{proxy+}", apiHandler.arn);
-    api.route("DELETE /api/{proxy+}", apiHandler.arn);
+    // --------------------------------------------------------------------------
+    // Events Lambda (protected - CloudTrail events, task diffs)
+    // --------------------------------------------------------------------------
+    const eventsHandler = new sst.aws.Function("EventsHandler", {
+      handler: "backend/events/handler.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "256 MB",
+      timeout: "30 seconds",
+      copyFiles: commonCopyFiles,
+      link: [tokensTable, usersTable, groupsTable, permissionsTable],
+      environment: commonEnv,
+      permissions: [
+        commonDynamoPermissions,
+        assumeRolePermission,
+      ],
+    });
 
-    // Add health check route
-    api.route("GET /api/health", apiHandler.arn);
+    // --------------------------------------------------------------------------
+    // Admin Lambda (protected - global admin only)
+    // --------------------------------------------------------------------------
+    const adminHandler = new sst.aws.Function("AdminHandler", {
+      handler: "backend/admin/handler.handler",
+      runtime: "python3.12",
+      architecture: "arm64",
+      memory: "256 MB",
+      timeout: "30 seconds",
+      copyFiles: commonCopyFiles,
+      link: [tokensTable, usersTable, groupsTable, permissionsTable, auditTable],
+      environment: commonEnv,
+      permissions: [commonDynamoPermissions],
+    });
+
+    // ==========================================================================
+    // API Gateway Routes
+    // ==========================================================================
+
+    // --- Public Routes (no auth) ---
+    api.route("GET /api/health", healthHandler.arn);
+
+    // Auth - public endpoints (device flow, login)
+    api.route("POST /api/auth/device/code", authHandler.arn);
+    api.route("POST /api/auth/device/token", authHandler.arn);
+    api.route("POST /api/auth/sso/exchange", authHandler.arn);
+    api.route("POST /api/auth/login", authHandler.arn);
+
+    // Admin init is public (for initial setup)
+    api.route("POST /api/admin/init", adminHandler.arn);
+
+    // --- Protected Routes (require auth) ---
+
+    // Auth - protected endpoints
+    api.route("GET /api/auth/me", authHandler.arn, authOptions);
+    api.route("POST /api/auth/device/verify", authHandler.arn, authOptions);
+    api.route("POST /api/auth/token/refresh", authHandler.arn, authOptions);
+    api.route("POST /api/auth/token/revoke", authHandler.arn, authOptions);
+
+    // Services routes
+    api.route("GET /api/{project}/services", servicesHandler.arn, authOptions);
+    api.route("GET /api/{project}/services/{env}", servicesHandler.arn, authOptions);
+    api.route("GET /api/{project}/services/{env}/{service}", servicesHandler.arn, authOptions);
+    api.route("GET /api/{project}/details/{env}/{service}", servicesHandler.arn, authOptions);
+    api.route("GET /api/{project}/tasks/{env}/{service}/{taskId}", servicesHandler.arn, authOptions);
+    api.route("GET /api/{project}/logs/{env}/{service}", servicesHandler.arn, authOptions);
+    api.route("GET /api/{project}/metrics/{env}/{service}", servicesHandler.arn, authOptions);
+    api.route("POST /api/{project}/actions/deploy/{env}/{service}/{action}", servicesHandler.arn, authOptions);
+
+    // Infrastructure routes
+    api.route("GET /api/{project}/infrastructure/{env}", infrastructureHandler.arn, authOptions);
+    api.route("GET /api/{project}/infrastructure/{env}/routing", infrastructureHandler.arn, authOptions);
+    api.route("GET /api/{project}/infrastructure/{env}/enis", infrastructureHandler.arn, authOptions);
+    api.route("GET /api/{project}/infrastructure/{env}/security-group/{sgId}", infrastructureHandler.arn, authOptions);
+    api.route("POST /api/{project}/actions/rds/{env}/{action}", infrastructureHandler.arn, authOptions);
+    api.route("POST /api/{project}/actions/cloudfront/{env}/invalidate", infrastructureHandler.arn, authOptions);
+
+    // Pipelines routes
+    api.route("GET /api/{project}/pipelines/build/{service}", pipelinesHandler.arn, authOptions);
+    api.route("GET /api/{project}/pipelines/deploy/{service}/{env}", pipelinesHandler.arn, authOptions);
+    api.route("GET /api/{project}/images/{service}", pipelinesHandler.arn, authOptions);
+    api.route("POST /api/{project}/actions/build/{service}", pipelinesHandler.arn, authOptions);
+
+    // Events routes
+    api.route("GET /api/{project}/events/{env}", eventsHandler.arn, authOptions);
+    api.route("POST /api/{project}/events/{env}/enrich", eventsHandler.arn, authOptions);
+    api.route("POST /api/{project}/events/{env}/task-diff", eventsHandler.arn, authOptions);
+
+    // Admin routes (all protected, handler checks global admin)
+    api.route("GET /api/admin/users", adminHandler.arn, authOptions);
+    api.route("POST /api/admin/users", adminHandler.arn, authOptions);
+    api.route("GET /api/admin/users/{email}", adminHandler.arn, authOptions);
+    api.route("PUT /api/admin/users/{email}", adminHandler.arn, authOptions);
+    api.route("DELETE /api/admin/users/{email}", adminHandler.arn, authOptions);
+    api.route("GET /api/admin/groups", adminHandler.arn, authOptions);
+    api.route("POST /api/admin/groups", adminHandler.arn, authOptions);
+    api.route("GET /api/admin/groups/{name}", adminHandler.arn, authOptions);
+    api.route("PUT /api/admin/groups/{name}", adminHandler.arn, authOptions);
+    api.route("DELETE /api/admin/groups/{name}", adminHandler.arn, authOptions);
+    api.route("GET /api/admin/permissions", adminHandler.arn, authOptions);
+    api.route("POST /api/admin/permissions", adminHandler.arn, authOptions);
+    api.route("DELETE /api/admin/permissions/{id}", adminHandler.arn, authOptions);
+    api.route("GET /api/admin/audit", adminHandler.arn, authOptions);
 
     // Create DNS A record for API custom domain (if cross-account)
     if (apiDomain && config.apiGateway?.route53ZoneId && dnsProvider && apiCertificateArn) {

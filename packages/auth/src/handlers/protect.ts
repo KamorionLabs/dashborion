@@ -91,7 +91,14 @@ function createLogoutResponse(config: ProtectConfig): CloudFrontResponse {
 }
 
 /**
- * Create unauthorized response
+ * Check if path is an API route
+ */
+function isApiRoute(uri: string): boolean {
+  return uri.startsWith('/api/');
+}
+
+/**
+ * Create unauthorized response for API routes
  */
 function createUnauthorizedResponse(message: string): CloudFrontResponse {
   return {
@@ -100,8 +107,9 @@ function createUnauthorizedResponse(message: string): CloudFrontResponse {
     headers: {
       'content-type': [{ key: 'Content-Type', value: 'application/json' }],
       'cache-control': [{ key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' }],
+      'access-control-allow-origin': [{ key: 'Access-Control-Allow-Origin', value: '*' }],
     },
-    body: JSON.stringify({ error: 'Unauthorized', message }),
+    body: JSON.stringify({ error: 'session_expired', message }),
   };
 }
 
@@ -128,7 +136,12 @@ export async function handler(
   const session = getSessionFromRequest(request, config.cookieName);
 
   if (!session) {
-    // No valid session - redirect to IdP
+    // No valid session
+    // For API routes: return 401 (XHR/fetch can't follow SSO redirects)
+    // For page routes: redirect to SSO
+    if (isApiRoute(request.uri)) {
+      return createUnauthorizedResponse('Session expired. Please refresh the page to re-authenticate.');
+    }
     const fullUrl = getFullUrl(request);
     return createRedirectToIdp(config, fullUrl);
   }
