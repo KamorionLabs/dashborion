@@ -152,25 +152,48 @@ brew install dashborion-cli
 ┌─────────────────────────────────────────────────────────────────┐
 │                        CloudFront                                │
 │                    (Lambda@Edge SSO)                             │
+│              Proxies: /api/auth/* only                          │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
-          ┌───────────────┴───────────────┐
-          │                               │
-          ▼                               ▼
-┌─────────────────┐             ┌─────────────────┐
-│   S3 (Frontend) │             │  API Gateway    │
-│   React SPA     │             │  + Lambda       │
-└─────────────────┘             └────────┬────────┘
-                                         │
-                    ┌────────────────────┼────────────────────┐
-                    │                    │                    │
-                    ▼                    ▼                    ▼
-           ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-           │   Staging    │    │   Preprod    │    │  Production  │
-           │   Account    │    │   Account    │    │   Account    │
-           │  (ECS, RDS)  │    │  (ECS, RDS)  │    │  (ECS, RDS)  │
-           └──────────────┘    └──────────────┘    └──────────────┘
+          ┌───────────────┼───────────────┐
+          │               │               │
+          ▼               ▼               │
+┌─────────────────┐  ┌──────────┐         │
+│   S3 (Frontend) │  │/api/auth │         │
+│   React SPA     │  │ (proxy)  │         │
+└─────────────────┘  └────┬─────┘         │
+                          │               │
+                          ▼               ▼
+              ┌───────────────────────────────────────┐
+              │     API Gateway (Multi-Lambda)        │
+              │  dashboard-api.example.com            │
+              │                                       │
+              │  ┌─────────┐ ┌──────────┐ ┌────────┐ │
+              │  │  Auth   │ │ Services │ │Infra   │ │
+              │  │ Lambda  │ │  Lambda  │ │Lambda  │ │
+              │  └─────────┘ └──────────┘ └────────┘ │
+              │  ┌─────────┐ ┌──────────┐ ┌────────┐ │
+              │  │Pipelines│ │  Events  │ │ Admin  │ │
+              │  │ Lambda  │ │  Lambda  │ │Lambda  │ │
+              │  └─────────┘ └──────────┘ └────────┘ │
+              └───────────────────┬───────────────────┘
+                                  │
+                    ┌─────────────┼─────────────┐
+                    ▼             ▼             ▼
+           ┌──────────────┐ ┌──────────┐ ┌──────────────┐
+           │   Staging    │ │ Preprod  │ │  Production  │
+           │   Account    │ │ Account  │ │   Account    │
+           └──────────────┘ └──────────┘ └──────────────┘
 ```
+
+### API Access Modes
+
+| Mode | Path | Description |
+|------|------|-------------|
+| **CloudFront Proxy** | `/api/auth/*` | SSO cookie authentication via Lambda@Edge |
+| **Direct API** | `dashboard-api.example.com/*` | Bearer token authentication |
+
+SSO users automatically exchange their session for a Bearer token on first load, enabling direct API access for all subsequent requests.
 
 ### Deployment Modes
 
@@ -437,7 +460,11 @@ IdP group mapping: `dashborion-{project}-{role}`
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/auth/device/code` | POST | Request device code (CLI) |
-| `/api/auth/device/token` | POST | Exchange for access token |
+| `/api/auth/device/token` | POST | Exchange device code for access token |
+| `/api/auth/device/verify` | POST | Verify device code (protected) |
+| `/api/auth/token/issue` | POST | Exchange SSO session for Bearer token |
+| `/api/auth/token/refresh` | POST | Refresh access token |
+| `/api/auth/token/revoke` | POST | Revoke access token |
 | `/api/auth/me` | GET | Current user info |
 
 ### Services
