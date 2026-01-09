@@ -5,6 +5,8 @@ Provides commands for:
 - login: Authenticate via Device Flow or AWS SSO
 - logout: Revoke current token
 - whoami: Show current user info
+
+Credentials are stored per-context to support multiple Dashborion instances.
 """
 
 import click
@@ -19,59 +21,54 @@ from datetime import datetime
 
 import requests
 
-
-# Token storage path
-def get_credentials_path() -> Path:
-    """Get path to credentials file"""
-    return Path.home() / '.dashborion' / 'credentials.json'
+from dashborion.commands.context import (
+    get_current_context,
+    get_context_credentials,
+    save_context_credentials,
+    delete_context_credentials,
+)
 
 
 def load_credentials() -> Optional[dict]:
-    """Load credentials from file"""
-    creds_path = get_credentials_path()
-    if not creds_path.exists():
+    """Load credentials for current context"""
+    ctx = get_current_context()
+    if not ctx:
         return None
-
-    try:
-        with open(creds_path, 'r') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return None
+    return get_context_credentials(ctx['name'])
 
 
 def save_credentials(credentials: dict) -> None:
-    """Save credentials to file"""
-    creds_path = get_credentials_path()
-    creds_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Set restrictive permissions
-    with open(creds_path, 'w') as f:
-        json.dump(credentials, f, indent=2)
-
-    # Chmod 600 on Unix
-    try:
-        os.chmod(creds_path, 0o600)
-    except (OSError, AttributeError):
-        pass  # Windows doesn't support chmod
+    """Save credentials for current context"""
+    ctx = get_current_context()
+    if not ctx:
+        raise click.ClickException(
+            "No context configured.\n"
+            "Add a context first: dashborion context add <name> --api-url <url>"
+        )
+    save_context_credentials(ctx['name'], credentials)
 
 
 def delete_credentials() -> bool:
-    """Delete credentials file"""
-    creds_path = get_credentials_path()
-    if creds_path.exists():
-        creds_path.unlink()
-        return True
-    return False
+    """Delete credentials for current context"""
+    ctx = get_current_context()
+    if not ctx:
+        return False
+    return delete_context_credentials(ctx['name'])
 
 
 def get_api_base_url() -> str:
-    """Get API base URL from config or environment"""
-    # Check environment variable
+    """Get API base URL from current context or environment"""
+    # Check environment variable (override)
     url = os.environ.get('DASHBORION_API_URL')
     if url:
         return url.rstrip('/')
 
-    # Check config file
+    # Check current context
+    ctx = get_current_context()
+    if ctx and ctx.get('api_url'):
+        return ctx['api_url'].rstrip('/')
+
+    # Check config file (legacy)
     config_path = Path.home() / '.dashborion' / 'config.yaml'
     if config_path.exists():
         try:
@@ -83,8 +80,14 @@ def get_api_base_url() -> str:
         except Exception:
             pass
 
-    # Default (API domain, not frontend)
-    return 'https://dashboard-api.homebox.kamorion.cloud'
+    # No API URL configured
+    raise click.ClickException(
+        "No API URL configured.\n\n"
+        "Configure a context:\n"
+        "  dashborion context add myproject --api-url https://api.dashboard.example.com\n\n"
+        "Or set environment variable:\n"
+        "  export DASHBORION_API_URL=https://api.dashboard.example.com"
+    )
 
 
 def is_token_valid(credentials: dict) -> bool:

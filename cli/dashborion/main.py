@@ -16,7 +16,7 @@ import yaml
 from typing import Optional
 from pathlib import Path
 
-from dashborion.commands import services, infra, diagram, k8s, pipelines, auth
+from dashborion.commands import services, infra, diagram, k8s, pipelines, auth, context
 from dashborion.config.cli_config import load_config, get_environment_config
 from dashborion.utils.output import OutputFormatter
 
@@ -123,6 +123,7 @@ def cli(ctx, profile, region, config_path, output_format, verbose):
 
 
 # Register command groups
+cli.add_command(context.context)
 cli.add_command(auth.auth)
 cli.add_command(services.services)
 cli.add_command(infra.infra)
