@@ -297,8 +297,11 @@ def authorize_device_code(user_code: str, auth: AuthContext) -> bool:
             'pk': {'S': f"DEVICE#{code.device_code}"},
             'sk': {'S': f"USER_CODE#{code.user_code}"},
         },
-        UpdateExpression='SET #status = :status, user_email = :email, permissions = :perms',
-        ExpressionAttributeNames={'#status': 'status'},
+        UpdateExpression='SET #status = :status, user_email = :email, #perms = :perms',
+        ExpressionAttributeNames={
+            '#status': 'status',
+            '#perms': 'permissions',  # 'permissions' is a DynamoDB reserved keyword
+        },
         ExpressionAttributeValues={
             ':status': {'S': DeviceCodeStatus.AUTHORIZED.value},
             ':email': {'S': auth.email},

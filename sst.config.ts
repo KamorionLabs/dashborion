@@ -12,6 +12,11 @@
  * Deployment:
  *   - npx sst dev (development with live reload)
  *   - npx sst deploy --stage homebox (production)
+ *
+ * SSO Lambda@Edge:
+ *   - Deployed to us-east-1 (required for CloudFront)
+ *   - ARNs stored in SSM for Terraform to reference
+ *   - Config baked at build time (Lambda@Edge doesn't support env vars)
  */
 
 // Configuration types from external config file
@@ -245,6 +250,17 @@ export default $config({
       ttl: "ttl",
     });
 
+    // Create DynamoDB table for device codes (CLI auth flow)
+    // Uses pk/sk pattern like TokensTable for consistency with backend code
+    const deviceCodesTable = new sst.aws.Dynamo("DeviceCodesTable", {
+      fields: {
+        pk: "string",
+        sk: "string",
+      },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+      ttl: "ttl",
+    });
+
     // Create the Lambda function for the API
     // Use root handler.py wrapper that sets up Python path correctly
     // copyFiles ensures handler.py is at bundle root where Lambda expects it
@@ -258,7 +274,7 @@ export default $config({
         { from: "handler.py", to: "handler.py" },
         { from: "backend", to: "backend" },
       ],
-      link: [tokensTable],
+      link: [tokensTable, deviceCodesTable],
       environment: {
         // Backend expects individual env vars, not a single DASHBORION_CONFIG
         AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
@@ -269,6 +285,7 @@ export default $config({
         AUTH_PROVIDER: config.auth?.provider || "simple",
         AUTH_USERS: JSON.stringify(config.auth?.users || {}),
         TOKENS_TABLE_NAME: tokensTable.name,
+        DEVICE_CODES_TABLE_NAME: deviceCodesTable.name,
       },
       permissions: [
         // Allow assuming cross-account roles
@@ -325,6 +342,146 @@ export default $config({
 
     // Add health check route
     api.route("GET /api/health", apiHandler.arn);
+
+    // ==========================================================================
+    // SSO Lambda@Edge (only in managed mode with SAML auth)
+    // ==========================================================================
+    let ssoLambdaArns: {
+      protect?: string;
+      acs?: string;
+      metadata?: string;
+    } = {};
+
+    const enableSso = config.mode === "managed" && config.auth?.provider === "saml";
+
+    if (enableSso) {
+      const { execSync } = await import("child_process");
+      const authPackagePath = path.join(process.cwd(), "packages/auth");
+      const authDistPath = path.join(authPackagePath, "dist");
+
+      // Build auth package (injects config at build time)
+      console.log("Building SSO Lambda@Edge handlers...");
+      try {
+        execSync("npm run build", {
+          cwd: authPackagePath,
+          stdio: "inherit",
+          env: {
+            ...process.env,
+            DASHBORION_CONFIG_DIR: configDir,
+          },
+        });
+        console.log("SSO Lambda@Edge build complete.");
+      } catch (err) {
+        console.error("SSO Lambda@Edge build failed:", err);
+        throw err;
+      }
+
+      // Create us-east-1 provider for Lambda@Edge
+      const usEast1Provider = new aws.Provider("UsEast1Provider", {
+        region: "us-east-1",
+        profile: config.aws?.profile,
+      });
+
+      // Create Lambda@Edge execution role
+      const edgeRole = new aws.iam.Role("SsoEdgeRole", {
+        assumeRolePolicy: JSON.stringify({
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Action: "sts:AssumeRole",
+              Effect: "Allow",
+              Principal: {
+                Service: ["lambda.amazonaws.com", "edgelambda.amazonaws.com"],
+              },
+            },
+          ],
+        }),
+        tags: {
+          Project: "dashborion",
+          Stage: stage,
+        },
+      }, { provider: usEast1Provider });
+
+      new aws.iam.RolePolicyAttachment("SsoEdgeBasicPolicy", {
+        role: edgeRole.name,
+        policyArn: "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+      }, { provider: usEast1Provider });
+
+      // Deploy Lambda@Edge functions to us-east-1
+      const handlers = ["protect", "acs", "metadata"] as const;
+      const lambdaFunctions: Record<string, aws.lambda.Function> = {};
+
+      for (const handler of handlers) {
+        const handlerPath = path.join(authDistPath, handler);
+
+        if (!fs.existsSync(handlerPath)) {
+          console.warn(`Warning: SSO handler not found: ${handlerPath}`);
+          continue;
+        }
+
+        // Create Lambda function with publish=true for Lambda@Edge
+        const fn = new aws.lambda.Function(`SsoEdge${handler.charAt(0).toUpperCase() + handler.slice(1)}`, {
+          name: `dashborion-${stage}-sso-${handler}`,
+          runtime: "nodejs20.x",
+          handler: "index.handler",
+          code: new $util.asset.FileArchive(handlerPath),
+          role: edgeRole.arn,
+          memorySize: 128,
+          timeout: handler === "acs" ? 10 : 5, // ACS needs more time for SAML parsing
+          publish: true, // Required for Lambda@Edge
+          tags: {
+            Project: "dashborion",
+            Stage: stage,
+            Component: "sso",
+          },
+        }, { provider: usEast1Provider });
+
+        lambdaFunctions[handler] = fn;
+      }
+
+      // Store qualified ARNs for CloudFront association
+      if (lambdaFunctions.protect) {
+        ssoLambdaArns.protect = lambdaFunctions.protect.qualifiedArn;
+      }
+      if (lambdaFunctions.acs) {
+        ssoLambdaArns.acs = lambdaFunctions.acs.qualifiedArn;
+      }
+      if (lambdaFunctions.metadata) {
+        ssoLambdaArns.metadata = lambdaFunctions.metadata.qualifiedArn;
+      }
+
+      // Store ARNs in SSM Parameter Store for Terraform to reference
+      const ssmPrefix = `/dashborion/${stage}/sso`;
+
+      if (ssoLambdaArns.protect) {
+        new aws.ssm.Parameter("SsoProtectArn", {
+          name: `${ssmPrefix}/lambda-protect-arn`,
+          type: "String",
+          value: ssoLambdaArns.protect,
+          tags: { Project: "dashborion", Stage: stage },
+        });
+      }
+
+      if (ssoLambdaArns.acs) {
+        new aws.ssm.Parameter("SsoAcsArn", {
+          name: `${ssmPrefix}/lambda-acs-arn`,
+          type: "String",
+          value: ssoLambdaArns.acs,
+          tags: { Project: "dashborion", Stage: stage },
+        });
+      }
+
+      if (ssoLambdaArns.metadata) {
+        new aws.ssm.Parameter("SsoMetadataArn", {
+          name: `${ssmPrefix}/lambda-metadata-arn`,
+          type: "String",
+          value: ssoLambdaArns.metadata,
+          tags: { Project: "dashborion", Stage: stage },
+        });
+      }
+
+      console.log(`SSO Lambda@Edge ARNs stored in SSM: ${ssmPrefix}/lambda-*-arn`);
+    }
 
     // Determine outputs based on mode
     let url: string;
@@ -455,6 +612,11 @@ export default $config({
       cloudfrontId,
       apiUrl: api.url,
       s3Bucket,
+      // SSO Lambda@Edge ARNs (for Terraform reference via SSM)
+      ssoEnabled: enableSso,
+      ...(enableSso && ssoLambdaArns.protect && { ssoLambdaProtectArn: ssoLambdaArns.protect }),
+      ...(enableSso && ssoLambdaArns.acs && { ssoLambdaAcsArn: ssoLambdaArns.acs }),
+      ...(enableSso && ssoLambdaArns.metadata && { ssoLambdaMetadataArn: ssoLambdaArns.metadata }),
     };
   },
 });

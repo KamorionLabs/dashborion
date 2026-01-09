@@ -46,7 +46,19 @@ def _json_response(status_code: int, body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _get_base_url(event: Dict[str, Any]) -> str:
-    """Extract base URL from request"""
+    """Extract base URL for verification links.
+
+    For device auth flow, we need the frontend URL (not API URL) so users
+    can complete auth in the browser. Use CORS_ORIGINS env var which contains
+    the frontend domain (e.g., https://dashboard.homebox.kamorion.cloud).
+    """
+    # Prefer configured frontend URL (from CORS_ORIGINS)
+    cors_origins = os.environ.get('CORS_ORIGINS', '')
+    if cors_origins:
+        # CORS_ORIGINS contains the frontend URL
+        return cors_origins.split(',')[0].strip()
+
+    # Fallback to request host
     headers = event.get('headers', {}) or {}
     host = headers.get('host', headers.get('Host', 'localhost'))
     protocol = 'https' if headers.get('x-forwarded-proto') == 'https' else 'http'

@@ -12,6 +12,9 @@ class Resource:
     class DashborionApi:
         type: str
         url: str
+    class DeviceCodesTable:
+        name: str
+        type: str
     class TokensTable:
         name: str
         type: str
