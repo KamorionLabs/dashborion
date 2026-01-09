@@ -13,7 +13,7 @@ from urllib.parse import quote
 # Environment variables
 ENVIRONMENTS = json.loads(os.environ.get('ENVIRONMENTS', '{}'))
 SHARED_SERVICES_ACCOUNT = os.environ.get('SHARED_SERVICES_ACCOUNT', '')
-PROJECT_NAME = os.environ.get('PROJECT_NAME', 'homebox')
+PROJECT_NAME = os.environ.get('PROJECT_NAME', 'myapp')
 REGION = os.environ.get('AWS_REGION_DEFAULT', os.environ.get('AWS_REGION', 'eu-west-3'))
 SSO_PORTAL_URL = os.environ.get('SSO_PORTAL_URL', '')
 
@@ -878,7 +878,7 @@ def get_service_details(env: str, service: str) -> dict:
             last_deploy = d['updatedAt'].isoformat() if d.get('updatedAt') else d['createdAt'].isoformat() if d.get('createdAt') else None
             break
 
-    # Get recent logs - log group format: /ecs/homebox-staging/backend
+    # Get recent logs - log group format: /ecs/myapp-staging/backend
     log_group = f"/ecs/{PROJECT_NAME}-{env}/{service}"
     recent_logs = []
     try:
@@ -1029,7 +1029,7 @@ def get_pipeline_info(pipeline_type: str, service: str, env: str = None) -> dict
     logs_client = boto3.client('logs', region_name=REGION)
 
     # GitHub repository info (from CodeStar connection)
-    GITHUB_ORG = 'HOMEBOXDEV'
+    GITHUB_ORG = 'example-org'
     GITHUB_REPO = f'{PROJECT_NAME}-{service}'
 
     if pipeline_type == 'build':
@@ -1250,7 +1250,7 @@ def get_infrastructure_info(env: str, discovery_tags: dict = None, services: lis
 
     Args:
         env: Environment name (staging, preprod, production)
-        discovery_tags: Dict of {tag_key: tag_value} to filter resources (e.g., {"Project": "homebox", "DevTeam": "kanbios"})
+        discovery_tags: Dict of {tag_key: tag_value} to filter resources (e.g., {"Project": "myapp", "DevTeam": "myteam"})
         services: List of service names to look for (e.g., ["backend", "frontend", "cms"])
         domain_config: Dict with domain patterns (e.g., {"pattern": "...", "domains": {"frontend": "fr", ...}})
         databases: List of database types to look for (e.g., ["postgres", "mysql"])
@@ -2074,7 +2074,7 @@ def trigger_build(service: str, image_tag: str, source_revision: str, user_email
 
     try:
         # Use STS assume-role with email in RoleSessionName for CloudTrail attribution
-        # This makes CloudTrail show "dashboard-jean-at-kamorion-dot-com" instead of "homebox-dashboard-api"
+        # This makes CloudTrail show "dashboard-user-at-example-dot-com" instead of "dashborion-api"
         sanitized_email = user_email.replace('@', '-at-').replace('.', '-dot-')[:64] if user_email else 'unknown'
         session_name = f"dashboard-{sanitized_email}"
 
@@ -2417,10 +2417,10 @@ def get_environment_events(env: str, hours: int = 24, event_types: list = None, 
 
                     # Extract service name
                     if is_build:
-                        # homebox-build-backend-arm64 -> backend
+                        # myapp-build-backend-arm64 -> backend
                         service = pipeline_name.replace(f'{PROJECT_NAME}-build-', '').replace('-arm64', '')
                     else:
-                        # homebox-deploy-backend-staging -> backend
+                        # myapp-deploy-backend-staging -> backend
                         parts = pipeline_name.replace(f'{PROJECT_NAME}-deploy-', '').rsplit('-', 1)
                         service = parts[0] if parts else pipeline_name
 
@@ -2523,7 +2523,7 @@ def get_environment_events(env: str, hours: int = 24, event_types: list = None, 
                                 event['details']['commitMessage'] = revision_summary[:100]
                             # Build GitHub commit URL (only for real git commits, not ECR digests)
                             if commit_sha and not commit_sha.startswith('sha256:'):
-                                event['details']['commitUrl'] = f"https://github.com/HOMEBOXDEV/homebox-{service}/commit/{commit_sha}"
+                                event['details']['commitUrl'] = f"https://github.com/example/myapp-{service}/commit/{commit_sha}"
                             elif commit_sha and commit_sha.startswith('sha256:'):
                                 # This is an ECR image digest, not a git commit - mark it as such
                                 event['details']['isEcrDigest'] = True
@@ -2622,7 +2622,7 @@ def get_environment_events(env: str, hours: int = 24, event_types: list = None, 
                         if '/' in dep_id_full:
                             dep_id = dep_id_full.split('/')[-1]  # Extract just the number
                             deployment_created_at[dep_id] = dep.get('createdAt')
-                            # Extract task definition revision (e.g., "homebox-staging-backend:42" -> "42")
+                            # Extract task definition revision (e.g., "myapp-staging-backend:42" -> "42")
                             task_def_arn = dep.get('taskDefinition', '')
                             if task_def_arn:
                                 # ARN format: arn:aws:ecs:region:account:task-definition/name:revision

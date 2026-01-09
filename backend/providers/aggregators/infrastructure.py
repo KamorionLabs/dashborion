@@ -167,7 +167,7 @@ class InfrastructureAggregator:
 
         Args:
             env: Environment name
-            domain_suffix: e.g., 'staging.homebox.kamorion.cloud'
+            domain_suffix: e.g., 'staging.example.com'
             account_id: AWS account ID
             domain_prefixes: List of domain prefixes to match (e.g., ['fr', 'back', 'cms'])
         """

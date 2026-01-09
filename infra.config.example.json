@@ -27,7 +27,7 @@
       "metadataPath": "/saml/metadata"
     },
     "sessionTtlSeconds": 3600,
-    "cookieDomain": ".homebox.kamorion.cloud",
+    "cookieDomain": ".example.com",
     "excludedPaths": ["/health", "/api/health", "/saml/metadata"],
     "requireMfaForProduction": true,
     "_permissionsNote": "Permissions table names are auto-generated as dashborion-{stage}-permissions/audit"
@@ -72,15 +72,15 @@
 
   "projects": {
     "_comment": "Projects configuration for multi-tenant authorization",
-    "homebox": {
-      "displayName": "Homebox",
+    "myapp": {
+      "displayName": "My Application",
       "environments": ["staging", "preprod", "production"],
       "_roleMapping": {
         "_comment": "IdP groups mapped to Dashborion roles",
-        "dashborion-homebox-viewer": { "role": "viewer", "env": "*" },
-        "dashborion-homebox-operator": { "role": "operator", "env": "*" },
-        "dashborion-homebox-admin": { "role": "admin", "env": "*" },
-        "dashborion-homebox-prod-operator": { "role": "operator", "env": "production" }
+        "dashborion-myapp-viewer": { "role": "viewer", "env": "*" },
+        "dashborion-myapp-operator": { "role": "operator", "env": "*" },
+        "dashborion-myapp-admin": { "role": "admin", "env": "*" },
+        "dashborion-myapp-prod-operator": { "role": "operator", "env": "production" }
       }
     }
   }

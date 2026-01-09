@@ -493,7 +493,7 @@ class EKSProvider(OrchestratorProvider):
                     'template': {
                         'metadata': {
                             'annotations': {
-                                'dashboard.homebox.io/restartedAt': datetime.utcnow().isoformat()
+                                'dashborion.io/restartedAt': datetime.utcnow().isoformat()
                             }
                         }
                     }

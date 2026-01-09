@@ -960,7 +960,7 @@ class ECSProvider(OrchestratorProvider):
 
         Args:
             cloudfront: CloudFront client
-            domain_suffix: e.g., 'staging.homebox.kamorion.cloud'
+            domain_suffix: e.g., 'staging.example.com'
             account_id: AWS account ID
             domain_prefixes: List of domain prefixes to match (e.g., ['fr', 'back', 'cms'] for kanbios)
                             If provided, only match distributions with aliases matching {prefix}.{domain_suffix}

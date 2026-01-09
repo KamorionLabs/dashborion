@@ -22,7 +22,7 @@ function loadConfig() {
     console.warn('Warning: DASHBORION_CONFIG_DIR not set, using default config');
     return {
       auth: {
-        cookieDomain: '.homebox.kamorion.cloud',
+        cookieDomain: '.example.com',
         sessionTtlSeconds: 3600,
         excludedPaths: ['/health', '/api/health', '/saml/metadata', '/api/auth/device/code', '/api/auth/device/token'],
         saml: {
@@ -32,7 +32,7 @@ function loadConfig() {
         },
       },
       frontend: {
-        cloudfrontDomain: 'dashboard.homebox.kamorion.cloud',
+        cloudfrontDomain: 'dashboard.example.com',
       },
     };
   }

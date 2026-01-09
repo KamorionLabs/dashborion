@@ -174,7 +174,7 @@ class CombinedEventsProvider(EventsProvider):
 
                             # GitHub URL
                             if commit_sha and not commit_sha.startswith('sha256:'):
-                                github_org = self.config.github_org or 'HOMEBOXDEV'
+                                github_org = self.config.github_org or 'example-org'
                                 repo_pattern = self.config.ci_provider.config.get('repo_pattern', '{project}-{service}')
                                 repo = repo_pattern.replace('{project}', self.project).replace('{service}', service)
                                 event['details']['commitUrl'] = f"https://github.com/{github_org}/{repo}/commit/{commit_sha}"

@@ -106,5 +106,5 @@ pnpm-lock.yaml
 
 # Instance-specific configs (not committed - use DASHBORION_CONFIG_DIR instead)
 infra.config.json
-frontend/public/config.json
+packages/frontend/public/config.json
 idp-metadata/

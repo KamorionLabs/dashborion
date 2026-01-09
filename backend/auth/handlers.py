@@ -50,7 +50,7 @@ def _get_base_url(event: Dict[str, Any]) -> str:
 
     For device auth flow, we need the frontend URL (not API URL) so users
     can complete auth in the browser. Use CORS_ORIGINS env var which contains
-    the frontend domain (e.g., https://dashboard.homebox.kamorion.cloud).
+    the frontend domain (e.g., https://dashboard.example.com).
     """
     # Prefer configured frontend URL (from CORS_ORIGINS)
     cors_origins = os.environ.get('CORS_ORIGINS', '')
@@ -389,7 +389,7 @@ def handle_auth_me(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             },
             "permissions": [
                 {
-                    "project": "homebox",
+                    "project": "myapp",
                     "environment": "*",
                     "role": "operator",
                     "resources": ["*"]

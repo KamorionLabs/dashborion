@@ -128,7 +128,7 @@ dashborion/
 │   └── dashborion/              # Package Python
 │
 ├── examples/
-│   └── homebox/                 # Exemple multi-account
+│   └── myapp/                 # Exemple multi-account
 │       ├── sst.config.ts
 │       └── infra.config.json
 │
@@ -517,14 +517,14 @@ export interface DashborionArgs {
 1. Configurer changesets pour versioning
 2. CI/CD pour publish automatique
 3. Documentation README pour chaque package
-4. Exemple homebox mis a jour
+4. Exemple myapp mis a jour
 
-## Migration Homebox
+## Migration MyApp
 
-Apres finalisation, homebox utilisera :
+Apres finalisation, myapp utilisera :
 
 ```
-homebox-infra/stacks/dashborion/
+myapp-infra/stacks/dashborion/
 ├── sst.config.ts              # Utilise @dashborion/sst
 ├── idp-metadata/
 │   └── dashboard.xml
@@ -540,43 +540,43 @@ import { Dashborion } from '@dashborion/sst';
 export default $config({
   app: () => ({ name: 'dashborion', home: 'aws' }),
   async run() {
-    const dashboard = new Dashborion('Homebox', {
-      domain: 'dashboard.homebox.kamorion.cloud',
+    const dashboard = new Dashborion('MyApp', {
+      domain: 'dashboard.myapp.example.cloud',
 
       auth: {
         provider: 'saml',
         saml: {
-          entityId: 'homebox-dashboard-sso',
+          entityId: 'myapp-dashboard-sso',
         },
       },
       idpMetadataPath: './idp-metadata/dashboard.xml',
 
       config: {
         projects: {
-          homebox: {
-            displayName: 'Homebox',
+          myapp: {
+            displayName: 'MyApp',
             environments: {
               staging: {
                 accountId: '702125625526',
                 region: 'eu-west-3',
-                clusterName: 'homebox-staging',
+                clusterName: 'myapp-staging',
               },
               preprod: {
                 accountId: '...',
                 region: 'eu-west-3',
-                clusterName: 'homebox-preprod',
+                clusterName: 'myapp-preprod',
               },
               production: {
                 accountId: '...',
                 region: 'eu-west-3',
-                clusterName: 'homebox-production',
+                clusterName: 'myapp-production',
               },
             },
           },
         },
         crossAccountRoles: {
           '702125625526': {
-            readRoleArn: 'arn:aws:iam::702125625526:role/homebox-dashboard-read',
+            readRoleArn: 'arn:aws:iam::702125625526:role/myapp-dashboard-read',
           },
           // ... autres comptes
         },
@@ -592,13 +592,13 @@ export default $config({
           actions: true,
         },
         namingPatterns: {
-          service: 'homebox-{env}-{service}-service',
-          buildPipeline: 'homebox-{service}-pipeline',
-          deployPipeline: 'homebox-deploy-{service}-pipeline',
+          service: 'myapp-{env}-{service}-service',
+          buildPipeline: 'myapp-{service}-pipeline',
+          deployPipeline: 'myapp-deploy-{service}-pipeline',
         },
         ssoPortalUrl: 'https://d-806779789c.awsapps.com/start',
         github: {
-          owner: 'HOMEBOXDEV',
+          owner: 'example-org',
         },
       },
     });
@@ -617,7 +617,7 @@ export default $config({
 
 1. **Finaliser Lambda@Edge auth** - Implementation complete SAML/OIDC
 2. **Tests d'integration** - Deploiement test sur un compte AWS
-3. **Migration Homebox** - Convertir la config existante
+3. **Migration MyApp** - Convertir la config existante
 
 ### Moyen terme
 

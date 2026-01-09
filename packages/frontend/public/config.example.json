@@ -1,10 +1,10 @@
 {
   "global": {
-    "title": "Homebox Operations",
-    "logo": "/kamorion-logo.png",
-    "logoAlt": "Kamorion",
-    "ssoPortalUrl": "https://d-806779789c.awsapps.com/start",
-    "defaultRegion": "eu-west-3"
+    "title": "Dashborion Operations",
+    "logo": "/logo.png",
+    "logoAlt": "My Company",
+    "ssoPortalUrl": "https://your-sso-portal.awsapps.com/start",
+    "defaultRegion": "eu-west-1"
   },
   "api": {
     "baseUrl": "/api",
@@ -17,118 +17,60 @@
     "logoutUrl": "/saml/logout"
   },
   "projects": {
-    "kanbios": {
-      "name": "Homebox",
-      "shortName": "HB",
+    "myapp": {
+      "name": "My Application",
+      "shortName": "APP",
       "color": "#0ea5e9",
-      "client": "Kanbios",
-      "description": "Application principale homebox.fr",
+      "client": "My Client",
+      "description": "Main application",
       "aws": {
         "accounts": {
           "shared-services": {
-            "id": "501994300510",
-            "alias": "homebox-shared-services",
-            "region": "eu-west-3"
+            "id": "111111111111",
+            "alias": "myapp-shared",
+            "region": "eu-west-1"
           },
           "staging": {
-            "id": "587978435219",
-            "alias": "homebox-staging",
-            "region": "eu-west-3"
-          },
-          "preprod": {
-            "id": "891377009025",
-            "alias": "homebox-preprod",
-            "region": "eu-west-3"
+            "id": "222222222222",
+            "alias": "myapp-staging",
+            "region": "eu-west-1"
           },
           "production": {
-            "id": "730335326125",
-            "alias": "homebox-production",
-            "region": "eu-west-3"
+            "id": "333333333333",
+            "alias": "myapp-production",
+            "region": "eu-west-1"
           }
         }
       },
-      "services": ["backend", "frontend", "cms"],
-      "environments": ["staging", "preprod", "production"],
+      "services": ["backend", "frontend", "api"],
+      "environments": ["staging", "production"],
       "serviceNaming": {
-        "prefix": "homebox"
+        "prefix": "myapp"
       },
       "infrastructure": {
         "discoveryTags": {
-          "Project": "homebox",
-          "DevTeam": "kanbios"
+          "Project": "myapp"
         },
         "serviceColors": {
           "backend": "#3b82f6",
           "frontend": "#8b5cf6",
-          "cms": "#06b6d4"
+          "api": "#06b6d4"
         },
-        "domainPattern": "{country}.{env}.homebox.kamorion.cloud",
+        "domainPattern": "{service}.{env}.example.com",
         "domains": {
-          "frontend": "fr",
-          "backend": "back",
-          "cms": "cms"
+          "frontend": "app",
+          "backend": "api",
+          "api": "gateway"
         },
         "databases": ["postgres"],
         "caches": ["redis"]
       },
       "envColors": {
         "staging": { "bg": "bg-yellow-500", "text": "text-yellow-400", "border": "border-yellow-500" },
-        "preprod": { "bg": "bg-blue-500", "text": "text-blue-400", "border": "border-blue-500" },
-        "production": { "bg": "bg-green-500", "text": "text-green-400", "border": "border-green-500" },
-        "shared": { "bg": "bg-purple-500", "text": "text-purple-400", "border": "border-purple-500" }
-      }
-    },
-    "tuesday": {
-      "name": "Teleoperateur",
-      "shortName": "TO",
-      "color": "#f59e0b",
-      "client": "Tuesday",
-      "description": "Application teleoperateur",
-      "aws": {
-        "accounts": {
-          "shared-services": {
-            "id": "501994300510",
-            "alias": "homebox-shared-services",
-            "region": "eu-west-3"
-          },
-          "preprod": {
-            "id": "891377009025",
-            "alias": "homebox-preprod",
-            "region": "eu-west-3"
-          },
-          "production": {
-            "id": "730335326125",
-            "alias": "homebox-production",
-            "region": "eu-west-3"
-          }
-        }
-      },
-      "services": ["teleoperateur"],
-      "environments": ["preprod", "production"],
-      "serviceNaming": {
-        "prefix": "homebox"
-      },
-      "infrastructure": {
-        "discoveryTags": {
-          "Project": "homebox",
-          "DevTeam": "tuesday"
-        },
-        "serviceColors": {
-          "teleoperateur": "#f59e0b"
-        },
-        "domainPattern": "teleop.{env}.homebox.kamorion.cloud",
-        "domains": {
-          "teleoperateur": "teleop"
-        },
-        "databases": ["mysql"],
-        "caches": []
-      },
-      "envColors": {
-        "preprod": { "bg": "bg-blue-500", "text": "text-blue-400", "border": "border-blue-500" },
         "production": { "bg": "bg-green-500", "text": "text-green-400", "border": "border-green-500" },
         "shared": { "bg": "bg-purple-500", "text": "text-purple-400", "border": "border-purple-500" }
       }
     }
   },
-  "defaultProject": "kanbios"
+  "defaultProject": "myapp"
 }
