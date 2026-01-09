@@ -55,18 +55,28 @@ export function AuthProvider({ children }) {
     async function fetchUserInfo() {
       try {
         setIsLoading(true);
-        const response = await fetchWithRetry('/api/auth/me');
 
-        if (response.ok) {
-          const data = await response.json();
-          setUser(data.user);
-          setPermissions(data.permissions || []);
-        } else if (response.status === 401) {
-          // Not authenticated - this is expected for public routes
-          setUser(null);
-          setPermissions([]);
+        // Check if we already have a valid token
+        const existingToken = localStorage.getItem('dashborion_token');
+
+        if (existingToken) {
+          // We have a token - use direct API
+          const response = await fetchWithRetry('/api/auth/me');
+
+          if (response.ok) {
+            const data = await response.json();
+            setUser(data.user);
+            setPermissions(data.permissions || []);
+          } else if (response.status === 401) {
+            // Token expired/invalid - clear and retry via proxy
+            clearAuthTokens();
+            await tryAuthViaProxy();
+          } else {
+            throw new Error(`Failed to fetch user info: ${response.status}`);
+          }
         } else {
-          throw new Error(`Failed to fetch user info: ${response.status}`);
+          // No token - try via CloudFront proxy (for SSO cookie auth)
+          await tryAuthViaProxy();
         }
       } catch (err) {
         console.error('Auth error:', err);
@@ -75,6 +85,58 @@ export function AuthProvider({ children }) {
         setPermissions([]);
       } finally {
         setIsLoading(false);
+      }
+    }
+
+    /**
+     * Try authentication via CloudFront proxy (for SSO cookie-based auth)
+     */
+    async function tryAuthViaProxy() {
+      // Force proxy mode to use SSO cookie via Lambda@Edge
+      const response = await fetchWithRetry('/api/auth/me', {}, 3, true);
+
+      if (response.ok) {
+        const data = await response.json();
+        setUser(data.user);
+        setPermissions(data.permissions || []);
+
+        // SSO authenticated - exchange for Bearer token
+        await exchangeSsoForToken();
+      } else if (response.status === 401) {
+        // Not authenticated
+        setUser(null);
+        setPermissions([]);
+      } else {
+        throw new Error(`Failed to fetch user info: ${response.status}`);
+      }
+    }
+
+    /**
+     * Exchange SSO session (cookie) for Bearer token
+     * This allows direct API calls without going through CloudFront proxy
+     */
+    async function exchangeSsoForToken() {
+      try {
+        // Force proxy mode - must go through CloudFront for Lambda@Edge to add SSO headers
+        const response = await fetchWithRetry('/api/auth/token/issue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        }, 3, true);
+
+        if (response.ok) {
+          const data = await response.json();
+          // Store tokens for direct API access
+          localStorage.setItem('dashborion_token', data.access_token);
+          localStorage.setItem('dashborion_refresh_token', data.refresh_token);
+          localStorage.setItem('dashborion_user', JSON.stringify(data.user));
+          localStorage.setItem('dashborion_auth_method', 'saml');
+          console.log('SSO session exchanged for Bearer token');
+        } else {
+          console.warn('Failed to exchange SSO for token:', response.status);
+        }
+      } catch (err) {
+        console.warn('SSO token exchange failed:', err);
+        // Non-fatal - SSO session still works via CloudFront proxy
       }
     }
 

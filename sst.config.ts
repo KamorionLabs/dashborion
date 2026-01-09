@@ -652,9 +652,11 @@ export default $config({
 
     // Auth - protected endpoints
     api.route("GET /api/auth/me", authHandler.arn, authOptions);
+    api.route("GET /api/auth/whoami", authHandler.arn, authOptions);
     api.route("POST /api/auth/device/verify", authHandler.arn, authOptions);
     api.route("POST /api/auth/token/refresh", authHandler.arn, authOptions);
     api.route("POST /api/auth/token/revoke", authHandler.arn, authOptions);
+    api.route("POST /api/auth/token/issue", authHandler.arn, authOptions);  // SSO cookie → Bearer token
 
     // Services routes
     api.route("GET /api/{project}/services", servicesHandler.arn, authOptions);
@@ -878,10 +880,22 @@ export default $config({
 
         console.log("Building frontend...");
         try {
+          // Build with API URL from config (for direct API access)
+          const buildEnv: Record<string, string> = {
+            ...process.env as Record<string, string>,
+            NODE_ENV: "production",
+          };
+
+          // Inject direct API URL if custom domain is configured
+          if (apiDomain) {
+            buildEnv.VITE_API_URL = `https://${apiDomain}`;
+            console.log(`Frontend will use direct API: https://${apiDomain}`);
+          }
+
           execSync("npm run build", {
             cwd: frontendPath,
             stdio: "inherit",
-            env: { ...process.env, NODE_ENV: "production" },
+            env: buildEnv,
           });
           console.log("Frontend build complete.");
         } catch (err) {

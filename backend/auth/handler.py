@@ -16,6 +16,7 @@ Protected endpoints (auth required):
 - POST /api/auth/device/verify
 - POST /api/auth/token/refresh
 - POST /api/auth/token/revoke
+- POST /api/auth/token/issue (SSO cookie to Bearer token exchange)
 """
 
 import json
@@ -28,6 +29,7 @@ from .handlers import (
     handle_device_verify,
     handle_token_refresh,
     handle_token_revoke,
+    handle_token_issue,
     handle_sso_exchange,
     handle_login,
     handle_auth_me,
@@ -61,6 +63,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         ('POST', '/api/auth/device/verify'): handle_device_verify,
         ('POST', '/api/auth/token/refresh'): handle_token_refresh,
         ('POST', '/api/auth/token/revoke'): handle_token_revoke,
+        ('POST', '/api/auth/token/issue'): handle_token_issue,
     }
 
     # Find handler

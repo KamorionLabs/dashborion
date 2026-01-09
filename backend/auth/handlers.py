@@ -747,6 +747,100 @@ def handle_login(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 # =============================================================================
+# Token Issue (SSO Cookie to Bearer Token Exchange)
+# =============================================================================
+
+def handle_token_issue(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    POST /api/auth/token/issue
+
+    Exchange SSO session (cookie) for Bearer tokens.
+
+    This endpoint is called THROUGH CloudFront, where Lambda@Edge has already
+    validated the SSO cookie and added x-auth-* headers. The Lambda Authorizer
+    then validates these headers and provides the auth context.
+
+    This allows the frontend to:
+    1. Authenticate via SSO (get cookie)
+    2. Call this endpoint once (via CloudFront proxy)
+    3. Get Bearer tokens
+    4. Use direct API calls with Bearer token (bypassing CloudFront)
+
+    Response:
+        {
+            "access_token": "...",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "...",
+            "user": {
+                "email": "user@company.com",
+                "groups": [...],
+                "permissions": [...]
+            }
+        }
+    """
+    import time
+    from .user_management import get_user, get_user_effective_permissions
+
+    # Get auth context from Lambda Authorizer (already validated SSO)
+    authorizer = event.get('requestContext', {}).get('authorizer', {})
+    lambda_ctx = authorizer.get('lambda', {})
+
+    email = lambda_ctx.get('email', '')
+    if not email:
+        return _json_response(401, {
+            'error': 'unauthorized',
+            'error_description': 'No authenticated session found',
+        })
+
+    # Parse permissions and groups from authorizer context
+    try:
+        permissions_from_auth = json.loads(lambda_ctx.get('permissions', '[]'))
+        groups = json.loads(lambda_ctx.get('groups', '[]'))
+    except json.JSONDecodeError:
+        permissions_from_auth = []
+        groups = []
+
+    # Get user record (may not exist for SSO-only users)
+    user = get_user(email)
+
+    # Build permissions JSON for token
+    # Use permissions from authorizer (already computed by Lambda Authorizer)
+    permissions_json = json.dumps(permissions_from_auth)
+
+    # Generate tokens
+    access_token = generate_access_token()
+    refresh_token = generate_refresh_token()
+    expires_at = int(time.time()) + ACCESS_TOKEN_TTL
+
+    token = AccessToken(
+        token=access_token,
+        expires_in=ACCESS_TOKEN_TTL,
+        expires_at=expires_at,
+        refresh_token=refresh_token,
+        user_id=email,
+        email=email,
+        permissions=permissions_json,
+    )
+
+    # Store token in DynamoDB
+    _store_token(token, 'sso-exchange')
+
+    return _json_response(200, {
+        'access_token': token.token,
+        'token_type': token.token_type,
+        'expires_in': token.expires_in,
+        'refresh_token': token.refresh_token,
+        'user': {
+            'email': email,
+            'groups': groups,
+            'permissions': permissions_from_auth,
+            'role': user.default_role.value if user else 'viewer',
+        },
+    })
+
+
+# =============================================================================
 # Route Handler
 # =============================================================================
 
@@ -756,6 +850,7 @@ AUTH_ROUTES = {
     ('POST', '/api/auth/device/verify'): handle_device_verify,
     ('POST', '/api/auth/token/refresh'): handle_token_refresh,
     ('POST', '/api/auth/token/revoke'): handle_token_revoke,
+    ('POST', '/api/auth/token/issue'): handle_token_issue,
     ('POST', '/api/auth/sso/exchange'): handle_sso_exchange,
     ('POST', '/api/auth/login'): handle_login,
     ('GET', '/api/auth/me'): handle_auth_me,
