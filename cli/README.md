@@ -140,6 +140,100 @@ dashborion diagram generate --config diagrams.yaml
 dashborion diagram publish --file architecture.png --confluence-page 12345
 ```
 
+### Admin Commands
+
+Manage users, groups, and permissions. Requires admin role.
+
+#### Users
+
+```bash
+# List all users
+dashborion admin user list
+
+# Show user details
+dashborion admin user show user@example.com
+
+# Create a new user
+dashborion admin user create user@example.com --role viewer
+dashborion admin user create admin@example.com --role admin
+
+# Update user role
+dashborion admin user update user@example.com --role operator
+
+# Disable/enable a user
+dashborion admin user update user@example.com --disable
+dashborion admin user update user@example.com --enable
+
+# Delete a user
+dashborion admin user delete user@example.com
+```
+
+#### Groups
+
+```bash
+# List all groups
+dashborion admin group list
+
+# Create a local group
+dashborion admin group create platform-team --description "Platform engineers"
+
+# Create a group mapped to SSO
+dashborion admin group create viewers --sso-group-name "dashborion-viewers" --role viewer
+
+# Add/remove users from groups
+dashborion admin group add-user platform-team user@example.com
+dashborion admin group remove-user platform-team user@example.com
+
+# Show group members
+dashborion admin group members platform-team
+
+# Delete a group
+dashborion admin group delete platform-team
+```
+
+#### Permissions
+
+```bash
+# List user permissions
+dashborion admin permission list user@example.com
+
+# Grant permission to a user
+dashborion admin permission grant user@example.com \
+  --project homebox \
+  --environment staging \
+  --role operator
+
+# Grant global admin
+dashborion admin permission grant admin@example.com \
+  --project "*" \
+  --environment "*" \
+  --role admin
+
+# Revoke permission
+dashborion admin permission revoke user@example.com \
+  --project homebox \
+  --environment staging
+
+# Grant permission to a group
+dashborion admin permission grant-group platform-team \
+  --project homebox \
+  --environment "*" \
+  --role operator
+```
+
+#### Role Hierarchy
+
+| Role | Permissions |
+|------|-------------|
+| `viewer` | Read-only access (view services, logs, infrastructure) |
+| `operator` | Viewer + deploy, restart, scale services |
+| `admin` | Operator + manage users, groups, permissions |
+
+#### Bootstrap
+
+The first user to authenticate via SSO automatically becomes a global admin.
+Subsequent users are created with `viewer` role by default.
+
 ## Output Formats
 
 All commands support multiple output formats:
