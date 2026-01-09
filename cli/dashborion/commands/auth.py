@@ -83,8 +83,8 @@ def get_api_base_url() -> str:
         except Exception:
             pass
 
-    # Default
-    return 'https://dashboard.homebox.kamorion.cloud'
+    # Default (API domain, not frontend)
+    return 'https://dashboard-api.homebox.kamorion.cloud'
 
 
 def is_token_valid(credentials: dict) -> bool:
