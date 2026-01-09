@@ -63,6 +63,9 @@ interface InfraConfigFile {
   apiGateway?: {
     id?: string;
     url?: string;
+    domain?: string; // Custom domain for API (e.g., dashboard-api.homebox.kamorion.cloud)
+    route53ZoneId?: string; // Route53 zone ID (e.g., Z100319731IOX9Q8MP7EB)
+    route53Profile?: string; // AWS profile for Route53 (if in different account)
   };
   crossAccountRoles?: Record<
     string,
@@ -228,13 +231,62 @@ export default $config({
       }
     }
 
-    // Determine domain
-    const domain = config.frontend?.cloudfrontDomain || `dashboard-${stage}.example.com`;
+    // Determine domains
+    const frontendDomain = config.frontend?.cloudfrontDomain || `dashboard-${stage}.example.com`;
+    // API domain: use config or derive from frontend domain (dashboard.x.y → dashboard-api.x.y)
+    const apiDomain = config.apiGateway?.domain ||
+      (config.frontend?.cloudfrontDomain
+        ? config.frontend.cloudfrontDomain.replace(/^dashboard\./, 'dashboard-api.')
+        : null);
+
+    // Create provider for DNS (Route53 may be in a different account)
+    const dnsProvider = config.apiGateway?.route53Profile
+      ? new aws.Provider("DnsProvider", {
+          region: config.aws?.region || "eu-west-3",
+          profile: config.apiGateway.route53Profile,
+        })
+      : undefined;
+
+    // Create ACM certificate for API domain (if cross-account DNS)
+    let apiCertificateArn: $util.Output<string> | undefined;
+    if (apiDomain && config.apiGateway?.route53ZoneId && dnsProvider) {
+      // Create certificate in current account (shared-services)
+      const apiCert = new aws.acm.Certificate("ApiCertificate", {
+        domainName: apiDomain,
+        validationMethod: "DNS",
+        tags: { Project: "dashborion", Stage: stage },
+      });
+
+      // Create DNS validation record in management account
+      const apiCertValidation = new aws.route53.Record("ApiCertValidation", {
+        zoneId: config.apiGateway.route53ZoneId,
+        name: apiCert.domainValidationOptions[0].resourceRecordName,
+        type: apiCert.domainValidationOptions[0].resourceRecordType,
+        records: [apiCert.domainValidationOptions[0].resourceRecordValue],
+        ttl: 300,
+      }, { provider: dnsProvider });
+
+      // Wait for certificate validation
+      const apiCertValidated = new aws.acm.CertificateValidation("ApiCertValidated", {
+        certificateArn: apiCert.arn,
+        validationRecordFqdns: [apiCertValidation.fqdn],
+      });
+
+      apiCertificateArn = apiCertValidated.certificateArn;
+    }
 
     // Create Backend API using SST's native Function component
     const api = new sst.aws.ApiGatewayV2("DashborionApi", {
+      // Custom domain with pre-validated certificate (dns: false = we handle DNS ourselves)
+      ...(apiDomain && apiCertificateArn && {
+        domain: {
+          name: apiDomain,
+          cert: apiCertificateArn,
+          dns: false,
+        },
+      }),
       cors: {
-        allowOrigins: [`https://${domain}`],
+        allowOrigins: [`https://${frontendDomain}`],
         allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allowHeaders: ["Content-Type", "Authorization", "x-sso-user-email"],
       },
@@ -280,7 +332,7 @@ export default $config({
         AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
         PROJECTS: JSON.stringify(projectsWithServices),
         CROSS_ACCOUNT_ROLES: JSON.stringify(crossAccountRoles),
-        CORS_ORIGINS: `https://${domain}`,
+        CORS_ORIGINS: `https://${frontendDomain}`,
         // Auth configuration
         AUTH_PROVIDER: config.auth?.provider || "simple",
         AUTH_USERS: JSON.stringify(config.auth?.users || {}),
@@ -342,6 +394,22 @@ export default $config({
 
     // Add health check route
     api.route("GET /api/health", apiHandler.arn);
+
+    // Create DNS A record for API custom domain (if cross-account)
+    if (apiDomain && config.apiGateway?.route53ZoneId && dnsProvider && apiCertificateArn) {
+      // Get the API Gateway domain target from the api's domain configuration
+      // SST creates an apigatewayv2.DomainName resource that has the target
+      new aws.route53.Record("ApiDomainRecord", {
+        zoneId: config.apiGateway.route53ZoneId,
+        name: apiDomain,
+        type: "A",
+        aliases: [{
+          name: api.nodes.domainName!.domainNameConfiguration.apply(c => c.targetDomainName),
+          zoneId: api.nodes.domainName!.domainNameConfiguration.apply(c => c.hostedZoneId),
+          evaluateTargetHealth: false,
+        }],
+      }, { provider: dnsProvider });
+    }
 
     // ==========================================================================
     // SSO Lambda@Edge (only in managed mode with SAML auth)
@@ -611,6 +679,8 @@ export default $config({
       url,
       cloudfrontId,
       apiUrl: api.url,
+      // Custom API domain (if configured, requires manual DNS setup)
+      ...(apiDomain && { apiDomain: `https://${apiDomain}` }),
       s3Bucket,
       // SSO Lambda@Edge ARNs (for Terraform reference via SSM)
       ssoEnabled: enableSso,
