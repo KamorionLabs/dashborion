@@ -510,11 +510,15 @@ def handle_sso_exchange(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "refresh_token": "...",
             "user": {
                 "email": "user@company.com",
-                "arn": "arn:aws:sts::..."
+                "arn": "arn:aws:sts::...",
+                "groups": [...]
             }
         }
     """
     import boto3
+    import time
+    from .user_management import get_user, create_user, get_user_effective_permissions, has_any_admin
+    from .models import DashborionRole
 
     body = _parse_body(event)
     access_key = body.get('aws_access_key_id', '')
@@ -546,7 +550,7 @@ def handle_sso_exchange(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         if 'assumed-role' in user_arn:
             parts = user_arn.split('/')
             if len(parts) >= 3:
-                email = parts[-1]
+                email = parts[-1].lower()
 
         if not email or '@' not in email:
             return _json_response(400, {
@@ -554,34 +558,62 @@ def handle_sso_exchange(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'error_description': 'Could not extract email from AWS identity',
             })
 
-        # Look up permissions for this user
-        from .permissions import get_user_permissions_from_db
-        permissions = get_user_permissions_from_db(email)
+        # Get or create user in DynamoDB
+        user = get_user(email)
+        if not user:
+            # First user becomes admin (bootstrap), others become viewer
+            is_first_user = not has_any_admin()
+            default_role = DashborionRole.ADMIN.value if is_first_user else DashborionRole.VIEWER.value
 
-        # Create tokens
-        from .device_flow import (
-            generate_access_token,
-            generate_refresh_token,
-            AccessToken,
-            ACCESS_TOKEN_TTL,
-            _store_token,
-        )
-        import time
-        import json
+            result = create_user(
+                email=email,
+                display_name=email.split('@')[0],
+                default_role=default_role,
+                password=None,  # SSO users don't have local password
+                actor_email='sso-bootstrap' if is_first_user else 'sso-auto',
+            )
+            if not result.get('success'):
+                return _json_response(500, {
+                    'error': 'user_creation_failed',
+                    'error_description': result.get('error', 'Failed to create user'),
+                })
+            # Re-fetch user to get User object
+            user = get_user(email)
 
-        access_token = generate_access_token()
-        refresh_token = generate_refresh_token()
-        expires_at = int(time.time()) + ACCESS_TOKEN_TTL
+        if not user:
+            return _json_response(500, {
+                'error': 'user_creation_failed',
+                'error_description': 'Failed to create or retrieve user',
+            })
 
-        permissions_json = json.dumps([
+        if user.disabled:
+            return _json_response(403, {
+                'error': 'user_disabled',
+                'error_description': 'User account is disabled',
+            })
+
+        # Get effective permissions (user + local groups)
+        # Note: AWS SSO doesn't provide Azure AD groups in ARN,
+        # so we only use local group membership stored in DynamoDB
+        permissions = get_user_effective_permissions(email, user.local_groups)
+
+        # Build permissions JSON
+        permissions_list = [
             {
                 'project': p.project,
                 'environment': p.environment,
                 'role': p.role.value,
                 'resources': p.resources,
+                'source': p.source,
             }
             for p in permissions
-        ])
+        ]
+        permissions_json = json.dumps(permissions_list)
+
+        # Generate tokens
+        access_token = generate_access_token()
+        refresh_token = generate_refresh_token()
+        expires_at = int(time.time()) + ACCESS_TOKEN_TTL
 
         token = AccessToken(
             token=access_token,
@@ -604,6 +636,8 @@ def handle_sso_exchange(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 'email': email,
                 'arn': user_arn,
                 'account_id': account_id,
+                'role': user.default_role.value,
+                'groups': user.local_groups,
             },
         })
 
@@ -615,41 +649,14 @@ def handle_sso_exchange(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 # =============================================================================
-# Simple Login (when SAML not available)
+# Simple Login (DynamoDB-based user management)
 # =============================================================================
-
-def _get_auth_users() -> Dict[str, Dict[str, Any]]:
-    """Get configured users from AUTH_USERS environment variable"""
-    import json
-    users_json = os.environ.get('AUTH_USERS', '{}')
-    try:
-        return json.loads(users_json)
-    except json.JSONDecodeError:
-        return {}
-
-
-def _verify_password(stored_hash: str, password: str) -> bool:
-    """Verify password against stored hash (bcrypt or plain for dev)"""
-    import hashlib
-
-    # Support plain text for development (prefix with 'plain:')
-    if stored_hash.startswith('plain:'):
-        return stored_hash[6:] == password
-
-    # Support sha256 hash (prefix with 'sha256:')
-    if stored_hash.startswith('sha256:'):
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        return stored_hash[7:] == password_hash
-
-    # Default: plain text comparison (legacy)
-    return stored_hash == password
-
 
 def handle_login(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     POST /api/auth/login
 
-    Simple username/password login for environments without SAML.
+    Username/password login using DynamoDB-stored users.
 
     Request body:
         {
@@ -665,10 +672,13 @@ def handle_login(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "refresh_token": "...",
             "user": {
                 "email": "user@example.com",
-                "role": "admin"
+                "role": "admin",
+                "groups": [...]
             }
         }
     """
+    from .user_management import verify_user_password, get_user_effective_permissions
+
     body = _parse_body(event)
     email = body.get('email', '').lower().strip()
     password = body.get('password', '')
@@ -679,40 +689,30 @@ def handle_login(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'error_description': 'Email and password required',
         })
 
-    # Get configured users
-    users = _get_auth_users()
-    user_config = users.get(email)
+    # Verify user credentials
+    valid, user = verify_user_password(email, password)
 
-    if not user_config:
+    if not valid or not user:
         return _json_response(401, {
             'error': 'invalid_credentials',
             'error_description': 'Invalid email or password',
         })
 
-    # Verify password
-    stored_password = user_config.get('password', '')
-    if not _verify_password(stored_password, password):
-        return _json_response(401, {
-            'error': 'invalid_credentials',
-            'error_description': 'Invalid email or password',
-        })
+    # Get effective permissions (user + groups)
+    permissions = get_user_effective_permissions(email, user.local_groups)
 
-    # Get user permissions
-    role = user_config.get('role', 'viewer')
-    groups = user_config.get('groups', [])
-    projects = user_config.get('projects', ['*'])  # Default to all projects
-
-    # Build permissions based on role
-    permissions = []
-    for project in projects:
-        permissions.append({
-            'project': project,
-            'environment': '*',
-            'role': role,
-            'resources': ['*'],
-        })
-
-    permissions_json = json.dumps(permissions)
+    # Build permissions JSON
+    permissions_list = [
+        {
+            'project': p.project,
+            'environment': p.environment,
+            'role': p.role.value,
+            'resources': p.resources,
+            'source': p.source,
+        }
+        for p in permissions
+    ]
+    permissions_json = json.dumps(permissions_list)
 
     # Generate tokens
     import time
@@ -740,8 +740,8 @@ def handle_login(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         'refresh_token': token.refresh_token,
         'user': {
             'email': email,
-            'role': role,
-            'groups': groups,
+            'role': user.default_role.value,
+            'groups': user.local_groups,
         },
     })
 

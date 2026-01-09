@@ -9,6 +9,10 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "AuditTable": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "DashborionApi": {
       "type": "sst.aws.ApiGatewayV2"
       "url": string
@@ -17,7 +21,19 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
+    "GroupsTable": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "PermissionsTable": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "TokensTable": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
+    "UsersTable": {
       "name": string
       "type": "sst.aws.Dynamo"
     }

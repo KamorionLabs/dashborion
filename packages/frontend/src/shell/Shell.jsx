@@ -22,6 +22,15 @@ import { useConfig } from '../ConfigContext';
 import { useAuth } from '../hooks/useAuth';
 
 /**
+ * Role badge colors
+ */
+const ROLE_COLORS = {
+  admin: 'bg-red-500/20 text-red-400 border-red-500/30',
+  operator: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+  viewer: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+};
+
+/**
  * Header component
  */
 function Header({
@@ -30,9 +39,14 @@ function Header({
   onRefresh,
   refreshing,
   lastUpdated,
+  currentProject,
+  currentEnv,
 }) {
   const auth = useAuth();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // Get role for current project/env
+  const currentRole = auth.getRoleFor?.(currentProject, currentEnv);
 
   return (
     <header className="bg-gray-900 border-b border-gray-800 px-4 py-3 flex items-center justify-between sticky top-0 z-40">
@@ -78,6 +92,18 @@ function Header({
           />
         </button>
 
+        {/* Role badge for current project */}
+        {currentRole && currentProject && (
+          <span
+            className={`hidden md:inline-flex items-center px-2 py-1 text-xs font-medium rounded border ${
+              ROLE_COLORS[currentRole] || ROLE_COLORS.viewer
+            }`}
+            title={`Your role for ${currentProject}/${currentEnv || '*'}`}
+          >
+            {currentRole}
+          </span>
+        )}
+
         {/* User menu */}
         {auth?.user && (
           <div className="relative">
@@ -100,7 +126,7 @@ function Header({
                   className="fixed inset-0 z-40"
                   onClick={() => setUserMenuOpen(false)}
                 />
-                <div className="absolute right-0 mt-2 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
+                <div className="absolute right-0 mt-2 w-64 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-50">
                   <div className="px-4 py-3 border-b border-gray-700">
                     <p className="text-sm text-gray-300">{auth.user.email}</p>
                     {auth.user.groups?.length > 0 && (
@@ -109,6 +135,34 @@ function Header({
                       </p>
                     )}
                   </div>
+
+                  {/* Permissions section */}
+                  {auth.permissions?.length > 0 && (
+                    <div className="px-4 py-2 border-b border-gray-700">
+                      <p className="text-xs text-gray-500 mb-2">Permissions</p>
+                      <div className="space-y-1 max-h-32 overflow-y-auto">
+                        {auth.permissions.map((perm, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center justify-between text-xs"
+                          >
+                            <span className="text-gray-400">
+                              {perm.project === '*' ? 'All projects' : perm.project}
+                              {perm.environment !== '*' && `/${perm.environment}`}
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-xs ${
+                                ROLE_COLORS[perm.role] || ROLE_COLORS.viewer
+                              }`}
+                            >
+                              {perm.role}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="py-1">
                     <Link
                       to="/settings"
@@ -364,6 +418,7 @@ export function Shell({ children, onRefresh, refreshing = false, lastUpdated }) 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const config = useConfig();
   const location = useLocation();
+  const { project: currentProject, environment: currentEnv } = useRouteParams();
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
@@ -382,6 +437,8 @@ export function Shell({ children, onRefresh, refreshing = false, lastUpdated }) 
         onRefresh={handleRefresh}
         refreshing={refreshing}
         lastUpdated={lastUpdated}
+        currentProject={currentProject}
+        currentEnv={currentEnv}
       />
 
       <div className="flex">

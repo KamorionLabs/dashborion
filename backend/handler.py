@@ -27,6 +27,11 @@ from config import get_config
 from utils.aws import get_user_email
 from providers.base import ProviderFactory
 
+# Permission checking
+from auth.middleware import authorize_request
+from auth.permissions import check_permission, log_audit_event
+from auth.models import ForbiddenError
+
 # Import providers to register them
 from providers.ci.codepipeline import CodePipelineProvider
 from providers.ci.github_actions import GitHubActionsProvider
@@ -135,10 +140,24 @@ def lambda_handler(event, context):
                 result = {'error': 'Auth handlers not available'}
 
         # Admin endpoints (no project context)
+        # Requires global admin, except for /api/admin/init
         elif path.startswith('/api/admin/'):
             if ADMIN_HANDLERS_AVAILABLE:
-                query_params = event.get('queryStringParameters') or {}
-                result = route_admin_request(path, method, body, query_params, user_email)
+                # /api/admin/init is public (for initial setup)
+                if path == '/api/admin/init':
+                    query_params = event.get('queryStringParameters') or {}
+                    result = route_admin_request(path, method, body, query_params, user_email)
+                else:
+                    # All other admin endpoints require global admin
+                    try:
+                        auth = authorize_request(event, require_auth=True)
+                        if not auth.is_global_admin:
+                            result = {'error': 'Global admin access required', 'code': 403}
+                        else:
+                            query_params = event.get('queryStringParameters') or {}
+                            result = route_admin_request(path, method, body, query_params, user_email)
+                    except Exception as e:
+                        result = {'error': 'Authentication required', 'code': 401}
             else:
                 result = {'error': 'Admin handlers not available'}
 
@@ -191,6 +210,36 @@ def lambda_handler(event, context):
             'headers': headers,
             'body': json.dumps({'error': str(e)})
         }
+
+
+def check_action_permission(event, project: str, env: str, action: str, resource: str = "*") -> tuple:
+    """
+    Check if user has permission to perform an action.
+
+    Args:
+        event: Lambda event (contains auth headers)
+        project: Project name
+        env: Environment name
+        action: Action to perform (deploy, scale, restart, etc.)
+        resource: Resource name (service name, etc.)
+
+    Returns:
+        (auth, error_response): auth context and None if allowed,
+                               None and error dict if denied
+    """
+    try:
+        auth = authorize_request(event, require_auth=True)
+    except Exception as e:
+        return None, {'error': 'Authentication required', 'code': 401}
+
+    if not check_permission(auth, action, project, env, resource):
+        log_audit_event(auth, action, project, env, resource, 'denied')
+        return None, {
+            'error': f'Permission denied: {action} on {project}/{env}',
+            'code': 403
+        }
+
+    return auth, None
 
 
 def route_project_request(project, resource, parts, method, body, event,
@@ -436,6 +485,7 @@ def route_project_request(project, resource, parts, method, body, event,
 
     # -------------------------------------------------------------
     # ACTION ENDPOINTS: /api/{project}/actions/...
+    # Permission checks: operator or admin required for all actions
     # -------------------------------------------------------------
     elif resource == 'actions':
         if method != 'POST':
@@ -443,58 +493,97 @@ def route_project_request(project, resource, parts, method, body, event,
 
         if len(parts) >= 6 and parts[4] == 'build':
             # POST /api/{project}/actions/build/{service}
+            # Requires: deploy permission (operator/admin)
             service = parts[5]
+
+            auth, error = check_action_permission(event, project, '*', 'deploy', service)
+            if error:
+                return error
+
             image_tag = body.get('imageTag', 'latest')
             source_revision = body.get('sourceRevision', '')
-            return ci.trigger_build(service, user_email, image_tag, source_revision)
+            result = ci.trigger_build(service, user_email, image_tag, source_revision)
+            log_audit_event(auth, 'build', project, '*', service, 'success')
+            return result
 
         elif len(parts) >= 7 and parts[4] == 'deploy':
             # POST /api/{project}/actions/deploy/{env}/{service}/{action}
             env = parts[5]
             service = parts[6]
-            action = parts[7] if len(parts) > 7 else 'reload'
+            action_type = parts[7] if len(parts) > 7 else 'reload'
 
-            if action == 'reload':
-                return orchestrator.force_deployment(env, service, user_email)
-            elif action == 'latest':
-                return ci.trigger_deploy(env, service, user_email)
-            elif action == 'stop':
-                return orchestrator.scale_service(env, service, 0, user_email)
-            elif action == 'start':
+            # Map action type to permission
+            permission_action = 'deploy' if action_type in ('reload', 'latest') else 'scale'
+
+            auth, error = check_action_permission(event, project, env, permission_action, service)
+            if error:
+                return error
+
+            if action_type == 'reload':
+                result = orchestrator.force_deployment(env, service, user_email)
+                log_audit_event(auth, 'restart', project, env, service, 'success')
+                return result
+            elif action_type == 'latest':
+                result = ci.trigger_deploy(env, service, user_email)
+                log_audit_event(auth, 'deploy', project, env, service, 'success')
+                return result
+            elif action_type == 'stop':
+                result = orchestrator.scale_service(env, service, 0, user_email)
+                log_audit_event(auth, 'scale', project, env, service, 'success', {'desiredCount': 0})
+                return result
+            elif action_type == 'start':
                 desired_count = int(body.get('desiredCount', 1))
                 if desired_count < 1 or desired_count > 10:
                     return {'error': 'desiredCount must be between 1 and 10'}
-                return orchestrator.scale_service(env, service, desired_count, user_email)
+                result = orchestrator.scale_service(env, service, desired_count, user_email)
+                log_audit_event(auth, 'scale', project, env, service, 'success', {'desiredCount': desired_count})
+                return result
             else:
-                return {'error': f'Unknown action: {action}'}
+                return {'error': f'Unknown action: {action_type}'}
 
         elif len(parts) >= 6 and parts[4] == 'rds':
             # POST /api/{project}/actions/rds/{env}/{action}
+            # Requires: rds-control permission (admin only)
             env = parts[5]
-            action = parts[6] if len(parts) > 6 else None
+            action_type = parts[6] if len(parts) > 6 else None
+
+            auth, error = check_action_permission(event, project, env, 'rds-control', 'rds')
+            if error:
+                return error
 
             if not database:
                 return {'error': 'Database provider not configured'}
-            elif action == 'stop':
-                return database.stop_database(env, user_email)
-            elif action == 'start':
-                return database.start_database(env, user_email)
+            elif action_type == 'stop':
+                result = database.stop_database(env, user_email)
+                log_audit_event(auth, 'rds-control', project, env, 'rds', 'success', {'action': 'stop'})
+                return result
+            elif action_type == 'start':
+                result = database.start_database(env, user_email)
+                log_audit_event(auth, 'rds-control', project, env, 'rds', 'success', {'action': 'start'})
+                return result
             else:
                 return {'error': 'Use stop or start for RDS action'}
 
         elif len(parts) >= 6 and parts[4] == 'cloudfront':
             # POST /api/{project}/actions/cloudfront/{env}/invalidate
+            # Requires: invalidate permission (operator/admin)
             env = parts[5]
-            action = parts[6] if len(parts) > 6 else None
+            action_type = parts[6] if len(parts) > 6 else None
+
+            auth, error = check_action_permission(event, project, env, 'invalidate', 'cloudfront')
+            if error:
+                return error
 
             if not cdn:
                 return {'error': 'CDN provider not configured'}
-            elif action == 'invalidate':
+            elif action_type == 'invalidate':
                 distribution_id = body.get('distributionId')
                 paths = body.get('paths', ['/*'])
                 if not distribution_id:
                     return {'error': 'distributionId is required'}
-                return cdn.invalidate_cache(env, distribution_id, paths, user_email)
+                result = cdn.invalidate_cache(env, distribution_id, paths, user_email)
+                log_audit_event(auth, 'invalidate', project, env, distribution_id, 'success', {'paths': paths})
+                return result
             else:
                 return {'error': 'Use invalidate for CloudFront action'}
 

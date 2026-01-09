@@ -9,13 +9,25 @@ class Resource:
     class App:
         name: str
         stage: str
+    class AuditTable:
+        name: str
+        type: str
     class DashborionApi:
         type: str
         url: str
     class DeviceCodesTable:
         name: str
         type: str
+    class GroupsTable:
+        name: str
+        type: str
+    class PermissionsTable:
+        name: str
+        type: str
     class TokensTable:
+        name: str
+        type: str
+    class UsersTable:
         name: str
         type: str
 

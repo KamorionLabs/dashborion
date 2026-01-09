@@ -1,21 +1,33 @@
 """
-Admin API Handlers for Permission Management
+Admin API Handlers for User, Group, and Permission Management
 
-Endpoints for managing user permissions (admin only).
+Endpoints for:
+- User management (CRUD)
+- Group management (CRUD, members)
+- Permission management (grant, revoke, list)
+- Audit logs
+- System initialization
 """
 
 import os
 import json
 import time
-import uuid
 from typing import Dict, Any, Optional
 from decimal import Decimal
 
 import boto3
 from botocore.exceptions import ClientError
 
-PERMISSIONS_TABLE = os.environ.get('PERMISSIONS_TABLE', 'dashborion-permissions')
-AUDIT_TABLE = os.environ.get('AUDIT_TABLE', 'dashborion-audit')
+from .user_management import (
+    create_user, get_user, list_users, update_user, delete_user,
+    create_group, get_group, list_groups, update_group, delete_group,
+    add_user_to_group, remove_user_from_group, get_group_members,
+    grant_group_permission, revoke_group_permission, get_group_permissions,
+    get_user_effective_permissions, init_admin,
+)
+
+PERMISSIONS_TABLE = os.environ.get('PERMISSIONS_TABLE_NAME', 'dashborion-permissions')
+AUDIT_TABLE = os.environ.get('AUDIT_TABLE_NAME', 'dashborion-audit')
 PROJECT_NAME = os.environ.get('PROJECT_NAME', 'dashborion')
 
 
@@ -119,8 +131,8 @@ def list_permissions(query_params: Dict = None, actor_email: str = None) -> Dict
         return {'error': str(e), 'success': False}
 
 
-def get_user_permissions(email: str) -> Dict:
-    """Get all permissions for a specific user."""
+def get_user_permissions_legacy(email: str) -> Dict:
+    """Get all permissions for a specific user (legacy format)."""
     try:
         dynamodb = _get_dynamodb()
         table = dynamodb.Table(PERMISSIONS_TABLE)
@@ -421,13 +433,185 @@ def route_admin_request(path: str, method: str, body: Dict, query_params: Dict, 
     Route admin API requests.
 
     Endpoints:
-    - GET  /api/admin/permissions           - List all permissions
-    - GET  /api/admin/permissions/{email}   - Get user permissions
-    - POST /api/admin/permissions           - Grant permission
-    - DELETE /api/admin/permissions         - Revoke permission
-    - GET  /api/admin/roles                 - List available roles
-    - GET  /api/admin/audit                 - List audit logs
+    User Management:
+    - GET    /api/admin/users              - List all users
+    - GET    /api/admin/users/{email}      - Get user details
+    - POST   /api/admin/users              - Create user
+    - PUT    /api/admin/users              - Update user
+    - DELETE /api/admin/users              - Delete user
+
+    Group Management:
+    - GET    /api/admin/groups             - List all groups
+    - GET    /api/admin/groups/{name}      - Get group details
+    - POST   /api/admin/groups             - Create group
+    - PUT    /api/admin/groups             - Update group
+    - DELETE /api/admin/groups             - Delete group
+    - GET    /api/admin/groups/{name}/members      - List group members
+    - POST   /api/admin/groups/{name}/members      - Add member to group
+    - DELETE /api/admin/groups/{name}/members      - Remove member from group
+    - POST   /api/admin/groups/permissions         - Grant group permission
+    - DELETE /api/admin/groups/permissions         - Revoke group permission
+
+    Permission Management:
+    - GET    /api/admin/permissions        - List all permissions
+    - GET    /api/admin/permissions/{email} - Get user permissions
+    - POST   /api/admin/permissions        - Grant permission
+    - DELETE /api/admin/permissions        - Revoke permission
+
+    Other:
+    - GET    /api/admin/roles              - List available roles
+    - GET    /api/admin/audit              - List audit logs
+    - POST   /api/admin/init               - Initialize first admin (no auth required)
     """
+
+    # ==========================================================================
+    # User Management
+    # ==========================================================================
+
+    # GET /api/admin/users
+    if path == '/api/admin/users' and method == 'GET':
+        return list_users()
+
+    # GET /api/admin/users/{email}
+    if path.startswith('/api/admin/users/') and method == 'GET' and '/members' not in path:
+        email = path.replace('/api/admin/users/', '')
+        user = get_user(email)
+        if not user:
+            return {'success': False, 'error': f'User {email} not found'}
+        permissions = get_user_effective_permissions(email, user.local_groups)
+        return {
+            'success': True,
+            'user': user.to_dict(),
+            'permissions': [
+                {
+                    'project': p.project,
+                    'environment': p.environment,
+                    'role': p.role.value,
+                    'source': p.source,
+                    'sourceName': p.source_name,
+                }
+                for p in permissions
+            ]
+        }
+
+    # POST /api/admin/users
+    if path == '/api/admin/users' and method == 'POST':
+        return create_user(
+            email=body.get('email'),
+            password=body.get('password'),
+            display_name=body.get('displayName'),
+            default_role=body.get('defaultRole', 'viewer'),
+            groups=body.get('groups', []),
+            actor_email=actor_email
+        )
+
+    # PUT /api/admin/users
+    if path == '/api/admin/users' and method == 'PUT':
+        return update_user(
+            email=body.get('email'),
+            display_name=body.get('displayName'),
+            default_role=body.get('defaultRole'),
+            password=body.get('password'),
+            disabled=body.get('disabled'),
+            actor_email=actor_email
+        )
+
+    # DELETE /api/admin/users
+    if path == '/api/admin/users' and method == 'DELETE':
+        return delete_user(body.get('email'), actor_email)
+
+    # ==========================================================================
+    # Group Management
+    # ==========================================================================
+
+    # GET /api/admin/groups
+    if path == '/api/admin/groups' and method == 'GET':
+        return list_groups()
+
+    # GET /api/admin/groups/{name}
+    if path.startswith('/api/admin/groups/') and method == 'GET':
+        # Check if it's a members request
+        if '/members' in path:
+            group_name = path.replace('/api/admin/groups/', '').replace('/members', '')
+            return get_group_members(group_name)
+
+        group_name = path.replace('/api/admin/groups/', '')
+        group = get_group(group_name)
+        if not group:
+            return {'success': False, 'error': f'Group {group_name} not found'}
+        permissions = get_group_permissions(group_name)
+        return {
+            'success': True,
+            'group': group.to_dict(),
+            'permissions': [
+                {
+                    'project': p.project,
+                    'environment': p.environment,
+                    'role': p.role.value,
+                }
+                for p in permissions
+            ]
+        }
+
+    # POST /api/admin/groups
+    if path == '/api/admin/groups' and method == 'POST':
+        return create_group(
+            name=body.get('name'),
+            description=body.get('description'),
+            sso_group_name=body.get('ssoGroupName'),
+            sso_group_id=body.get('ssoGroupId'),
+            default_role=body.get('defaultRole', 'viewer'),
+            actor_email=actor_email
+        )
+
+    # PUT /api/admin/groups
+    if path == '/api/admin/groups' and method == 'PUT':
+        return update_group(
+            name=body.get('name'),
+            description=body.get('description'),
+            sso_group_name=body.get('ssoGroupName'),
+            sso_group_id=body.get('ssoGroupId'),
+            default_role=body.get('defaultRole'),
+            actor_email=actor_email
+        )
+
+    # DELETE /api/admin/groups
+    if path == '/api/admin/groups' and method == 'DELETE':
+        return delete_group(body.get('name'), actor_email)
+
+    # POST /api/admin/groups/{name}/members
+    if '/members' in path and method == 'POST':
+        group_name = path.replace('/api/admin/groups/', '').replace('/members', '')
+        return add_user_to_group(body.get('email'), group_name, actor_email)
+
+    # DELETE /api/admin/groups/{name}/members
+    if '/members' in path and method == 'DELETE':
+        group_name = path.replace('/api/admin/groups/', '').replace('/members', '')
+        return remove_user_from_group(body.get('email'), group_name, actor_email)
+
+    # POST /api/admin/groups/permissions
+    if path == '/api/admin/groups/permissions' and method == 'POST':
+        return grant_group_permission(
+            group_name=body.get('group'),
+            project=body.get('project'),
+            environment=body.get('environment', '*'),
+            role=body.get('role', 'viewer'),
+            resources=body.get('resources'),
+            actor_email=actor_email
+        )
+
+    # DELETE /api/admin/groups/permissions
+    if path == '/api/admin/groups/permissions' and method == 'DELETE':
+        return revoke_group_permission(
+            group_name=body.get('group'),
+            project=body.get('project'),
+            environment=body.get('environment', '*'),
+            actor_email=actor_email
+        )
+
+    # ==========================================================================
+    # Permission Management (User-specific)
+    # ==========================================================================
 
     # GET /api/admin/permissions
     if path == '/api/admin/permissions' and method == 'GET':
@@ -436,7 +620,7 @@ def route_admin_request(path: str, method: str, body: Dict, query_params: Dict, 
     # GET /api/admin/permissions/{email}
     if path.startswith('/api/admin/permissions/') and method == 'GET':
         email = path.replace('/api/admin/permissions/', '')
-        return get_user_permissions(email)
+        return get_user_permissions_legacy(email)
 
     # POST /api/admin/permissions
     if path == '/api/admin/permissions' and method == 'POST':
@@ -446,6 +630,10 @@ def route_admin_request(path: str, method: str, body: Dict, query_params: Dict, 
     if path == '/api/admin/permissions' and method == 'DELETE':
         return revoke_permission(body, actor_email)
 
+    # ==========================================================================
+    # Other
+    # ==========================================================================
+
     # GET /api/admin/roles
     if path == '/api/admin/roles' and method == 'GET':
         return list_roles()
@@ -453,5 +641,12 @@ def route_admin_request(path: str, method: str, body: Dict, query_params: Dict, 
     # GET /api/admin/audit
     if path == '/api/admin/audit' and method == 'GET':
         return list_audit_logs(query_params)
+
+    # POST /api/admin/init
+    if path == '/api/admin/init' and method == 'POST':
+        return init_admin(
+            email=body.get('email'),
+            password=body.get('password')
+        )
 
     return {'error': f'Unknown admin endpoint: {method} {path}', 'success': False}

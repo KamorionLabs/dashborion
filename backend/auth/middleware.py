@@ -8,6 +8,7 @@ and validates user sessions.
 from typing import Dict, Any, Optional
 from .models import AuthContext, Permission, DashborionRole, UnauthorizedError
 from .permissions import parse_permissions_from_header
+from .user_management import get_user, get_user_effective_permissions
 
 
 def get_header(headers: Dict[str, str], name: str, default: str = "") -> str:
@@ -53,28 +54,46 @@ def get_auth_context(event: Dict[str, Any]) -> Optional[AuthContext]:
     """
     Extract authentication context from Lambda event.
 
+    Supports two authentication methods:
+    1. x-auth-* headers (from Lambda@Edge SSO)
+    2. Bearer token (from CLI/API clients)
+
     Returns None if no auth headers are present (unauthenticated request).
     """
+    headers = event.get('headers', {}) or {}
     auth_headers = extract_auth_headers(event)
 
-    # No auth headers = unauthenticated
-    if not auth_headers['user_id'] and not auth_headers['email']:
-        return None
+    # Check x-auth-* headers first (Lambda@Edge SSO)
+    if auth_headers['user_id'] or auth_headers['email']:
+        email = auth_headers['email'] or auth_headers['user_id']
+        groups = auth_headers['groups'].split(',') if auth_headers['groups'] else []
 
-    # Parse permissions from header
-    permissions = []
-    if auth_headers['permissions']:
-        permissions = parse_permissions_from_header(auth_headers['permissions'])
+        # Get permissions from DynamoDB (authoritative source)
+        # Lambda@Edge headers may include SSO groups, but permissions come from DB
+        user = get_user(email)
+        local_groups = user.local_groups if user else []
 
-    return AuthContext(
-        user_id=auth_headers['user_id'],
-        email=auth_headers['email'],
-        groups=auth_headers['groups'].split(',') if auth_headers['groups'] else [],
-        roles=parse_roles(auth_headers['roles']),
-        permissions=permissions,
-        session_id=auth_headers['session_id'],
-        mfa_verified=auth_headers['mfa_verified'].lower() == 'true',
-    )
+        # Combine local groups with SSO groups for permission lookup
+        permissions = get_user_effective_permissions(email, local_groups, groups)
+
+        return AuthContext(
+            user_id=auth_headers['user_id'],
+            email=email,
+            groups=groups,
+            roles=parse_roles(auth_headers['roles']),
+            permissions=permissions,
+            session_id=auth_headers['session_id'],
+            mfa_verified=auth_headers['mfa_verified'].lower() == 'true',
+        )
+
+    # Check Bearer token (CLI/API clients)
+    auth_header = get_header(headers, 'Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        token = auth_header[7:]  # Remove 'Bearer ' prefix
+        from .device_flow import validate_token
+        return validate_token(token)
+
+    return None
 
 
 def authorize_request(

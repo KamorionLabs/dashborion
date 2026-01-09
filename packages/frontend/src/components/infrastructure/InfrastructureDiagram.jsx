@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react'
 import {
-  RefreshCw, Globe, Server, Database, Clock, Rocket, Play, Square, Terminal
+  RefreshCw, Globe, Server, Database, Clock, Rocket, Play, Square, Terminal, Lock
 } from 'lucide-react'
 import { useConfig, useConfigHelpers } from '../../ConfigContext'
+import { useAuth } from '../../hooks/useAuth'
 import { formatDuration, calculateDuration } from '../../utils'
 import SimpleView from './SimpleView'
 import NetworkView from './NetworkView'
 import RoutingView from './RoutingView'
 
 export default function InfrastructureDiagram({ data, env, onComponentSelect, selectedComponent, services: envServices, pipelines, onForceReload, onDeployLatest, onScaleService, actionLoading, onOpenLogsPanel, onTailDeployLogs, view, onViewChange }) {
+  const { canDeploy, canScale } = useAuth()
   const [viewMode, setViewMode] = useState(view || 'simple') // 'simple', 'network', or 'routing'
 
   // Sync internal state with prop when it changes
@@ -123,6 +125,9 @@ export default function InfrastructureDiagram({ data, env, onComponentSelect, se
           actionLoading={actionLoading}
           onOpenLogsPanel={onOpenLogsPanel}
           onTailDeployLogs={onTailDeployLogs}
+          canDeploy={canDeploy}
+          canScale={canScale}
+          currentProjectId={appConfig.currentProjectId}
         />
       )}
 
@@ -187,7 +192,10 @@ function ServiceCards({
   onScaleService,
   actionLoading,
   onOpenLogsPanel,
-  onTailDeployLogs
+  onTailDeployLogs,
+  canDeploy,
+  canScale,
+  currentProjectId
 }) {
   return (
     <div className="px-4 pt-4 pb-2">
@@ -293,64 +301,89 @@ function ServiceCards({
                   </div>
                 )}
 
-                {/* Action Buttons */}
-                <div className="pt-1.5 mt-1.5 border-t border-gray-700 flex gap-1">
-                  {service.desiredCount === 0 ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onScaleService?.(env, svc, 'start') }}
-                      disabled={actionLoading?.[`scale-${env}-${svc}`]}
-                      className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-green-600/80 hover:bg-green-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
-                      title="Scale to N replicas"
-                    >
-                      {actionLoading?.[`scale-${env}-${svc}`] ? (
-                        <RefreshCw className="w-3 h-3 animate-spin" />
+                {/* Action Buttons - Permission controlled */}
+                {(() => {
+                  const hasScalePerm = canScale?.(currentProjectId, env, svc)
+                  const hasDeployPerm = canDeploy?.(currentProjectId, env, svc)
+                  const hasAnyPerm = hasScalePerm || hasDeployPerm
+
+                  if (!hasAnyPerm) {
+                    return (
+                      <div className="pt-1.5 mt-1.5 border-t border-gray-700 flex items-center justify-center gap-1 py-1 text-gray-600 text-[10px]">
+                        <Lock className="w-3 h-3" />
+                        <span>Viewer access</span>
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div className="pt-1.5 mt-1.5 border-t border-gray-700 flex gap-1">
+                      {service.desiredCount === 0 ? (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onScaleService?.(env, svc, 'start') }}
+                          disabled={!hasScalePerm || actionLoading?.[`scale-${env}-${svc}`]}
+                          className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-green-600/80 hover:bg-green-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
+                          title={!hasScalePerm ? "Scale permission required" : "Scale to N replicas"}
+                        >
+                          {actionLoading?.[`scale-${env}-${svc}`] ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : !hasScalePerm ? (
+                            <Lock className="w-3 h-3" />
+                          ) : (
+                            <Play className="w-3 h-3" />
+                          )}
+                          Start
+                        </button>
                       ) : (
-                        <Play className="w-3 h-3" />
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onScaleService?.(env, svc, 'stop') }}
+                          disabled={!hasScalePerm || actionLoading?.[`scale-${env}-${svc}`]}
+                          className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-red-600/80 hover:bg-red-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
+                          title={!hasScalePerm ? "Scale permission required" : "Scale to 0 replicas"}
+                        >
+                          {actionLoading?.[`scale-${env}-${svc}`] ? (
+                            <RefreshCw className="w-3 h-3 animate-spin" />
+                          ) : !hasScalePerm ? (
+                            <Lock className="w-3 h-3" />
+                          ) : (
+                            <Square className="w-3 h-3" />
+                          )}
+                          Stop
+                        </button>
                       )}
-                      Start
-                    </button>
-                  ) : (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onScaleService?.(env, svc, 'stop') }}
-                      disabled={actionLoading?.[`scale-${env}-${svc}`]}
-                      className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-red-600/80 hover:bg-red-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
-                      title="Scale to 0 replicas"
-                    >
-                      {actionLoading?.[`scale-${env}-${svc}`] ? (
-                        <RefreshCw className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <Square className="w-3 h-3" />
-                      )}
-                      Stop
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onForceReload?.(env, svc) }}
-                    disabled={actionLoading?.[`reload-${env}-${svc}`] || isPipelineActive}
-                    className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-orange-600/80 hover:bg-orange-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
-                    title={isPipelineActive ? "Disabled: pipeline in progress" : "Restart tasks (reload secrets)"}
-                  >
-                    {actionLoading?.[`reload-${env}-${svc}`] ? (
-                      <RefreshCw className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3" />
-                    )}
-                    Reload
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onDeployLatest?.(env, svc) }}
-                    disabled={actionLoading?.[`deploy-${env}-${svc}`] || isPipelineActive}
-                    className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-blue-600/80 hover:bg-blue-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
-                    title={isPipelineActive ? "Disabled: pipeline in progress" : "Update image & task def"}
-                  >
-                    {actionLoading?.[`deploy-${env}-${svc}`] ? (
-                      <RefreshCw className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Rocket className="w-3 h-3" />
-                    )}
-                    Deploy
-                  </button>
-                </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onForceReload?.(env, svc) }}
+                        disabled={!hasDeployPerm || actionLoading?.[`reload-${env}-${svc}`] || isPipelineActive}
+                        className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-orange-600/80 hover:bg-orange-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
+                        title={!hasDeployPerm ? "Deploy permission required" : isPipelineActive ? "Disabled: pipeline in progress" : "Restart tasks (reload secrets)"}
+                      >
+                        {actionLoading?.[`reload-${env}-${svc}`] ? (
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                        ) : !hasDeployPerm ? (
+                          <Lock className="w-3 h-3" />
+                        ) : (
+                          <RefreshCw className="w-3 h-3" />
+                        )}
+                        Reload
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeployLatest?.(env, svc) }}
+                        disabled={!hasDeployPerm || actionLoading?.[`deploy-${env}-${svc}`] || isPipelineActive}
+                        className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-blue-600/80 hover:bg-blue-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
+                        title={!hasDeployPerm ? "Deploy permission required" : isPipelineActive ? "Disabled: pipeline in progress" : "Update image & task def"}
+                      >
+                        {actionLoading?.[`deploy-${env}-${svc}`] ? (
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                        ) : !hasDeployPerm ? (
+                          <Lock className="w-3 h-3" />
+                        ) : (
+                          <Rocket className="w-3 h-3" />
+                        )}
+                        Deploy
+                      </button>
+                    </div>
+                  )
+                })()}
                 {/* Second row - Tail Logs buttons */}
                 <div className="pt-1 flex gap-1">
                   <button

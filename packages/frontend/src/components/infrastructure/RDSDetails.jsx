@@ -1,14 +1,22 @@
-import { Database, Network, HardDrive, Clock, RefreshCw, Play, Square, ExternalLink } from 'lucide-react'
+import { Database, Network, HardDrive, Clock, RefreshCw, Play, Square, ExternalLink, Lock } from 'lucide-react'
 import SecurityGroupsPanel from './SecurityGroupsPanel'
 import CollapsibleSection from '../common/CollapsibleSection'
+import { useAuth } from '../../hooks/useAuth'
+import { useConfig } from '../../ConfigContext'
 
 export default function RDSDetails({ rds, env, onControlRds, actionLoading }) {
+  const { hasPermission } = useAuth()
+  const appConfig = useConfig()
+  const currentProjectId = appConfig.currentProjectId
+
   if (!rds || rds.error) {
     return <p className="text-red-400">{rds?.error || 'RDS data not available'}</p>
   }
 
   const isStopped = rds.status === 'stopped'
   const isLoading = actionLoading?.[`rds-${env}`]
+  // RDS control requires admin role
+  const canControlRds = hasPermission('rds-control', currentProjectId, env, 'rds')
 
   return (
     <div className="space-y-4">
@@ -119,10 +127,15 @@ export default function RDSDetails({ rds, env, onControlRds, actionLoading }) {
         <SecurityGroupsPanel securityGroups={rds.securityGroups} env={env} title="Security Groups (Firewalling)" />
       )}
 
-      {/* Actions */}
+      {/* Actions - requires admin role */}
       {onControlRds && (
         <div className="flex gap-2">
-          {isStopped ? (
+          {!canControlRds ? (
+            <div className="flex-1 flex items-center justify-center gap-2 py-2 text-gray-500 text-sm">
+              <Lock className="w-4 h-4" />
+              <span>Admin access required for RDS control</span>
+            </div>
+          ) : isStopped ? (
             <button
               onClick={() => onControlRds(env, 'start')}
               disabled={isLoading}

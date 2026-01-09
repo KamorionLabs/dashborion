@@ -1,12 +1,19 @@
-import { Cloud, Globe, Layers, Shield, RefreshCw, Trash2, ExternalLink, Settings } from 'lucide-react'
+import { Cloud, Globe, Layers, Shield, RefreshCw, Trash2, ExternalLink, Settings, Lock } from 'lucide-react'
 import CollapsibleSection from '../common/CollapsibleSection'
+import { useAuth } from '../../hooks/useAuth'
+import { useConfig } from '../../ConfigContext'
 
 export default function CloudFrontDetails({ cloudfront, infrastructure, env, onInvalidate, actionLoading }) {
+  const { hasPermission } = useAuth()
+  const appConfig = useConfig()
+  const currentProjectId = appConfig.currentProjectId
+
   if (!cloudfront || cloudfront.error) {
     return <p className="text-red-400">{cloudfront?.error || 'CloudFront data not available'}</p>
   }
 
   const isLoading = actionLoading?.[`cf-${env}`]
+  const canInvalidate = hasPermission('invalidate', currentProjectId, env, 'cloudfront')
 
   return (
     <div className="space-y-4">
@@ -34,10 +41,11 @@ export default function CloudFrontDetails({ cloudfront, infrastructure, env, onI
           {onInvalidate && (
             <button
               onClick={() => onInvalidate(env, cloudfront.id)}
-              disabled={isLoading}
+              disabled={!canInvalidate || isLoading}
+              title={!canInvalidate ? 'Invalidate permission required (operator or admin)' : undefined}
               className="flex-1 flex items-center justify-center gap-2 bg-orange-600 hover:bg-orange-500 disabled:bg-gray-600 text-white py-2 px-3 rounded text-sm font-medium transition-colors"
             >
-              {isLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+              {isLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : !canInvalidate ? <Lock className="w-4 h-4" /> : <Trash2 className="w-4 h-4" />}
               Invalidate Cache
             </button>
           )}

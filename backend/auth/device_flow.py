@@ -259,17 +259,40 @@ def get_device_code(device_code: str) -> Optional[DeviceCode]:
     )
 
 
+def _grant_global_admin_permission(email: str) -> None:
+    """Grant global admin permission to user (used for bootstrap)"""
+    import os
+    client = _get_dynamodb()
+    table_name = os.environ.get('PERMISSIONS_TABLE_NAME', 'dashborion-permissions')
+
+    client.put_item(
+        TableName=table_name,
+        Item={
+            'pk': {'S': f'USER#{email}'},
+            'sk': {'S': 'PERM#*#*'},  # project=*, environment=*
+            'project': {'S': '*'},
+            'environment': {'S': '*'},
+            'role': {'S': 'admin'},
+            'resources': {'L': [{'S': '*'}]},
+            'grantedBy': {'S': 'sso-bootstrap'},
+            'grantedAt': {'N': str(int(time.time()))},
+        }
+    )
+
+
 def authorize_device_code(user_code: str, auth: AuthContext) -> bool:
     """
     Called when user completes SAML authentication for a device code.
 
     Args:
         user_code: The code user entered
-        auth: Authentication context from SAML
+        auth: Authentication context from SAML (contains SSO groups in auth.groups)
 
     Returns:
         True if successful, False if code not found/expired
     """
+    from .user_management import get_user, create_user, get_user_effective_permissions, has_any_admin
+
     code = get_device_code_by_user_code(user_code)
     if not code or code.status != DeviceCodeStatus.PENDING:
         return False
@@ -277,19 +300,67 @@ def authorize_device_code(user_code: str, auth: AuthContext) -> bool:
     if time.time() > code.expires_at:
         return False
 
-    # Update the device code with user info
-    client = _get_dynamodb()
-    table_name = _get_table_name("device_codes")
+    email = auth.email.lower() if auth.email else ''
+    if not email:
+        return False
 
+    # Get or create user in DynamoDB
+    user = get_user(email)
+    if not user:
+        # First user becomes admin (bootstrap), others become viewer
+        is_first_user = not has_any_admin()
+        default_role = DashborionRole.ADMIN.value if is_first_user else DashborionRole.VIEWER.value
+
+        result = create_user(
+            email=email,
+            display_name=email.split('@')[0],
+            default_role=default_role,
+            password=None,  # SSO users don't have local password
+            actor_email='sso-bootstrap' if is_first_user else 'sso-auto',
+        )
+        if not result.get('success'):
+            return False
+
+        # For first user (bootstrap), grant global admin permission
+        if is_first_user:
+            _grant_global_admin_permission(email)
+
+        # Re-fetch user to get User object
+        user = get_user(email)
+
+    if not user:
+        return False
+
+    if user.disabled:
+        return False
+
+    # Get effective permissions
+    # - auth.groups contains SSO groups from SAML (Azure AD object IDs or group names)
+    # - user.local_groups contains local group membership from DynamoDB
+    sso_groups = auth.groups if auth.groups else []
+    local_groups = user.local_groups if user.local_groups else []
+
+    permissions = get_user_effective_permissions(
+        email=email,
+        local_groups=local_groups,
+        sso_groups=sso_groups,
+    )
+
+    # Build permissions JSON
     permissions_json = json.dumps([
         {
             'project': p.project,
             'environment': p.environment,
             'role': p.role.value,
             'resources': p.resources,
+            'source': p.source,
         }
-        for p in auth.permissions
+        for p in permissions
     ])
+
+    # Update the device code with user info
+    client = _get_dynamodb()
+    table_name = _get_table_name("device_codes")
 
     client.update_item(
         TableName=table_name,
@@ -304,7 +375,7 @@ def authorize_device_code(user_code: str, auth: AuthContext) -> bool:
         },
         ExpressionAttributeValues={
             ':status': {'S': DeviceCodeStatus.AUTHORIZED.value},
-            ':email': {'S': auth.email},
+            ':email': {'S': email},
             ':perms': {'S': permissions_json},
         }
     )

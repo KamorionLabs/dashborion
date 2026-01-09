@@ -36,12 +36,8 @@ interface InfraConfigFile {
       acsPath?: string;
       metadataPath?: string;
     };
-    users?: Record<string, {
-      password: string;
-      role: "admin" | "operator" | "viewer";
-      groups?: string[];
-      projects?: string[];
-    }>;
+    // Note: Users and permissions are managed via CLI (dashborion admin) and stored in DynamoDB
+    // Run `dashborion admin init` to create the first admin user after deployment
     sessionTtlSeconds?: number;
     cookieDomain?: string;
     sessionEncryptionKey?: string;
@@ -313,6 +309,80 @@ export default $config({
       ttl: "ttl",
     });
 
+    // ==========================================================================
+    // User & Permission Management Tables
+    // ==========================================================================
+
+    // Users table - stores user profiles and local credentials
+    // pk: USER#<email>
+    // sk: PROFILE | GROUP#<group_name>
+    const usersTable = new sst.aws.Dynamo("UsersTable", {
+      fields: {
+        pk: "string",
+        sk: "string",
+        gsi1pk: "string",
+        gsi1sk: "string",
+      },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+      globalIndexes: {
+        // GSI for listing by role or status
+        "role-index": { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
+      },
+    });
+
+    // Groups table - stores group definitions and their permissions
+    // pk: GROUP#<group_name>
+    // sk: METADATA | PERM#<project>#<environment>
+    const groupsTable = new sst.aws.Dynamo("GroupsTable", {
+      fields: {
+        pk: "string",
+        sk: "string",
+        gsi1pk: "string",
+        gsi1sk: "string",
+      },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+      globalIndexes: {
+        // GSI for SSO group ID lookup
+        "sso-group-index": { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
+      },
+    });
+
+    // Permissions table - stores user-specific permission overrides
+    // pk: USER#<email>
+    // sk: PERM#<project>#<environment>
+    const permissionsTable = new sst.aws.Dynamo("PermissionsTable", {
+      fields: {
+        pk: "string",
+        sk: "string",
+        gsi1pk: "string",
+        gsi1sk: "string",
+      },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+      globalIndexes: {
+        // GSI for listing by project
+        "project-env-index": { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
+      },
+      ttl: "ttl",
+    });
+
+    // Audit table - stores audit logs
+    // pk: USER#<email>
+    // sk: TS#<timestamp>#<action>
+    const auditTable = new sst.aws.Dynamo("AuditTable", {
+      fields: {
+        pk: "string",
+        sk: "string",
+        gsi1pk: "string",
+        gsi1sk: "string",
+      },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+      globalIndexes: {
+        // GSI for listing by action type
+        "action-index": { hashKey: "gsi1pk", rangeKey: "gsi1sk" },
+      },
+      ttl: "ttl",
+    });
+
     // Create the Lambda function for the API
     // Use root handler.py wrapper that sets up Python path correctly
     // copyFiles ensures handler.py is at bundle root where Lambda expects it
@@ -326,7 +396,7 @@ export default $config({
         { from: "handler.py", to: "handler.py" },
         { from: "backend", to: "backend" },
       ],
-      link: [tokensTable, deviceCodesTable],
+      link: [tokensTable, deviceCodesTable, usersTable, groupsTable, permissionsTable, auditTable],
       environment: {
         // Backend expects individual env vars, not a single DASHBORION_CONFIG
         AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
@@ -335,9 +405,13 @@ export default $config({
         CORS_ORIGINS: `https://${frontendDomain}`,
         // Auth configuration
         AUTH_PROVIDER: config.auth?.provider || "simple",
-        AUTH_USERS: JSON.stringify(config.auth?.users || {}),
+        // Table names for auth
         TOKENS_TABLE_NAME: tokensTable.name,
         DEVICE_CODES_TABLE_NAME: deviceCodesTable.name,
+        USERS_TABLE_NAME: usersTable.name,
+        GROUPS_TABLE_NAME: groupsTable.name,
+        PERMISSIONS_TABLE_NAME: permissionsTable.name,
+        AUDIT_TABLE_NAME: auditTable.name,
       },
       permissions: [
         // Allow assuming cross-account roles
