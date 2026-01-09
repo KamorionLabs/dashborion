@@ -26,7 +26,10 @@ class CloudFrontProvider(CDNProvider):
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
-        return get_cross_account_client('cloudfront', env_config.account_id)
+        return get_cross_account_client(
+            'cloudfront', env_config.account_id,
+            project=self.project, env=env
+        )
 
     def get_distribution(self, env: str) -> dict:
         """Get CloudFront distribution for an environment"""

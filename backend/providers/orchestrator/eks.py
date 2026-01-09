@@ -37,7 +37,10 @@ class EKSProvider(OrchestratorProvider):
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
-        return get_cross_account_client('eks', env_config.account_id, env_config.region)
+        return get_cross_account_client(
+            'eks', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
 
     def _get_k8s_client(self, env: str):
         """
@@ -60,7 +63,10 @@ class EKSProvider(OrchestratorProvider):
             cluster_info = eks.describe_cluster(name=cluster_name)['cluster']
 
             # Get auth token via STS
-            sts = get_cross_account_client('sts', env_config.account_id, env_config.region)
+            sts = get_cross_account_client(
+                'sts', env_config.account_id, env_config.region,
+                project=self.project, env=env
+            )
 
             # Generate EKS token using STS
             token = self._get_eks_token(sts, cluster_name, env_config.region)
@@ -560,7 +566,10 @@ class EKSProvider(OrchestratorProvider):
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
-        cloudwatch = get_cross_account_client('cloudwatch', env_config.account_id, env_config.region)
+        cloudwatch = get_cross_account_client(
+            'cloudwatch', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
         cluster_name = self.config.orchestrator.eks_cluster_name or self.config.get_cluster_name(env)
         namespace = env_config.namespace or self.config.orchestrator.default_namespace
 

@@ -239,7 +239,7 @@ class CombinedEventsProvider(EventsProvider):
 
         try:
             cluster_name = self.config.get_cluster_name(self.project, env)
-            ecs = get_cross_account_client('ecs', env_config.account_id, env_config.region)
+            ecs = get_cross_account_client('ecs', env_config.account_id, env_config.region, project=self.project, env=env)
 
             for svc_name in env_config.services:
                 try:
@@ -432,7 +432,7 @@ class CombinedEventsProvider(EventsProvider):
         events = []
 
         try:
-            cloudfront = get_cross_account_client('cloudfront', env_config.account_id)
+            cloudfront = get_cross_account_client('cloudfront', env_config.account_id, project=self.project, env=env)
 
             # Find distribution for this environment
             distributions = cloudfront.list_distributions()
@@ -569,7 +569,7 @@ class CombinedEventsProvider(EventsProvider):
                 env_config = self.config.get_environment(self.project, env)
                 if env_config:
                     try:
-                        cloudtrail_env = get_cross_account_client('cloudtrail', env_config.account_id, env_config.region)
+                        cloudtrail_env = get_cross_account_client('cloudtrail', env_config.account_id, env_config.region, project=self.project, env=env)
                         for event_name in ['UpdateService']:
                             try:
                                 response = cloudtrail_env.lookup_events(

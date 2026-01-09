@@ -60,22 +60,34 @@ class ECSProvider(OrchestratorProvider):
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
-        return get_cross_account_client('ecs', env_config.account_id, env_config.region)
+        return get_cross_account_client(
+            'ecs', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
 
     def _get_logs_client(self, env: str):
         """Get CloudWatch Logs client for environment"""
         env_config = self.config.get_environment(self.project, env)
-        return get_cross_account_client('logs', env_config.account_id, env_config.region)
+        return get_cross_account_client(
+            'logs', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
 
     def _get_cloudwatch_client(self, env: str):
         """Get CloudWatch client for environment"""
         env_config = self.config.get_environment(self.project, env)
-        return get_cross_account_client('cloudwatch', env_config.account_id, env_config.region)
+        return get_cross_account_client(
+            'cloudwatch', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
 
     def _get_secretsmanager_client(self, env: str):
         """Get Secrets Manager client for environment"""
         env_config = self.config.get_environment(self.project, env)
-        return get_cross_account_client('secretsmanager', env_config.account_id, env_config.region)
+        return get_cross_account_client(
+            'secretsmanager', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
 
     def _get_secret_name(self, secretsmanager, secret_arn: str, cache: dict) -> str:
         """Get the clean secret name (without suffix) from ARN using describe_secret"""
@@ -846,13 +858,13 @@ class ECSProvider(OrchestratorProvider):
         caches = caches if caches is not None else ['redis']
 
         account_id = env_config.account_id
-        elbv2 = get_cross_account_client('elbv2', account_id, env_config.region)
-        cloudfront = get_cross_account_client('cloudfront', account_id)
-        s3 = get_cross_account_client('s3', account_id, env_config.region)
+        elbv2 = get_cross_account_client('elbv2', account_id, env_config.region, project=self.project, env=env)
+        cloudfront = get_cross_account_client('cloudfront', account_id, project=self.project, env=env)
+        s3 = get_cross_account_client('s3', account_id, env_config.region, project=self.project, env=env)
         ecs = self._get_ecs_client(env)
-        rds = get_cross_account_client('rds', account_id, env_config.region)
-        elasticache = get_cross_account_client('elasticache', account_id, env_config.region)
-        ec2 = get_cross_account_client('ec2', account_id, env_config.region)
+        rds = get_cross_account_client('rds', account_id, env_config.region, project=self.project, env=env)
+        elasticache = get_cross_account_client('elasticache', account_id, env_config.region, project=self.project, env=env)
+        ec2 = get_cross_account_client('ec2', account_id, env_config.region, project=self.project, env=env)
 
         cluster_name = self.config.get_cluster_name(self.project, env)
         domain_suffix = f"{env}.{self.project}.kamorion.cloud"

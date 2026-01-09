@@ -15,7 +15,13 @@ _client_cache = {}
 _CACHE_TTL_SECONDS = 50 * 60  # 50 minutes
 
 
-def get_cross_account_client(service: str, account_id: str, region: str = None):
+def get_cross_account_client(
+    service: str,
+    account_id: str,
+    region: str = None,
+    project: str = None,
+    env: str = None
+):
     """
     Get boto3 client with cross-account role assumption.
     Results are cached with TTL to avoid repeated STS calls while respecting token expiration.
@@ -24,6 +30,8 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
         service: AWS service name (e.g., 'ecs', 'logs')
         account_id: Target AWS account ID
         region: AWS region (defaults to config region)
+        project: Project name (optional, for environment-level role override)
+        env: Environment name (optional, for environment-level role override)
 
     Returns:
         boto3 client for the specified service in the target account
@@ -36,8 +44,8 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
     if account_id == shared_account:
         return boto3.client(service, region_name=region)
 
-    # Check cache
-    cache_key = (service, account_id, region)
+    # Check cache - include project/env in cache key if provided
+    cache_key = (service, account_id, region, project, env)
     now = time.time()
 
     if cache_key in _client_cache:
@@ -47,8 +55,12 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
         # Cache expired, remove it
         del _client_cache[cache_key]
 
-    # Get role ARN from config (indexed by account ID)
-    role_arn = config.get_read_role_arn(account_id)
+    # Get role ARN from config with environment-level override support
+    if project and env:
+        role_arn = config.get_read_role_arn_for_env(project, env, account_id)
+    else:
+        role_arn = config.get_read_role_arn(account_id)
+
     if not role_arn:
         # Fallback to convention-based naming if not in config
         # This handles cases where roles aren't explicitly configured
@@ -76,7 +88,14 @@ def get_cross_account_client(service: str, account_id: str, region: str = None):
     return client
 
 
-def get_action_client(service: str, account_id: str, user_email: str, region: str = None):
+def get_action_client(
+    service: str,
+    account_id: str,
+    user_email: str,
+    region: str = None,
+    project: str = None,
+    env: str = None
+):
     """
     Get boto3 client with cross-account action role assumption.
     Uses user email in RoleSessionName for CloudTrail attribution.
@@ -86,6 +105,8 @@ def get_action_client(service: str, account_id: str, user_email: str, region: st
         account_id: Target AWS account ID
         user_email: User email for attribution
         region: AWS region
+        project: Project name (optional, for environment-level role override)
+        env: Environment name (optional, for environment-level role override)
 
     Returns:
         boto3 client for write operations
@@ -97,8 +118,12 @@ def get_action_client(service: str, account_id: str, user_email: str, region: st
     sanitized_email = user_email.replace('@', '-at-').replace('.', '-dot-')[:64] if user_email else 'unknown'
     session_name = f"dashboard-{sanitized_email}"
 
-    # Get role ARN from config (indexed by account ID)
-    role_arn = config.get_action_role_arn(account_id)
+    # Get role ARN from config with environment-level override support
+    if project and env:
+        role_arn = config.get_action_role_arn_for_env(project, env, account_id)
+    else:
+        role_arn = config.get_action_role_arn(account_id)
+
     if not role_arn:
         # Fallback to convention-based naming if not in config
         role_arn = f"arn:aws:iam::{account_id}:role/dashborion-action-role"

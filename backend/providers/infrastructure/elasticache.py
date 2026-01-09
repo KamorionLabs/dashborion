@@ -52,7 +52,10 @@ class ElastiCacheProvider(CacheProvider):
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
-        return get_cross_account_client('elasticache', env_config.account_id, env_config.region)
+        return get_cross_account_client(
+            'elasticache', env_config.account_id, env_config.region,
+            project=self.project, env=env
+        )
 
     def get_cache_cluster(self, env: str, discovery_tags: dict = None, cache_types: List[str] = None) -> dict:
         """Get ElastiCache Redis/Valkey info (filtered by discovery_tags and cache type)

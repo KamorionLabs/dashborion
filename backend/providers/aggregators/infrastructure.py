@@ -107,7 +107,7 @@ class InfrastructureAggregator:
 
         # S3 Buckets (CloudFront origins only) - no dedicated provider needed, simple list
         try:
-            s3 = get_cross_account_client('s3', account_id, env_config.region)
+            s3 = get_cross_account_client('s3', account_id, env_config.region, project=self.project, env=env)
             buckets = s3.list_buckets()
             for bucket in buckets.get('Buckets', []):
                 bucket_name = bucket['Name']
@@ -172,7 +172,7 @@ class InfrastructureAggregator:
             domain_prefixes: List of domain prefixes to match (e.g., ['fr', 'back', 'cms'])
         """
         env_config = self.config.get_environment(self.project, env)
-        cloudfront = get_cross_account_client('cloudfront', account_id)
+        cloudfront = get_cross_account_client('cloudfront', account_id, project=self.project, env=env)
 
         distributions = cloudfront.list_distributions()
         for dist in distributions.get('DistributionList', {}).get('Items', []):
@@ -245,7 +245,7 @@ class InfrastructureAggregator:
     def _get_rds_for_infrastructure(self, env: str, account_id: str, discovery_tags: dict = None, databases: list = None) -> dict:
         """Get RDS database info (filtered by discovery_tags and database type)"""
         env_config = self.config.get_environment(self.project, env)
-        rds = get_cross_account_client('rds', account_id, env_config.region)
+        rds = get_cross_account_client('rds', account_id, env_config.region, project=self.project, env=env)
         databases = databases or ['postgres']
 
         db_instances = rds.describe_db_instances()

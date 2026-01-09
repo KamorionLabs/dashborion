@@ -39,15 +39,24 @@ class EnvironmentConfig:
     region: str = "eu-west-3"
     cluster_name: Optional[str] = None  # Override naming pattern
     namespace: Optional[str] = None  # For EKS
+    read_role_arn: Optional[str] = None  # Override cross-account read role
+    action_role_arn: Optional[str] = None  # Override cross-account action role
+    status: Optional[str] = None  # Environment status (active, deployed, planned)
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             'accountId': self.account_id,
             'services': self.services,
             'region': self.region,
             'clusterName': self.cluster_name,
-            'namespace': self.namespace
+            'namespace': self.namespace,
+            'status': self.status
         }
+        if self.read_role_arn:
+            result['readRoleArn'] = self.read_role_arn
+        if self.action_role_arn:
+            result['actionRoleArn'] = self.action_role_arn
+        return result
 
 
 @dataclass
@@ -219,6 +228,24 @@ class DashboardConfig:
         role = self.get_cross_account_role(account_id)
         return role.action_role_arn if role else None
 
+    def get_read_role_arn_for_env(self, project: str, env: str, account_id: str) -> Optional[str]:
+        """Get read role ARN with environment-level override.
+        Priority: environment.readRoleArn > crossAccountRoles[accountId].readRoleArn
+        """
+        env_config = self.get_environment(project, env)
+        if env_config and env_config.read_role_arn:
+            return env_config.read_role_arn
+        return self.get_read_role_arn(account_id)
+
+    def get_action_role_arn_for_env(self, project: str, env: str, account_id: str) -> Optional[str]:
+        """Get action role ARN with environment-level override.
+        Priority: environment.actionRoleArn > crossAccountRoles[accountId].actionRoleArn
+        """
+        env_config = self.get_environment(project, env)
+        if env_config and env_config.action_role_arn:
+            return env_config.action_role_arn
+        return self.get_action_role_arn(account_id)
+
     def build_console_url(self, url_type: str, **kwargs) -> str:
         """Build a console URL from template"""
         template = self.console_urls.get(url_type)
@@ -269,7 +296,10 @@ def get_config() -> DashboardConfig:
                 services=env_data.get('services', []),
                 region=env_data.get('region', region),
                 cluster_name=env_data.get('clusterName'),
-                namespace=env_data.get('namespace')
+                namespace=env_data.get('namespace'),
+                read_role_arn=env_data.get('readRoleArn'),
+                action_role_arn=env_data.get('actionRoleArn'),
+                status=env_data.get('status')
             )
 
         projects[project_name] = ProjectConfig(
