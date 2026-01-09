@@ -124,14 +124,48 @@ dashborion --help
 
 ## Authentication
 
-### Web Dashboard
+### Web Dashboard (SSO via Lambda@Edge)
 
-- **SSO**: CloudFront Lambda@Edge with SAML/OIDC
-- Supports AWS Identity Center, Okta, Azure AD
+Native SAML SSO using Lambda@Edge functions deployed by SST:
+
+| Lambda@Edge | Region | Purpose |
+|-------------|--------|---------|
+| `dashborion-{stage}-sso-protect` | us-east-1 | Validates session cookie, redirects to IdP |
+| `dashborion-{stage}-sso-acs` | us-east-1 | Processes SAML assertion, sets cookie |
+| `dashborion-{stage}-sso-metadata` | us-east-1 | Serves SP metadata XML |
+
+**Configuration** (`infra.config.json`):
+```json
+{
+  "auth": {
+    "enabled": true,
+    "provider": "saml",
+    "saml": {
+      "entityId": "dashborion-{stage}-sso",
+      "idpMetadataFile": "idp-metadata/dashboard.xml"
+    },
+    "cookieDomain": ".example.com",
+    "sessionTtlSeconds": 3600
+  }
+}
+```
+
+**AWS Identity Center attribute mappings** (critical for RBAC):
+- `Subject` -> `${user:email}` (emailAddress format)
+- `email` -> `${user:email}`
+- `displayName` -> `${user:name}`
+- `memberOf` -> `${user:groups}` (required for RBAC)
+
+**Lambda@Edge logs**: Located in edge region (e.g., `eu-west-2` for European users), not us-east-1:
+```bash
+aws logs tail /aws/lambda/us-east-1.dashborion-{stage}-sso-protect \
+  --since 15m --region eu-west-2
+```
 
 ### CLI
 
-- **AWS SigV4**: Uses AWS credentials from profiles
+- **Device Flow**: `dashborion auth login` opens browser for SSO
+- **SSO Reuse**: `dashborion auth login --use-sso` reuses AWS SSO session
 - **Profile support**: `--profile <profile>` flag
 - Uses `~/.aws/credentials` or environment variables
 

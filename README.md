@@ -208,16 +208,154 @@ brew install dashborion-cli
     "enabled": true,
     "provider": "saml",
     "saml": {
-      "entityId": "dashborion",
-      "idpMetadataUrl": "https://portal.sso.region.amazonaws.com/saml/metadata/..."
-    }
-  },
-  "authorization": {
-    "enabled": true,
-    "defaultRole": "viewer"
+      "entityId": "dashborion-{stage}-sso",
+      "idpMetadataFile": "idp-metadata/dashboard.xml",
+      "acsPath": "/saml/acs",
+      "metadataPath": "/saml/metadata.xml"
+    },
+    "sessionTtlSeconds": 3600,
+    "cookieDomain": ".example.com",
+    "excludedPaths": ["/health", "/api/health", "/saml/metadata"]
   }
 }
 ```
+
+---
+
+## SSO with AWS Identity Center
+
+Dashborion includes native SAML SSO authentication via Lambda@Edge, eliminating the need for external authentication modules.
+
+### Architecture
+
+```
+User -> CloudFront -> Lambda@Edge (protect) -> check session cookie
+                                             |
+                                             v (no valid cookie)
+                              redirect to AWS Identity Center
+                                             |
+                                             v (SAML assertion POST)
+         CloudFront -> Lambda@Edge (acs) -> validate & set cookie -> redirect back
+```
+
+Three Lambda@Edge functions handle authentication:
+- **protect**: Validates session cookie, redirects to IdP if invalid
+- **acs**: Processes SAML assertion, creates session cookie
+- **metadata**: Serves SP metadata for IdP configuration
+
+### AWS Identity Center Configuration
+
+#### 1. Create Custom SAML Application
+
+In AWS Identity Center > Applications > Add application > Add custom SAML 2.0 application:
+
+| Setting | Value |
+|---------|-------|
+| Application name | `dashborion-{stage}-sso` (e.g., `dashborion-production-sso`) |
+| Application type | Custom SAML 2.0 application |
+| Application start URL | `https://your-dashboard.example.com/` |
+
+#### 2. SAML Metadata Configuration
+
+| Setting | Value |
+|---------|-------|
+| Application ACS URL | `https://your-dashboard.example.com/saml/acs` |
+| Application SAML audience | Must match `auth.saml.entityId` in `infra.config.json` |
+
+#### 3. Attribute Mappings (Critical)
+
+These attributes are sent in the SAML assertion and used for authorization:
+
+| Attribute in application | Maps to (Identity Center) | Format | Description |
+|--------------------------|---------------------------|--------|-------------|
+| `Subject` | `${user:email}` | emailAddress | User email (NameID) |
+| `email` | `${user:email}` | unspecified | Email (fallback) |
+| `displayName` | `${user:name}` | unspecified | Display name |
+| `memberOf` | `${user:groups}` | unspecified | User groups for RBAC |
+
+**Important**: The `memberOf` attribute is **required** for RBAC. It maps Identity Center groups to Dashborion roles.
+
+#### 4. Download IdP Metadata
+
+1. Go to AWS Identity Center > Applications > Your application
+2. Click "Download" next to "IAM Identity Center SAML metadata file"
+3. Save as `idp-metadata/dashboard.xml` in your config directory
+
+#### 5. Create Identity Center Groups
+
+Create groups and assign users for RBAC:
+
+| Group | Role | Permissions |
+|-------|------|-------------|
+| `dashborion-{project}-viewer` | viewer | Read-only access |
+| `dashborion-{project}-operator` | operator | + deploy, scale, restart |
+| `dashborion-{project}-admin` | admin | + RDS control, all actions |
+| `dashborion-{project}-prod-operator` | operator (production only) | Operator on production only |
+
+### Group to Role Mapping
+
+Configure in `infra.config.json`:
+
+```json
+{
+  "projects": {
+    "myproject": {
+      "displayName": "My Project",
+      "environments": { ... },
+      "idpGroupMapping": {
+        "dashborion-myproject-viewer": { "role": "viewer", "environment": "*" },
+        "dashborion-myproject-operator": { "role": "operator", "environment": "*" },
+        "dashborion-myproject-admin": { "role": "admin", "environment": "*" },
+        "dashborion-myproject-prod-operator": { "role": "operator", "environment": "production" }
+      }
+    }
+  }
+}
+```
+
+### Deployment with SSO
+
+```bash
+# Set config directory (if external)
+export DASHBORION_CONFIG_DIR=/path/to/config
+
+# Deploy (SST handles Lambda@Edge in us-east-1)
+npx sst deploy --stage production
+```
+
+SST automatically:
+- Builds and deploys Lambda@Edge functions to us-east-1
+- Stores Lambda ARNs in SSM Parameter Store
+- Associates Lambda@Edge with CloudFront behaviors
+
+### Disabling SSO
+
+```json
+{
+  "auth": {
+    "enabled": false
+  }
+}
+```
+
+This removes Lambda@Edge functions and disables SAML protection.
+
+### Troubleshooting SSO
+
+1. **Lambda@Edge logs**: Located in CloudWatch in the **edge location region** (not us-east-1).
+   For European users, check `eu-west-2` (London):
+   ```bash
+   aws logs tail /aws/lambda/us-east-1.dashborion-{stage}-sso-protect \
+     --since 15m --region eu-west-2
+   ```
+
+2. **"No access" in Identity Center**: User not assigned to the application (directly or via group).
+
+3. **Cookie not set**: Verify `cookieDomain` matches your CloudFront domain.
+
+4. **Invalid SAML assertion**: Check that SAML audience matches `entityId` in config.
+
+5. **Groups not received**: Verify `memberOf` attribute mapping to `${user:groups}`.
 
 ---
 
