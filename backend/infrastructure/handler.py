@@ -84,7 +84,7 @@ def handle_infrastructure(event, auth, project: str, parts: list, config) -> Dic
     env = parts[3]
 
     # Check read permission
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     env_config = config.get_environment(project, env)
@@ -176,14 +176,14 @@ def handle_rds_actions(event, auth, project: str, parts: list, config) -> Dict[s
     action_type = parts[5]
 
     # Check RDS control permission (admin only)
-    if not check_permission(auth, project, env, Action.RDS_CONTROL):
+    if not check_permission(auth, Action.RDS_CONTROL, project, env):
         return error_response(
             'forbidden',
             f'Permission denied: rds-control on {project}/{env} (admin required)',
             403
         )
 
-    email = auth.get('email', 'unknown')
+    email = auth.email if auth else 'unknown'
     database = ProviderFactory.get_database_provider(config, project)
 
     if not database:
@@ -240,14 +240,14 @@ def handle_cloudfront_actions(event, auth, project: str, parts: list, config) ->
         return error_response('invalid_action', 'Use invalidate for CloudFront action', 400)
 
     # Check invalidate permission
-    if not check_permission(auth, project, env, Action.INVALIDATE):
+    if not check_permission(auth, Action.INVALIDATE, project, env):
         return error_response(
             'forbidden',
             f'Permission denied: invalidate on {project}/{env}',
             403
         )
 
-    email = auth.get('email', 'unknown')
+    email = auth.email if auth else 'unknown'
     body = get_body(event)
     cdn = ProviderFactory.get_cdn_provider(config, project)
 

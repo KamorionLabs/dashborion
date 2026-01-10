@@ -82,7 +82,7 @@ def handle_pipelines(event, auth, project: str, parts: list, config) -> Dict[str
 
     # Check read permission (use * for build pipelines which are env-agnostic)
     permission_env = env if env else '*'
-    if not check_permission(auth, project, permission_env, Action.READ):
+    if not check_permission(auth, Action.READ, project, permission_env):
         return error_response('forbidden', f'Permission denied: read on {project}/{permission_env}', 403)
 
     ci = ProviderFactory.get_ci_provider(config, project)
@@ -111,7 +111,7 @@ def handle_images(event, auth, project: str, parts: list, config) -> Dict[str, A
     service = parts[3]
 
     # Check read permission (images are global, not env-specific)
-    if not check_permission(auth, project, '*', Action.READ):
+    if not check_permission(auth, Action.READ, project, '*'):
         return error_response('forbidden', f'Permission denied: read on {project}', 403)
 
     ci = ProviderFactory.get_ci_provider(config, project)
@@ -142,10 +142,10 @@ def handle_build_action(event, auth, project: str, parts: list, config) -> Dict[
     service = parts[4]
 
     # Check deploy permission (build triggers are global)
-    if not check_permission(auth, project, '*', Action.DEPLOY):
+    if not check_permission(auth, Action.DEPLOY, project, '*'):
         return error_response('forbidden', f'Permission denied: deploy on {project}', 403)
 
-    email = auth.get('email', 'unknown')
+    email = auth.email if auth else 'unknown'
     body = get_body(event)
     image_tag = body.get('imageTag', 'latest')
     source_revision = body.get('sourceRevision', '')

@@ -58,7 +58,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return error_response('not_found', f'Unknown project: {project}', 404)
 
     # Check read permission
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     query_params = event.get('queryStringParameters') or {}

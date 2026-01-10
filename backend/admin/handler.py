@@ -62,7 +62,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
 
     # Get actor email from auth context
-    actor_email = auth.get('email', 'unknown')
+    actor_email = auth.email if auth else 'unknown'
 
     # Route to existing admin handlers
     result = route_admin_request(path, method, body, query_params, actor_email)

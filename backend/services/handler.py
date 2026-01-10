@@ -100,7 +100,7 @@ def handle_services(event, auth, project: str, parts: list, config) -> Dict[str,
     """
     # Check read permission
     env = parts[3] if len(parts) > 3 else '*'
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     orchestrator = ProviderFactory.get_orchestrator_provider(config, project)
@@ -136,7 +136,7 @@ def handle_details(event, auth, project: str, parts: list, config) -> Dict[str, 
     service = parts[4]
 
     # Check read permission
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     orchestrator = ProviderFactory.get_orchestrator_provider(config, project)
@@ -159,7 +159,7 @@ def handle_tasks(event, auth, project: str, parts: list, config) -> Dict[str, An
     task_id = parts[5]
 
     # Check read permission
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     orchestrator = ProviderFactory.get_orchestrator_provider(config, project)
@@ -181,7 +181,7 @@ def handle_logs(event, auth, project: str, parts: list, config) -> Dict[str, Any
     service = parts[4]
 
     # Check read permission
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     orchestrator = ProviderFactory.get_orchestrator_provider(config, project)
@@ -208,7 +208,7 @@ def handle_metrics(event, auth, project: str, parts: list, config) -> Dict[str, 
     service = parts[4]
 
     # Check read permission
-    if not check_permission(auth, project, env, Action.READ):
+    if not check_permission(auth, Action.READ, project, env):
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     orchestrator = ProviderFactory.get_orchestrator_provider(config, project)
@@ -249,14 +249,14 @@ def handle_deploy_actions(event, auth, project: str, parts: list, config) -> Dic
         return error_response('invalid_action', f'Unknown action: {action_type}', 400)
 
     # Check permission
-    if not check_permission(auth, project, env, required_action):
+    if not check_permission(auth, required_action, project, env):
         return error_response(
             'forbidden',
             f'Permission denied: {required_action.value} on {project}/{env}',
             403
         )
 
-    email = auth.get('email', 'unknown')
+    email = auth.email if auth else 'unknown'
     body = get_body(event)
 
     # Audit log start

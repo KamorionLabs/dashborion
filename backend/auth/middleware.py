@@ -1,99 +1,98 @@
 """
-Authentication Middleware for Lambda API Handler
+Authentication Middleware for Lambda API Handlers
 
-Extracts authentication context from Lambda@Edge headers
-and validates user sessions.
+Extracts authentication context from Lambda Authorizer.
+The authorizer validates credentials and injects user context into
+requestContext.authorizer.lambda.
+
+Supported auth methods (handled by Lambda Authorizer):
+1. Cookie session (SAML SSO web flow)
+2. Bearer token (CLI device flow)
+3. SigV4 IAM Identity Center (AWS SSO users)
+4. SigV4 IAM Service Role (M2M)
 """
 
+import json
 from typing import Dict, Any, Optional
 from .models import AuthContext, Permission, DashborionRole, UnauthorizedError
-from .permissions import parse_permissions_from_header
-from .user_management import get_user, get_user_effective_permissions
-
-
-def get_header(headers: Dict[str, str], name: str, default: str = "") -> str:
-    """Get header value case-insensitively"""
-    # Lambda headers can be lowercase or mixed case
-    lower_name = name.lower()
-    for key, value in headers.items():
-        if key.lower() == lower_name:
-            return value
-    return default
-
-
-def extract_auth_headers(event: Dict[str, Any]) -> Dict[str, str]:
-    """Extract auth headers from Lambda event"""
-    headers = event.get('headers', {}) or {}
-    return {
-        'user_id': get_header(headers, 'x-auth-user-id'),
-        'email': get_header(headers, 'x-auth-user-email'),
-        'groups': get_header(headers, 'x-auth-user-groups'),
-        'roles': get_header(headers, 'x-auth-user-roles'),
-        'session_id': get_header(headers, 'x-auth-session-id'),
-        'mfa_verified': get_header(headers, 'x-auth-mfa-verified'),
-        'permissions': get_header(headers, 'x-auth-permissions'),
-    }
-
-
-def parse_roles(roles_str: str) -> list[DashborionRole]:
-    """Parse roles from comma-separated string"""
-    if not roles_str:
-        return []
-
-    roles = []
-    for role_name in roles_str.split(','):
-        role_name = role_name.strip()
-        try:
-            roles.append(DashborionRole(role_name))
-        except ValueError:
-            continue  # Skip unknown roles
-    return roles
 
 
 def get_auth_context(event: Dict[str, Any]) -> Optional[AuthContext]:
     """
     Extract authentication context from Lambda event.
 
-    Supports two authentication methods:
-    1. x-auth-* headers (from Lambda@Edge SSO)
-    2. Bearer token (from CLI/API clients)
+    The Lambda Authorizer has already validated credentials and injected
+    user context into requestContext.authorizer.lambda.
 
-    Returns None if no auth headers are present (unauthenticated request).
+    Falls back to Bearer token validation for direct API calls
+    (e.g., local testing without authorizer).
+
+    Returns None if no auth is present (unauthenticated request).
     """
+    # Primary: Lambda Authorizer context (API Gateway v2 format)
+    authorizer = event.get('requestContext', {}).get('authorizer', {}).get('lambda', {})
+
+    if authorizer and authorizer.get('email'):
+        return _parse_authorizer_context(authorizer)
+
+    # Fallback: Bearer token (for direct calls without authorizer)
     headers = event.get('headers', {}) or {}
-    auth_headers = extract_auth_headers(event)
+    auth_header = _get_header(headers, 'authorization')
 
-    # Check x-auth-* headers first (Lambda@Edge SSO)
-    if auth_headers['user_id'] or auth_headers['email']:
-        email = auth_headers['email'] or auth_headers['user_id']
-        groups = auth_headers['groups'].split(',') if auth_headers['groups'] else []
-
-        # Get permissions from DynamoDB (authoritative source)
-        # Lambda@Edge headers may include SSO groups, but permissions come from DB
-        user = get_user(email)
-        local_groups = user.local_groups if user else []
-
-        # Combine local groups with SSO groups for permission lookup
-        permissions = get_user_effective_permissions(email, local_groups, groups)
-
-        return AuthContext(
-            user_id=auth_headers['user_id'],
-            email=email,
-            groups=groups,
-            roles=parse_roles(auth_headers['roles']),
-            permissions=permissions,
-            session_id=auth_headers['session_id'],
-            mfa_verified=auth_headers['mfa_verified'].lower() == 'true',
-        )
-
-    # Check Bearer token (CLI/API clients)
-    auth_header = get_header(headers, 'Authorization')
     if auth_header and auth_header.startswith('Bearer '):
-        token = auth_header[7:]  # Remove 'Bearer ' prefix
+        token = auth_header[7:]
         from .device_flow import validate_token
         return validate_token(token)
 
     return None
+
+
+def _parse_authorizer_context(authorizer: Dict[str, Any]) -> AuthContext:
+    """Parse Lambda Authorizer context into AuthContext."""
+    email = authorizer.get('email', '')
+    user_id = authorizer.get('user_id', email)
+    auth_method = authorizer.get('auth_method', 'unknown')
+
+    # Parse JSON fields
+    try:
+        groups = json.loads(authorizer.get('groups', '[]'))
+    except (json.JSONDecodeError, TypeError):
+        groups = []
+
+    try:
+        permissions_data = json.loads(authorizer.get('permissions', '[]'))
+    except (json.JSONDecodeError, TypeError):
+        permissions_data = []
+
+    # Convert to Permission objects
+    permissions = [
+        Permission(
+            project=p.get('project', '*'),
+            environment=p.get('environment', '*'),
+            role=DashborionRole.from_string(p.get('role', 'viewer')),
+            resources=p.get('resources', ['*']),
+            source=p.get('source', 'authorizer'),
+        )
+        for p in permissions_data
+    ]
+
+    return AuthContext(
+        user_id=user_id,
+        email=email,
+        groups=groups,
+        permissions=permissions,
+        auth_method=auth_method,
+        mfa_verified=str(authorizer.get('mfa_verified', 'false')).lower() == 'true',
+    )
+
+
+def _get_header(headers: Dict[str, str], name: str) -> str:
+    """Get header value case-insensitively."""
+    lower_name = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lower_name:
+            return value
+    return ''
 
 
 def authorize_request(
@@ -127,20 +126,11 @@ def authorize_request(
 
 def get_user_email(event: Dict[str, Any]) -> str:
     """
-    Get user email from event (backward compatible with existing code).
+    Get user email from event.
 
-    Falls back to legacy x-sso-user-email header if new headers not present.
+    Convenience function for handlers that just need the email.
     """
-    headers = event.get('headers', {}) or {}
-
-    # Try new auth header first
-    email = get_header(headers, 'x-auth-user-email')
-    if email:
-        return email
-
-    # Fall back to legacy SSO header
-    email = get_header(headers, 'x-sso-user-email')
-    if email:
-        return email
-
+    auth = get_auth_context(event)
+    if auth and auth.email:
+        return auth.email
     return 'unknown'
