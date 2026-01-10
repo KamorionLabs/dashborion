@@ -12,6 +12,8 @@
     "test": "jest"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.693.0",
+    "@aws-sdk/client-kms": "^3.693.0",
     "@xmldom/xmldom": "^0.8.10",
     "samlify": "^2.8.11",
     "uuid": "^9.0.1"

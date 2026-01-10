@@ -2,25 +2,78 @@
   "$schema": "./infra.config.schema.json",
   "_comment": "Infrastructure configuration for Dashborion deployment",
   "_modes": {
-    "standalone": "SST creates all resources (S3, CloudFront, Lambda role) - for dev/testing",
-    "semi-managed": "SST creates frontend (S3, CloudFront), Lambda uses external role",
-    "managed": "SST syncs to existing S3/CloudFront, Lambda uses external role"
+    "standalone": "SST creates all resources (DynamoDB, IAM roles, etc.) - for dev/testing",
+    "semi-managed": "SST creates most resources, but uses existing Lambda IAM role",
+    "managed": "SST references existing resources created by Terraform/OpenTofu"
   },
 
   "mode": "semi-managed",
 
   "aws": {
-    "_comment": "AWS provider configuration - uses env vars AWS_REGION/AWS_PROFILE if not set",
+    "_comment": "AWS provider configuration - uses env vars if not set",
     "region": "eu-west-3",
-    "profile": "dashborion-shared-services/AdministratorAccess"
+    "profile": "my-profile/AdministratorAccess"
+  },
+
+  "naming": {
+    "_comment": "Resource naming configuration - customize to match organizational standards",
+    "convention": "custom",
+    "app": "dashborion",
+    "owner": "digital",
+    "prefixes": {
+      "_comment": "Resource type prefixes (e.g., 'fct' for Lambda, 'ddb' for DynamoDB)",
+      "lambda": "fct",
+      "layer": "lyr",
+      "role": "iam",
+      "table": "ddb",
+      "api": "api",
+      "securityGroup": "nsg",
+      "bucket": "s3"
+    },
+    "patterns": {
+      "_comment": "Pattern templates - use {app}, {stage}, {role}, {owner}, {prefix} placeholders",
+      "lambda": "{prefix}-{app}-{role}-{stage}",
+      "table": "{prefix}-{app}-{stage}-{role}",
+      "api": "{prefix}-{app}-{stage}-api"
+    }
+  },
+
+  "tags": {
+    "_comment": "Custom tags applied to all resources",
+    "Owner": "digital",
+    "CostCenter": "123456",
+    "Environment": "production"
+  },
+
+  "managed": {
+    "_comment": "Managed mode: reference existing resources created by Terraform",
+    "lambda": {
+      "_comment": "Lambda configuration - provide existing IAM role and VPC settings",
+      "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role",
+      "securityGroupIds": ["sg-0123456789abcdef0"],
+      "subnetIds": ["subnet-0123456789abcdef0", "subnet-0fedcba9876543210"]
+    },
+    "lambdaEdge": {
+      "_comment": "Lambda@Edge configuration (must be in us-east-1)",
+      "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-edge-role"
+    },
+    "dynamodb": {
+      "_comment": "Existing DynamoDB table names (if not set, SST creates them)",
+      "tokensTable": "dashborion-prod-tokens",
+      "deviceCodesTable": "dashborion-prod-device-codes",
+      "usersTable": "dashborion-prod-users",
+      "groupsTable": "dashborion-prod-groups",
+      "permissionsTable": "dashborion-prod-permissions",
+      "auditTable": "dashborion-prod-audit"
+    }
   },
 
   "auth": {
-    "_comment": "Native SSO authentication with Lambda@Edge",
+    "_comment": "Authentication configuration",
     "enabled": true,
     "provider": "saml",
     "saml": {
-      "_comment": "SAML IdP configuration (AWS Identity Center / Microsoft Entra ID)",
+      "_comment": "SAML IdP configuration (AWS Identity Center / Microsoft Entra ID / Okta)",
       "entityId": "dashborion",
       "idpMetadataUrl": "https://portal.sso.eu-west-3.amazonaws.com/saml/metadata/...",
       "acsPath": "/saml/acs",
@@ -29,44 +82,35 @@
     "sessionTtlSeconds": 3600,
     "cookieDomain": ".example.com",
     "excludedPaths": ["/health", "/api/health", "/saml/metadata"],
-    "requireMfaForProduction": true,
-    "_permissionsNote": "Permissions table names are auto-generated as dashborion-{stage}-permissions/audit"
-  },
-
-  "lambda": {
-    "_comment": "Required for semi-managed and managed modes",
-    "roleArn": "arn:aws:iam::123456789012:role/dashborion-lambda-role"
+    "requireMfaForProduction": true
   },
 
   "frontend": {
-    "_comment": "Required only for managed mode - SST syncs to existing bucket",
+    "_comment": "Frontend configuration (managed mode: reference existing S3/CloudFront)",
     "s3Bucket": "dashborion-frontend-123456789012",
+    "s3BucketArn": "arn:aws:s3:::dashborion-frontend-123456789012",
     "cloudfrontDistributionId": "E1234567890ABC",
-    "cloudfrontDomain": "dashboard.example.com"
+    "cloudfrontDomain": "dashboard.example.com",
+    "certificateArn": "arn:aws:acm:us-east-1:123456789012:certificate/...",
+    "originAccessControlId": "E1234567890ABC"
   },
 
   "apiGateway": {
-    "_comment": "Optional: if set, SST uses existing API Gateway instead of creating one",
-    "id": null,
-    "url": null
+    "_comment": "API Gateway configuration",
+    "domain": "dashboard-api.example.com",
+    "route53ZoneId": "Z1234567890ABC",
+    "route53Profile": "dns-account/AdministratorAccess"
   },
 
   "crossAccountRoles": {
-    "_comment": "Roles to access resources in other AWS accounts (created via Terraform module)",
-    "staging": {
-      "accountId": "111111111111",
+    "_comment": "Roles to access resources in other AWS accounts",
+    "111111111111": {
       "readRoleArn": "arn:aws:iam::111111111111:role/dashborion-read-role",
       "actionRoleArn": "arn:aws:iam::111111111111:role/dashborion-action-role"
     },
-    "preprod": {
-      "accountId": "222222222222",
+    "222222222222": {
       "readRoleArn": "arn:aws:iam::222222222222:role/dashborion-read-role",
       "actionRoleArn": "arn:aws:iam::222222222222:role/dashborion-action-role"
-    },
-    "production": {
-      "accountId": "333333333333",
-      "readRoleArn": "arn:aws:iam::333333333333:role/dashborion-read-role",
-      "actionRoleArn": "arn:aws:iam::333333333333:role/dashborion-action-role"
     }
   },
 
@@ -74,13 +118,27 @@
     "_comment": "Projects configuration for multi-tenant authorization",
     "myapp": {
       "displayName": "My Application",
-      "environments": ["staging", "preprod", "production"],
-      "_roleMapping": {
+      "environments": {
+        "staging": {
+          "accountId": "111111111111",
+          "region": "eu-west-3",
+          "clusterName": "myapp-staging",
+          "namespace": "myapp",
+          "services": ["api", "web", "worker"]
+        },
+        "production": {
+          "accountId": "222222222222",
+          "region": "eu-west-3",
+          "clusterName": "myapp-prod",
+          "namespace": "myapp",
+          "services": ["api", "web", "worker"]
+        }
+      },
+      "idpGroupMapping": {
         "_comment": "IdP groups mapped to Dashborion roles",
-        "dashborion-myapp-viewer": { "role": "viewer", "env": "*" },
-        "dashborion-myapp-operator": { "role": "operator", "env": "*" },
-        "dashborion-myapp-admin": { "role": "admin", "env": "*" },
-        "dashborion-myapp-prod-operator": { "role": "operator", "env": "production" }
+        "myapp-viewers": { "role": "viewer", "env": "*" },
+        "myapp-operators": { "role": "operator", "env": "*" },
+        "myapp-admins": { "role": "admin", "env": "*" }
       }
     }
   }

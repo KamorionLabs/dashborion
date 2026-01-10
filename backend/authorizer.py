@@ -2,9 +2,11 @@
 Lambda Authorizer for API Gateway.
 
 Validates authentication and returns IAM policy with user context.
-Supports two authentication methods:
-1. Bearer token (from CLI device flow)
-2. SSO headers (from Lambda@Edge SAML flow)
+Supports four authentication methods:
+1. Cookie session (from SAML SSO web flow)
+2. Bearer token (from CLI device flow)
+3. SigV4 IAM Identity Center (for AWS SSO users - AWSReservedSSO_*)
+4. SigV4 IAM Service Role (for M2M - any other IAM role)
 
 The authorizer injects user context (email, permissions) into the request
 which downstream handlers can access via:
@@ -22,6 +24,9 @@ from typing import Dict, Any, Optional
 
 # Import auth modules
 from auth.device_flow import validate_token
+from auth.session_auth import validate_session_cookie
+from auth.sigv4_auth import validate_sigv4_auth
+from auth.service_auth import validate_service_auth
 from auth.user_management import get_user, get_user_effective_permissions
 
 
@@ -39,12 +44,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     print(f"Authorizer event type: {event.get('type', 'unknown')}")
 
     headers = event.get('headers', {}) or {}
+    request_context = event.get('requestContext', {})
 
     # Normalize headers to lowercase for consistent access
     normalized_headers = {k.lower(): v for k, v in headers.items()}
 
     # Try to authenticate
-    auth_result = authenticate(normalized_headers)
+    auth_result = authenticate(normalized_headers, request_context)
 
     if not auth_result:
         print("Authentication failed - no valid credentials found")
@@ -60,8 +66,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     user_id = auth_result.get('user_id', email)
     groups = auth_result.get('groups', [])
     permissions = auth_result.get('permissions', [])
+    auth_method = auth_result.get('auth_method', 'unknown')
 
-    print(f"Authorized: {email} with {len(permissions)} permissions")
+    print(f"Authorized: {email} via {auth_method} with {len(permissions)} permissions")
 
     # Return simple response format with context
     # The context is available to downstream handlers via
@@ -73,63 +80,85 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             'user_id': user_id,
             'groups': json.dumps(groups),
             'permissions': json.dumps(permissions),
+            'auth_method': auth_method,
         }
     }
 
 
-def authenticate(headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+def authenticate(
+    headers: Dict[str, str],
+    request_context: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
     """
     Attempt to authenticate using available credentials.
 
     Tries in order:
-    1. Bearer token in Authorization header (CLI device flow)
-    2. SSO headers from Lambda@Edge (x-auth-user-email)
+    1. Cookie session (SAML web SSO)
+    2. Bearer token (CLI device flow)
+    3. SigV4 IAM (AWS Identity Center)
 
     Args:
         headers: Normalized (lowercase) request headers
+        request_context: API Gateway request context
 
     Returns:
-        Dict with email, user_id, groups, permissions if authenticated, None otherwise
+        Dict with email, user_id, groups, permissions, auth_method if authenticated
     """
-    # Method 1: Bearer token (CLI)
+    # Method 1: Cookie session (SAML SSO)
+    cookie_header = headers.get('cookie', '')
+    if cookie_header and '__dashborion_session=' in cookie_header:
+        print("Attempting Cookie session authentication")
+        auth_context = validate_session_cookie(cookie_header)
+        if auth_context:
+            print(f"Cookie session valid for: {auth_context.email}")
+            return format_auth_result(auth_context, 'cookie')
+        print("Cookie session validation failed")
+
+    # Method 2: Bearer token (CLI)
     auth_header = headers.get('authorization', '')
     if auth_header.startswith('Bearer '):
         token = auth_header[7:]
         print("Attempting Bearer token authentication")
-        result = validate_bearer_token(token)
-        if result:
-            print(f"Bearer token valid for: {result.get('email')}")
-            return result
+        auth_context = validate_token(token)
+        if auth_context:
+            print(f"Bearer token valid for: {auth_context.email}")
+            return format_auth_result(auth_context, 'bearer')
         print("Bearer token validation failed")
 
-    # Method 2: SSO headers from Lambda@Edge
-    sso_email = headers.get('x-auth-user-email', '')
-    if sso_email:
-        print(f"Attempting SSO authentication for: {sso_email}")
-        result = validate_sso_session(headers)
-        if result:
-            print(f"SSO session valid for: {result.get('email')}")
-            return result
-        print("SSO session validation failed")
+    # Method 3: SigV4 IAM (AWS Identity Center users)
+    identity = request_context.get('identity', {})
+    user_arn = identity.get('userArn', '')
+    account_id = identity.get('accountId', '')
+
+    if user_arn and 'AWSReservedSSO_' in user_arn:
+        # Identity Center user
+        enable_sigv4_users = os.environ.get('ENABLE_SIGV4_USERS', 'true').lower() == 'true'
+        if enable_sigv4_users:
+            print(f"Attempting SigV4 IAM authentication for: {user_arn}")
+            sigv4_identity = validate_sigv4_auth(user_arn, account_id)
+            if sigv4_identity and sigv4_identity.email:
+                result = authenticate_sigv4_user(sigv4_identity.email)
+                if result:
+                    print(f"SigV4 IAM valid for: {sigv4_identity.email}")
+                    result['auth_method'] = 'sigv4_user'
+                    return result
+            print("SigV4 IAM user validation failed")
+    elif user_arn:
+        # Method 4: SigV4 IAM Service Role (M2M)
+        enable_sigv4_services = os.environ.get('ENABLE_SIGV4_SERVICES', 'false').lower() == 'true'
+        if enable_sigv4_services:
+            print(f"Attempting SigV4 M2M service authentication for: {user_arn}")
+            auth_context = validate_service_auth(user_arn, account_id)
+            if auth_context:
+                print(f"SigV4 M2M valid for: {auth_context.email}")
+                return format_auth_result(auth_context, 'sigv4_service')
+            print("SigV4 M2M service validation failed")
 
     return None
 
 
-def validate_bearer_token(token: str) -> Optional[Dict[str, Any]]:
-    """
-    Validate Bearer token from CLI device flow.
-
-    Args:
-        token: Access token
-
-    Returns:
-        Auth context dict or None
-    """
-    auth_context = validate_token(token)
-    if not auth_context:
-        return None
-
-    # Convert Permission objects to dicts for JSON serialization
+def format_auth_result(auth_context, auth_method: str) -> Dict[str, Any]:
+    """Format AuthContext into auth result dict."""
     permissions = [
         {
             'project': p.project,
@@ -145,26 +174,23 @@ def validate_bearer_token(token: str) -> Optional[Dict[str, Any]]:
         'user_id': auth_context.user_id,
         'groups': auth_context.groups or [],
         'permissions': permissions,
+        'auth_method': auth_method,
     }
 
 
-def validate_sso_session(headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
+def authenticate_sigv4_user(email: str) -> Optional[Dict[str, Any]]:
     """
-    Validate SSO session from Lambda@Edge headers.
+    Authenticate a user identified by SigV4.
 
-    Lambda@Edge has already validated the SAML assertion and set
-    the x-auth-* headers. We trust these headers and look up
-    permissions from DynamoDB.
+    Looks up user in DynamoDB and returns permissions.
 
     Args:
-        headers: Normalized (lowercase) request headers
+        email: Email extracted from Identity Center session name
 
     Returns:
-        Auth context dict or None
+        Auth result dict or None if user not found/disabled
     """
-    email = headers.get('x-auth-user-email', '')
-    if not email:
-        return None
+    from auth.models import Permission, DashborionRole
 
     email = email.lower()
 
@@ -172,24 +198,25 @@ def validate_sso_session(headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
     user = get_user(email)
 
     if user and user.disabled:
-        print(f"User {email} is disabled")
+        print(f"[SigV4] User {email} is disabled")
         return None
 
-    # Get SSO groups from header
-    sso_groups_str = headers.get('x-auth-user-groups', '')
-    sso_groups = [g.strip() for g in sso_groups_str.split(',') if g.strip()]
-
-    # Get local groups from user record
+    # For SigV4, we don't have SSO groups from SAML
+    # User must have permissions assigned directly or via local groups
     local_groups = user.local_groups if user else []
 
     # Get effective permissions
     permissions = get_user_effective_permissions(
         email=email,
         local_groups=local_groups,
-        sso_groups=sso_groups,
+        sso_groups=[],  # No SSO groups for SigV4
     )
 
-    # Convert Permission objects to dicts for JSON serialization
+    # If user doesn't exist and no permissions, reject
+    if not user and not permissions:
+        print(f"[SigV4] User {email} not found and no permissions")
+        return None
+
     permissions_list = [
         {
             'project': p.project,
@@ -202,7 +229,7 @@ def validate_sso_session(headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
 
     return {
         'email': email,
-        'user_id': email,  # Use email as user_id for SSO users
-        'groups': sso_groups,
+        'user_id': email,
+        'groups': local_groups,
         'permissions': permissions_list,
     }

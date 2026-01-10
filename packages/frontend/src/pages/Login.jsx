@@ -7,6 +7,7 @@
 
 import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
+import { apiUrl } from '../utils';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -43,7 +44,7 @@ export default function Login() {
     const token = localStorage.getItem('dashborion_token');
     if (token) {
       // Validate token with API before redirecting
-      fetch('/api/auth/me', {
+      fetch(apiUrl('/api/auth/me'), {
         headers: { 'Authorization': `Bearer ${token}` }
       })
         .then(res => {
@@ -73,8 +74,8 @@ export default function Login() {
   const handleSsoLogin = () => {
     // Store that we're using SAML auth
     localStorage.setItem('dashborion_auth_method', 'saml');
-    // Redirect to SAML login
-    window.location.href = '/saml/login?returnUrl=' + encodeURIComponent(returnUrl);
+    // Redirect to SAML login via API (direct URL, browser redirect)
+    window.location.href = apiUrl('/api/auth/saml/login') + '?returnUrl=' + encodeURIComponent(window.location.origin + returnUrl);
   };
 
   // Handle credentials login
@@ -84,7 +85,7 @@ export default function Login() {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(apiUrl('/api/auth/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

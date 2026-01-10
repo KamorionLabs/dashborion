@@ -521,7 +521,7 @@ export default function HomeDashboard() {
       // Only enrich events that don't already have user info
       const eventsToEnrich = eventsData.filter(e => !e.user)
       if (eventsToEnrich.length > 0) {
-        fetch(`/api/${projectId}/events/${env}/enrich`, {
+        fetchWithRetry(`/api/${projectId}/events/${env}/enrich`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ events: eventsData })
@@ -570,7 +570,7 @@ export default function HomeDashboard() {
         }).filter(item => item.fromRevision && item.toRevision)
 
         if (diffItems.length > 0) {
-          fetch(`/api/${projectId}/events/${env}/task-diff`, {
+          fetchWithRetry(`/api/${projectId}/events/${env}/task-diff`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ items: diffItems.map(({ family, fromRevision, toRevision }) => ({ family, fromRevision, toRevision })) })
@@ -661,7 +661,7 @@ export default function HomeDashboard() {
     if (!window.confirm(`Trigger build for ${service}?`)) return
     setActionLoading(prev => ({ ...prev, [`build-${service}`]: true }))
     try {
-      const res = await fetch(`/api/${projectId}/actions/build/${service}`, {
+      const res = await fetchWithRetry(`/api/${projectId}/actions/build/${service}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -687,7 +687,7 @@ export default function HomeDashboard() {
     if (!window.confirm(`Reload ${service} on ${env}?\nThis will restart ECS tasks to pick up new secret values.`)) return
     setActionLoading(prev => ({ ...prev, [`reload-${env}-${service}`]: true }))
     try {
-      const res = await fetch(`/api/${projectId}/actions/deploy/${env}/${service}/reload`, {
+      const res = await fetchWithRetry(`/api/${projectId}/actions/deploy/${env}/${service}/reload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -712,7 +712,7 @@ export default function HomeDashboard() {
     if (!window.confirm(`Deploy latest for ${service} on ${env}?\nThis will trigger the deploy pipeline to update to the latest image and task definition.`)) return
     setActionLoading(prev => ({ ...prev, [`deploy-${env}-${service}`]: true }))
     try {
-      const res = await fetch(`/api/${projectId}/actions/deploy/${env}/${service}/latest`, {
+      const res = await fetchWithRetry(`/api/${projectId}/actions/deploy/${env}/${service}/latest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -750,7 +750,7 @@ export default function HomeDashboard() {
     const actionLabel = action === 'stop' ? 'Stop' : 'Start'
     setActionLoading(prev => ({ ...prev, [`scale-${env}-${service}`]: true }))
     try {
-      const res = await fetch(`/api/${projectId}/actions/deploy/${env}/${service}/${action}`, {
+      const res = await fetchWithRetry(`/api/${projectId}/actions/deploy/${env}/${service}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ desiredCount })
@@ -778,7 +778,7 @@ export default function HomeDashboard() {
     if (!window.confirm(`${actionLabel} RDS database on ${env}?`)) return
     setActionLoading(prev => ({ ...prev, [`rds-${env}`]: true }))
     try {
-      const res = await fetch(`/api/${projectId}/actions/rds/${env}/${action}`, {
+      const res = await fetchWithRetry(`/api/${projectId}/actions/rds/${env}/${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -807,7 +807,7 @@ export default function HomeDashboard() {
     }
     setActionLoading(prev => ({ ...prev, [`cf-${env}`]: true }))
     try {
-      const res = await fetch(`/api/${projectId}/actions/cloudfront/${env}/invalidate`, {
+      const res = await fetchWithRetry(`/api/${projectId}/actions/cloudfront/${env}/invalidate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ distributionId, paths })

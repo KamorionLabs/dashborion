@@ -474,3 +474,14 @@ output "sst_env_vars" {
     TERRAFORM_API_GATEWAY_ID  = var.create_api_gateway ? aws_apigatewayv2_api.main[0].id : null
   }
 }
+
+# KMS Key outputs
+output "kms_key_arn" {
+  description = "KMS key ARN for auth encryption (for infra.config.json)"
+  value       = aws_kms_key.auth.arn
+}
+
+output "kms_key_alias" {
+  description = "KMS key alias"
+  value       = aws_kms_alias.auth.name
+}

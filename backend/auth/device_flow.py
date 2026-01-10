@@ -26,6 +26,21 @@ from botocore.exceptions import ClientError
 
 from .models import AuthContext, Permission, DashborionRole
 
+# KMS encryption - optional, enabled via environment variable
+_kms_enabled = None
+
+def _is_kms_enabled() -> bool:
+    """Check if KMS encryption is enabled."""
+    global _kms_enabled
+    if _kms_enabled is None:
+        _kms_enabled = bool(os.environ.get('KMS_KEY_ARN') or os.environ.get('KMS_KEY_ID'))
+    return _kms_enabled
+
+def _get_kms_crypto():
+    """Lazy import KMS crypto module."""
+    from shared.kms_crypto import encrypt_data, decrypt_data, token_context, refresh_context
+    return encrypt_data, decrypt_data, token_context, refresh_context
+
 
 class DeviceCodeStatus(str, Enum):
     """Status of a device code request"""
@@ -436,40 +451,82 @@ def exchange_device_code(device_code: str) -> Optional[AccessToken]:
 
 
 def _store_token(token: AccessToken, client_id: str) -> None:
-    """Store access token in DynamoDB (hashed)"""
+    """Store access token in DynamoDB (hashed, with optional KMS encryption)"""
     client = _get_dynamodb()
     table_name = _get_table_name("tokens")
 
     token_hash = hash_token(token.token)
     refresh_hash = hash_token(token.refresh_token) if token.refresh_token else None
 
-    item = {
-        'pk': {'S': f"TOKEN#{token_hash}"},
-        'sk': {'S': f"USER#{token.email}"},
-        'token_hash': {'S': token_hash},
-        'token_type': {'S': token.token_type},
-        'expires_at': {'N': str(token.expires_at)},
-        'user_id': {'S': token.user_id},
-        'email': {'S': token.email},
-        'permissions': {'S': token.permissions},
-        'client_id': {'S': client_id},
-        'scope': {'S': token.scope},
-        'ttl': {'N': str(token.expires_at + 86400)},  # Keep 1 day after expiry
+    # Sensitive data to potentially encrypt
+    sensitive_data = {
+        'email': token.email,
+        'user_id': token.user_id,
+        'permissions': token.permissions,
+        'scope': token.scope,
     }
+
+    if _is_kms_enabled():
+        # Encrypt sensitive data with KMS
+        encrypt_data, _, token_context, _ = _get_kms_crypto()
+        encrypted = encrypt_data(sensitive_data, token_context(token_hash))
+        item = {
+            'pk': {'S': f"TOKEN#{token_hash}"},
+            'sk': {'S': 'SESSION'},  # Don't leak email in sort key
+            'token_hash': {'S': token_hash},
+            'token_type': {'S': token.token_type},
+            'expires_at': {'N': str(token.expires_at)},
+            'encrypted_data': {'S': encrypted},
+            'client_id': {'S': client_id},
+            'ttl': {'N': str(token.expires_at + 86400)},
+        }
+    else:
+        # Backward compatible: store in clear (for migration)
+        item = {
+            'pk': {'S': f"TOKEN#{token_hash}"},
+            'sk': {'S': f"USER#{token.email}"},
+            'token_hash': {'S': token_hash},
+            'token_type': {'S': token.token_type},
+            'expires_at': {'N': str(token.expires_at)},
+            'user_id': {'S': token.user_id},
+            'email': {'S': token.email},
+            'permissions': {'S': token.permissions},
+            'client_id': {'S': client_id},
+            'scope': {'S': token.scope},
+            'ttl': {'N': str(token.expires_at + 86400)},
+        }
 
     if refresh_hash:
         item['refresh_hash'] = {'S': refresh_hash}
         # Store refresh token mapping
-        refresh_item = {
-            'pk': {'S': f"REFRESH#{refresh_hash}"},
-            'sk': {'S': f"TOKEN#{token_hash}"},
-            'token_hash': {'S': token_hash},
-            'email': {'S': token.email},
-            'permissions': {'S': token.permissions},
-            'client_id': {'S': client_id},
-            'expires_at': {'N': str(int(time.time()) + REFRESH_TOKEN_TTL)},
-            'ttl': {'N': str(int(time.time()) + REFRESH_TOKEN_TTL + 86400)},
-        }
+        if _is_kms_enabled():
+            _, _, _, refresh_context = _get_kms_crypto()
+            encrypt_data, _, _, _ = _get_kms_crypto()
+            refresh_sensitive = {
+                'email': token.email,
+                'permissions': token.permissions,
+                'token_hash': token_hash,
+            }
+            refresh_encrypted = encrypt_data(refresh_sensitive, refresh_context(refresh_hash))
+            refresh_item = {
+                'pk': {'S': f"REFRESH#{refresh_hash}"},
+                'sk': {'S': 'SESSION'},
+                'encrypted_data': {'S': refresh_encrypted},
+                'client_id': {'S': client_id},
+                'expires_at': {'N': str(int(time.time()) + REFRESH_TOKEN_TTL)},
+                'ttl': {'N': str(int(time.time()) + REFRESH_TOKEN_TTL + 86400)},
+            }
+        else:
+            refresh_item = {
+                'pk': {'S': f"REFRESH#{refresh_hash}"},
+                'sk': {'S': f"TOKEN#{token_hash}"},
+                'token_hash': {'S': token_hash},
+                'email': {'S': token.email},
+                'permissions': {'S': token.permissions},
+                'client_id': {'S': client_id},
+                'expires_at': {'N': str(int(time.time()) + REFRESH_TOKEN_TTL)},
+                'ttl': {'N': str(int(time.time()) + REFRESH_TOKEN_TTL + 86400)},
+            }
         client.put_item(TableName=table_name, Item=refresh_item)
 
     client.put_item(TableName=table_name, Item=item)
@@ -478,6 +535,8 @@ def _store_token(token: AccessToken, client_id: str) -> None:
 def validate_token(token: str) -> Optional[AuthContext]:
     """
     Validate an access token and return auth context.
+
+    Supports both KMS-encrypted and legacy unencrypted tokens.
 
     Args:
         token: Bearer token from CLI
@@ -508,9 +567,27 @@ def validate_token(token: str) -> Optional[AuthContext]:
     if time.time() > expires_at:
         return None
 
+    # Check if data is encrypted
+    encrypted_data = item.get('encrypted_data', {}).get('S')
+    if encrypted_data:
+        # Decrypt with KMS
+        try:
+            _, decrypt_data, token_context, _ = _get_kms_crypto()
+            decrypted = decrypt_data(encrypted_data, token_context(token_hash))
+            email = decrypted.get('email', '')
+            user_id = decrypted.get('user_id', email)
+            permissions_json = decrypted.get('permissions', '[]')
+        except Exception as e:
+            print(f"[Token] Decryption failed: {e}")
+            return None
+    else:
+        # Legacy unencrypted token
+        email = item.get('email', {}).get('S', '')
+        user_id = item.get('user_id', {}).get('S', email)
+        permissions_json = item.get('permissions', {}).get('S', '[]')
+
     # Parse permissions
-    permissions_json = item.get('permissions', {}).get('S', '[]')
-    permissions_data = json.loads(permissions_json)
+    permissions_data = json.loads(permissions_json) if isinstance(permissions_json, str) else permissions_json
 
     permissions = [
         Permission(
@@ -523,8 +600,8 @@ def validate_token(token: str) -> Optional[AuthContext]:
     ]
 
     return AuthContext(
-        user_id=item.get('user_id', {}).get('S', ''),
-        email=item.get('email', {}).get('S', ''),
+        user_id=user_id,
+        email=email,
         permissions=permissions,
         session_id=f"cli-{token_hash[:8]}",
     )
@@ -533,6 +610,8 @@ def validate_token(token: str) -> Optional[AuthContext]:
 def refresh_access_token(refresh_token: str) -> Optional[AccessToken]:
     """
     Exchange refresh token for new access token.
+
+    Supports both KMS-encrypted and legacy unencrypted refresh tokens.
 
     Args:
         refresh_token: Refresh token from CLI
@@ -563,6 +642,26 @@ def refresh_access_token(refresh_token: str) -> Optional[AccessToken]:
     if time.time() > expires_at:
         return None
 
+    # Check if data is encrypted
+    encrypted_data = item.get('encrypted_data', {}).get('S')
+    if encrypted_data:
+        try:
+            _, decrypt_data, _, refresh_context = _get_kms_crypto()
+            decrypted = decrypt_data(encrypted_data, refresh_context(refresh_hash))
+            email = decrypted.get('email', '')
+            permissions = decrypted.get('permissions', '[]')
+            old_token_hash = decrypted.get('token_hash')
+        except Exception as e:
+            print(f"[Refresh] Decryption failed: {e}")
+            return None
+    else:
+        # Legacy unencrypted
+        email = item.get('email', {}).get('S', '')
+        permissions = item.get('permissions', {}).get('S', '[]')
+        old_token_hash = item.get('token_hash', {}).get('S')
+
+    client_id = item.get('client_id', {}).get('S', 'cli')
+
     # Generate new access token (keep same refresh token)
     new_access_token = generate_access_token()
     new_expires_at = int(time.time()) + ACCESS_TOKEN_TTL
@@ -572,27 +671,29 @@ def refresh_access_token(refresh_token: str) -> Optional[AccessToken]:
         expires_in=ACCESS_TOKEN_TTL,
         expires_at=new_expires_at,
         refresh_token=refresh_token,  # Return same refresh token
-        user_id=item.get('email', {}).get('S', ''),
-        email=item.get('email', {}).get('S', ''),
-        permissions=item.get('permissions', {}).get('S', '[]'),
+        user_id=email,
+        email=email,
+        permissions=permissions,
     )
 
     # Store new token
-    _store_token(token, item.get('client_id', {}).get('S', 'cli'))
+    _store_token(token, client_id)
 
     # Delete old access token
-    old_token_hash = item.get('token_hash', {}).get('S')
     if old_token_hash:
-        try:
-            client.delete_item(
-                TableName=table_name,
-                Key={
-                    'pk': {'S': f"TOKEN#{old_token_hash}"},
-                    'sk': {'S': f"USER#{token.email}"},
-                }
-            )
-        except ClientError:
-            pass  # Ignore if already deleted
+        # Try both possible sk formats (encrypted vs legacy)
+        for sk in ['SESSION', f"USER#{email}"]:
+            try:
+                client.delete_item(
+                    TableName=table_name,
+                    Key={
+                        'pk': {'S': f"TOKEN#{old_token_hash}"},
+                        'sk': {'S': sk},
+                    }
+                )
+                break  # Success, no need to try other sk
+            except ClientError:
+                pass  # Try next sk format
 
     return token
 
@@ -609,17 +710,21 @@ def revoke_token(token: str) -> bool:
 
     token_hash = hash_token(token)
 
-    try:
-        client.delete_item(
-            TableName=table_name,
-            Key={
-                'pk': {'S': f"TOKEN#{token_hash}"},
-                'sk': {'S': f"USER#{auth.email}"},
-            }
-        )
-        return True
-    except ClientError:
-        return False
+    # Try both possible sk formats (encrypted vs legacy)
+    for sk in ['SESSION', f"USER#{auth.email}"]:
+        try:
+            client.delete_item(
+                TableName=table_name,
+                Key={
+                    'pk': {'S': f"TOKEN#{token_hash}"},
+                    'sk': {'S': sk},
+                }
+            )
+            return True
+        except ClientError:
+            pass  # Try next sk format
+
+    return False
 
 
 def _delete_device_code(code: DeviceCode) -> None:

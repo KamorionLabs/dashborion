@@ -8,6 +8,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
+import { fetchWithRetry } from '../utils';
 
 const DeviceAuth = () => {
   const [searchParams] = useSearchParams();
@@ -68,7 +69,7 @@ const DeviceAuth = () => {
     setError(null);
 
     try {
-      const response = await fetch('/api/auth/device/verify', {
+      const response = await fetchWithRetry('/api/auth/device/verify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

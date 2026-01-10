@@ -713,3 +713,574 @@ def roles():
         for action in role_info.get('actions', []):
             click.echo(f"    - {action}")
         click.echo()
+
+
+# =============================================================================
+# Backup/Restore Commands
+# =============================================================================
+
+def _get_dynamodb_client(profile: Optional[str] = None, region: Optional[str] = None):
+    """Get DynamoDB client with optional profile"""
+    import boto3
+    session_args = {}
+    if profile:
+        session_args['profile_name'] = profile
+    if region:
+        session_args['region_name'] = region
+    session = boto3.Session(**session_args)
+    return session.client('dynamodb')
+
+
+def _get_dashborion_tables(dynamodb, prefix: str = 'dashborion') -> list:
+    """List all DynamoDB tables matching the prefix"""
+    tables = []
+    paginator = dynamodb.get_paginator('list_tables')
+    for page in paginator.paginate():
+        for table_name in page.get('TableNames', []):
+            if prefix in table_name.lower():
+                tables.append(table_name)
+    return sorted(tables)
+
+
+def _scan_table(dynamodb, table_name: str) -> list:
+    """Scan all items from a DynamoDB table"""
+    items = []
+    paginator = dynamodb.get_paginator('scan')
+    for page in paginator.paginate(TableName=table_name):
+        items.extend(page.get('Items', []))
+    return items
+
+
+def _deserialize_dynamodb_item(item: dict) -> dict:
+    """Convert DynamoDB item format to regular Python dict"""
+    from boto3.dynamodb.types import TypeDeserializer
+    deserializer = TypeDeserializer()
+    return {k: deserializer.deserialize(v) for k, v in item.items()}
+
+
+def _serialize_dynamodb_item(item: dict) -> dict:
+    """Convert regular Python dict to DynamoDB item format"""
+    from boto3.dynamodb.types import TypeSerializer
+    serializer = TypeSerializer()
+    return {k: serializer.serialize(v) for k, v in item.items()}
+
+
+def _get_kms_client(profile: Optional[str] = None, region: Optional[str] = None):
+    """Get KMS client with optional profile"""
+    import boto3
+    session_args = {}
+    if profile:
+        session_args['profile_name'] = profile
+    if region:
+        session_args['region_name'] = region
+    session = boto3.Session(**session_args)
+    return session.client('kms')
+
+
+def _decrypt_kms_data(kms_client, encrypted_b64: str, context: dict) -> dict:
+    """Decrypt KMS-encrypted data"""
+    import base64
+    ciphertext = base64.b64decode(encrypted_b64)
+    response = kms_client.decrypt(
+        CiphertextBlob=ciphertext,
+        EncryptionContext=context
+    )
+    plaintext = response['Plaintext'].decode('utf-8')
+    return json.loads(plaintext)
+
+
+def _encrypt_kms_data(kms_client, data: dict, key_arn: str, context: dict) -> str:
+    """Encrypt data with KMS"""
+    import base64
+    plaintext = json.dumps(data)
+    response = kms_client.encrypt(
+        KeyId=key_arn,
+        Plaintext=plaintext.encode('utf-8'),
+        EncryptionContext=context
+    )
+    return base64.b64encode(response['CiphertextBlob']).decode('utf-8')
+
+
+def _get_encryption_context(item: dict) -> Optional[dict]:
+    """
+    Determine encryption context based on item type.
+
+    Returns context dict or None if item doesn't have encrypted data.
+    """
+    pk = item.get('pk', '')
+
+    # Token encryption context
+    if pk.startswith('TOKEN#'):
+        token_hash = pk.replace('TOKEN#', '')
+        return {
+            'service': 'dashborion',
+            'purpose': 'access_token',
+            'token_hash': token_hash[:16],
+        }
+
+    # Refresh token context
+    if pk.startswith('REFRESH#'):
+        refresh_hash = pk.replace('REFRESH#', '')
+        return {
+            'service': 'dashborion',
+            'purpose': 'refresh_token',
+            'token_hash': refresh_hash[:16],
+        }
+
+    # Session (SAML cookie) context
+    if pk.startswith('SESSION#'):
+        session_hash = pk.replace('SESSION#', '')
+        return {
+            'service': 'dashborion',
+            'purpose': 'web_session',
+            'session_hash': session_hash[:16],
+        }
+
+    return None
+
+
+def _decrypt_item_if_needed(item: dict, kms_client) -> tuple[dict, bool]:
+    """
+    Decrypt encrypted_data field in item if present.
+
+    Returns (modified_item, was_decrypted)
+    """
+    if 'encrypted_data' not in item:
+        return item, False
+
+    context = _get_encryption_context(item)
+    if not context:
+        return item, False
+
+    try:
+        decrypted = _decrypt_kms_data(kms_client, item['encrypted_data'], context)
+
+        # Merge decrypted data into item and remove encrypted_data
+        new_item = {k: v for k, v in item.items() if k != 'encrypted_data'}
+        new_item['_decrypted'] = True  # Mark as decrypted for restore
+        new_item.update(decrypted)
+
+        return new_item, True
+    except Exception as e:
+        # If decryption fails, keep original item
+        click.echo(f"\n    Warning: Could not decrypt item {item.get('pk', '?')}: {e}", err=True)
+        return item, False
+
+
+def _encrypt_item_if_needed(item: dict, kms_client, key_arn: str) -> dict:
+    """
+    Re-encrypt item if it was previously decrypted.
+
+    Returns modified item with encrypted_data field.
+    """
+    if not item.get('_decrypted'):
+        return item
+
+    context = _get_encryption_context(item)
+    if not context:
+        return item
+
+    # Fields to encrypt based on item type
+    pk = item.get('pk', '')
+
+    if pk.startswith('TOKEN#'):
+        sensitive_fields = ['email', 'user_id', 'permissions', 'scope']
+    elif pk.startswith('REFRESH#'):
+        sensitive_fields = ['email', 'permissions', 'token_hash']
+    elif pk.startswith('SESSION#'):
+        sensitive_fields = ['userId', 'email', 'displayName', 'groups', 'mfaVerified', 'sessionId', 'issuedAt']
+    else:
+        return item
+
+    # Extract sensitive data
+    sensitive_data = {k: item[k] for k in sensitive_fields if k in item}
+
+    if not sensitive_data:
+        return item
+
+    try:
+        encrypted = _encrypt_kms_data(kms_client, sensitive_data, key_arn, context)
+
+        # Build new item without sensitive fields
+        new_item = {k: v for k, v in item.items()
+                    if k not in sensitive_fields and k != '_decrypted'}
+        new_item['encrypted_data'] = encrypted
+
+        # Update sk for encrypted format
+        if pk.startswith('TOKEN#') or pk.startswith('REFRESH#') or pk.startswith('SESSION#'):
+            new_item['sk'] = 'SESSION'  # Don't leak info in sk
+
+        return new_item
+    except Exception as e:
+        click.echo(f"\n    Warning: Could not encrypt item {item.get('pk', '?')}: {e}", err=True)
+        return item
+
+
+@admin.command('tables')
+@click.option('--profile', '-p', help='AWS profile to use')
+@click.option('--region', '-r', help='AWS region')
+@click.option('--prefix', default='dashborion', help='Table name prefix filter')
+def tables(profile: Optional[str], region: Optional[str], prefix: str):
+    """List DynamoDB tables for Dashborion"""
+    try:
+        dynamodb = _get_dynamodb_client(profile, region)
+        table_list = _get_dashborion_tables(dynamodb, prefix)
+
+        if not table_list:
+            click.echo(f"No tables found matching prefix '{prefix}'")
+            return
+
+        click.echo()
+        click.echo(f"{'TABLE NAME':<60} {'ITEMS':<10} {'STATUS'}")
+        click.echo(f"{'-'*60} {'-'*10} {'-'*10}")
+
+        for table_name in table_list:
+            try:
+                desc = dynamodb.describe_table(TableName=table_name)
+                item_count = desc['Table'].get('ItemCount', 0)
+                status = desc['Table'].get('TableStatus', 'UNKNOWN')
+                click.echo(f"{table_name:<60} {item_count:<10} {status}")
+            except Exception as e:
+                click.echo(f"{table_name:<60} {'ERROR':<10} {str(e)[:20]}")
+
+        click.echo()
+        click.echo(f"Total: {len(table_list)} tables")
+
+    except Exception as e:
+        raise click.ClickException(f"Failed to list tables: {e}")
+
+
+@admin.command('backup')
+@click.option('--profile', '-p', help='AWS profile to use')
+@click.option('--region', '-r', help='AWS region')
+@click.option('--prefix', default='dashborion', help='Table name prefix filter')
+@click.option('--output', '-o', default='.', help='Output directory for backup files')
+@click.option('--tables', '-t', multiple=True, help='Specific table names (default: all matching prefix)')
+@click.option('--decrypt', is_flag=True, help='Decrypt KMS-encrypted fields (for migration)')
+def backup(profile: Optional[str], region: Optional[str], prefix: str, output: str,
+           tables: tuple, decrypt: bool):
+    """
+    Backup DynamoDB tables to JSON files
+
+    Creates one JSON file per table in the output directory.
+
+    Use --decrypt to export data in plaintext (for migration to another
+    environment with a different KMS key).
+
+    Examples:
+        dashborion admin backup --profile my-profile --region eu-west-3
+
+        dashborion admin backup -o ./backups
+
+        dashborion admin backup -t dashborion-homebox-UsersTable-xxx
+
+        dashborion admin backup --decrypt -o ./migration-backup
+    """
+    import os
+    from datetime import datetime as dt
+
+    try:
+        dynamodb = _get_dynamodb_client(profile, region)
+        kms_client = _get_kms_client(profile, region) if decrypt else None
+
+        # Get tables to backup
+        if tables:
+            table_list = list(tables)
+        else:
+            table_list = _get_dashborion_tables(dynamodb, prefix)
+
+        if not table_list:
+            click.echo(f"No tables found matching prefix '{prefix}'")
+            return
+
+        # Create output directory with timestamp
+        timestamp = dt.now().strftime('%Y%m%d_%H%M%S')
+        suffix = "-decrypted" if decrypt else ""
+        backup_dir = os.path.join(output, f"dashborion-backup-{timestamp}{suffix}")
+        os.makedirs(backup_dir, exist_ok=True)
+
+        mode_str = click.style(" (DECRYPTED)", fg='yellow') if decrypt else ""
+        click.echo(f"Backing up {len(table_list)} tables to {backup_dir}/{mode_str}")
+        click.echo()
+
+        total_items = 0
+        decrypted_count = 0
+        backup_manifest = {
+            'timestamp': timestamp,
+            'profile': profile,
+            'region': region,
+            'decrypted': decrypt,
+            'tables': []
+        }
+
+        for table_name in table_list:
+            click.echo(f"  {table_name}...", nl=False)
+            try:
+                items = _scan_table(dynamodb, table_name)
+                item_count = len(items)
+                total_items += item_count
+
+                # Deserialize items for readable JSON
+                deserialized_items = [_deserialize_dynamodb_item(item) for item in items]
+
+                # Decrypt if requested
+                table_decrypted = 0
+                if decrypt and kms_client:
+                    processed_items = []
+                    for item in deserialized_items:
+                        decrypted_item, was_decrypted = _decrypt_item_if_needed(item, kms_client)
+                        processed_items.append(decrypted_item)
+                        if was_decrypted:
+                            table_decrypted += 1
+                    deserialized_items = processed_items
+                    decrypted_count += table_decrypted
+
+                # Save to file
+                backup_file = os.path.join(backup_dir, f"{table_name}.json")
+                with open(backup_file, 'w') as f:
+                    json.dump({
+                        'table_name': table_name,
+                        'item_count': item_count,
+                        'decrypted_count': table_decrypted if decrypt else 0,
+                        'items': deserialized_items
+                    }, f, indent=2, default=str)
+
+                backup_manifest['tables'].append({
+                    'name': table_name,
+                    'items': item_count,
+                    'decrypted': table_decrypted if decrypt else 0,
+                    'file': f"{table_name}.json"
+                })
+
+                if decrypt and table_decrypted > 0:
+                    click.echo(f" {click.style(str(item_count), fg='green')} items ({table_decrypted} decrypted)")
+                else:
+                    click.echo(f" {click.style(str(item_count), fg='green')} items")
+
+            except Exception as e:
+                click.echo(f" {click.style('ERROR', fg='red')}: {e}")
+
+        # Save manifest
+        manifest_file = os.path.join(backup_dir, "manifest.json")
+        with open(manifest_file, 'w') as f:
+            json.dump(backup_manifest, f, indent=2)
+
+        click.echo()
+        click.echo(click.style(f"Backup complete!", fg='green', bold=True))
+        click.echo(f"  Directory: {backup_dir}")
+        click.echo(f"  Tables: {len(table_list)}")
+        click.echo(f"  Total items: {total_items}")
+        if decrypt:
+            click.echo(f"  Decrypted: {decrypted_count} items")
+
+    except Exception as e:
+        raise click.ClickException(f"Backup failed: {e}")
+
+
+@admin.command('restore')
+@click.option('--profile', '-p', help='AWS profile to use')
+@click.option('--region', '-r', help='AWS region')
+@click.option('--input', '-i', 'input_dir', required=True, help='Backup directory to restore from')
+@click.option('--tables', '-t', multiple=True, help='Specific table files to restore (default: all)')
+@click.option('--dry-run', is_flag=True, help='Show what would be restored without making changes')
+@click.option('--force', '-f', is_flag=True, help='Skip confirmation')
+@click.option('--encrypt', is_flag=True, help='Re-encrypt decrypted items with KMS (requires --kms-key)')
+@click.option('--kms-key', 'kms_key_arn', help='KMS key ARN for encryption (required with --encrypt)')
+def restore(profile: Optional[str], region: Optional[str], input_dir: str,
+            tables: tuple, dry_run: bool, force: bool, encrypt: bool, kms_key_arn: Optional[str]):
+    """
+    Restore DynamoDB tables from JSON backup files
+
+    For decrypted backups (created with --decrypt), use --encrypt --kms-key
+    to re-encrypt sensitive data with a new KMS key.
+
+    Examples:
+        dashborion admin restore -i ./dashborion-backup-20240110_120000
+
+        dashborion admin restore -i ./backup --dry-run
+
+        dashborion admin restore -i ./backup -t dashborion-homebox-UsersTable.json
+
+        dashborion admin restore -i ./decrypted-backup --encrypt \\
+            --kms-key arn:aws:kms:eu-west-3:123456789012:key/xxx
+    """
+    import os
+
+    try:
+        # Validate options
+        if encrypt and not kms_key_arn:
+            raise click.ClickException("--encrypt requires --kms-key to specify the target KMS key ARN")
+
+        # Check input directory
+        if not os.path.isdir(input_dir):
+            raise click.ClickException(f"Directory not found: {input_dir}")
+
+        # Read manifest if exists
+        manifest_file = os.path.join(input_dir, "manifest.json")
+        manifest = {}
+        backup_was_decrypted = False
+        if os.path.exists(manifest_file):
+            with open(manifest_file, 'r') as f:
+                manifest = json.load(f)
+            click.echo(f"Backup from: {manifest.get('timestamp', 'unknown')}")
+            click.echo(f"Original profile: {manifest.get('profile', 'unknown')}")
+            click.echo(f"Original region: {manifest.get('region', 'unknown')}")
+            backup_was_decrypted = manifest.get('decrypted', False)
+            if backup_was_decrypted:
+                click.echo(click.style("  This is a DECRYPTED backup", fg='yellow'))
+            click.echo()
+
+        # Warn if decrypted backup and not re-encrypting
+        if backup_was_decrypted and not encrypt:
+            click.echo(click.style("WARNING:", fg='yellow', bold=True) +
+                       " This backup was decrypted. Items with _decrypted=true will be")
+            click.echo("         restored in plaintext (not recommended for auth tables).")
+            click.echo("         Use --encrypt --kms-key <arn> to re-encrypt.")
+            click.echo()
+
+        # Get backup files
+        if tables:
+            backup_files = [os.path.join(input_dir, t) for t in tables]
+        else:
+            backup_files = [
+                os.path.join(input_dir, f)
+                for f in os.listdir(input_dir)
+                if f.endswith('.json') and f != 'manifest.json'
+            ]
+
+        if not backup_files:
+            click.echo("No backup files found.")
+            return
+
+        # Preview restore
+        mode_str = click.style(" (with encryption)", fg='cyan') if encrypt else ""
+        click.echo(f"Tables to restore ({len(backup_files)}):{mode_str}")
+        total_items = 0
+        decrypted_items = 0
+        restore_plan = []
+
+        for backup_file in backup_files:
+            if not os.path.exists(backup_file):
+                click.echo(f"  {click.style('MISSING', fg='red')}: {backup_file}")
+                continue
+
+            with open(backup_file, 'r') as f:
+                data = json.load(f)
+
+            table_name = data.get('table_name', os.path.basename(backup_file).replace('.json', ''))
+            item_count = data.get('item_count', len(data.get('items', [])))
+            file_decrypted = data.get('decrypted_count', 0)
+            total_items += item_count
+            decrypted_items += file_decrypted
+
+            if file_decrypted > 0:
+                click.echo(f"  {table_name}: {item_count} items ({file_decrypted} decrypted)")
+            else:
+                click.echo(f"  {table_name}: {item_count} items")
+            restore_plan.append({
+                'file': backup_file,
+                'table_name': table_name,
+                'items': data.get('items', [])
+            })
+
+        click.echo()
+        click.echo(f"Total items to restore: {total_items}")
+        if decrypted_items > 0:
+            if encrypt:
+                click.echo(f"Items to encrypt: {decrypted_items}")
+            else:
+                click.echo(click.style(f"Decrypted items (will be plaintext): {decrypted_items}", fg='yellow'))
+
+        if dry_run:
+            click.echo()
+            click.echo(click.style("DRY RUN - no changes made", fg='yellow'))
+            return
+
+        # Confirm
+        if not force:
+            click.echo()
+            click.echo(click.style("WARNING:", fg='yellow', bold=True) +
+                       " This will overwrite existing items with the same keys!")
+            if not click.confirm("Proceed with restore?"):
+                click.echo("Cancelled.")
+                return
+
+        # Perform restore
+        dynamodb = _get_dynamodb_client(profile, region)
+        kms_client = _get_kms_client(profile, region) if encrypt else None
+        click.echo()
+        click.echo("Restoring...")
+
+        restored_count = 0
+        encrypted_count = 0
+        error_count = 0
+
+        for plan in restore_plan:
+            table_name = plan['table_name']
+            items = plan['items']
+
+            click.echo(f"  {table_name}...", nl=False)
+
+            try:
+                # Check if table exists
+                dynamodb.describe_table(TableName=table_name)
+            except dynamodb.exceptions.ResourceNotFoundException:
+                click.echo(f" {click.style('TABLE NOT FOUND', fg='red')}")
+                error_count += len(items)
+                continue
+            except Exception as e:
+                click.echo(f" {click.style('ERROR', fg='red')}: {e}")
+                error_count += len(items)
+                continue
+
+            # Restore items
+            success = 0
+            table_encrypted = 0
+            errors = 0
+
+            for item in items:
+                try:
+                    # Re-encrypt if needed
+                    if encrypt and kms_client and kms_key_arn and item.get('_decrypted'):
+                        item = _encrypt_item_if_needed(item, kms_client, kms_key_arn)
+                        table_encrypted += 1
+
+                    # Remove internal marker before saving
+                    if '_decrypted' in item:
+                        item = {k: v for k, v in item.items() if k != '_decrypted'}
+
+                    # Serialize back to DynamoDB format
+                    dynamo_item = _serialize_dynamodb_item(item)
+                    dynamodb.put_item(TableName=table_name, Item=dynamo_item)
+                    success += 1
+                except Exception as e:
+                    errors += 1
+                    if errors == 1:
+                        click.echo(f" Error on item: {e}", err=True)
+
+            restored_count += success
+            encrypted_count += table_encrypted
+            error_count += errors
+
+            if errors:
+                click.echo(f" {click.style(str(success), fg='green')}/{len(items)} ({click.style(str(errors) + ' errors', fg='red')})")
+            elif table_encrypted > 0:
+                click.echo(f" {click.style(str(success), fg='green')} items ({table_encrypted} encrypted)")
+            else:
+                click.echo(f" {click.style(str(success), fg='green')} items")
+
+        click.echo()
+        if error_count:
+            click.echo(click.style(f"Restore completed with errors", fg='yellow', bold=True))
+            click.echo(f"  Restored: {restored_count}")
+            if encrypted_count > 0:
+                click.echo(f"  Encrypted: {encrypted_count}")
+            click.echo(f"  Errors: {error_count}")
+        else:
+            click.echo(click.style(f"Restore complete!", fg='green', bold=True))
+            click.echo(f"  Restored: {restored_count} items")
+            if encrypted_count > 0:
+                click.echo(f"  Encrypted: {encrypted_count} items")
+
+    except Exception as e:
+        raise click.ClickException(f"Restore failed: {e}")
