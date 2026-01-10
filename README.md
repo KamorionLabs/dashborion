@@ -94,6 +94,10 @@ dashborion infra show --env staging --output json
 # Diagrams
 dashborion diagram generate --env staging --output architecture.png
 dashborion diagram publish --confluence-page 12345
+
+# Admin - Backup/Restore (with KMS encryption support)
+dashborion admin backup -o ./backup --decrypt  # Decrypt for migration
+dashborion admin restore -i ./backup --encrypt --kms-key arn:aws:kms:...
 ```
 
 ### Supported Platforms
@@ -230,6 +234,7 @@ SSO users automatically exchange their session for a Bearer token on first load,
   "auth": {
     "enabled": true,
     "provider": "saml",
+    "kmsKeyArn": "arn:aws:kms:region:account:key/key-id",
     "saml": {
       "entityId": "dashborion-{stage}-sso",
       "idpMetadataFile": "idp-metadata/dashboard.xml",
@@ -242,6 +247,24 @@ SSO users automatically exchange their session for a Bearer token on first load,
   }
 }
 ```
+
+### KMS Encryption
+
+In **managed** or **semi-managed** mode, a KMS key is **required** for encrypting authentication data:
+- Session tokens and refresh tokens
+- User session data in DynamoDB
+
+Create the KMS key with Terraform (see `terraform/kms.tf`) and reference it in `infra.config.json`:
+
+```json
+{
+  "auth": {
+    "kmsKeyArn": "arn:aws:kms:eu-west-3:123456789012:key/abcd1234-..."
+  }
+}
+```
+
+In **standalone** mode, SST can create the KMS key automatically if `kmsKeyArn` is not provided.
 
 ---
 
