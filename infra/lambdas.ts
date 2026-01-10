@@ -392,7 +392,43 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
-      // Note: In managed mode, CodePipeline/ECR permissions are in the external role
+      // CodePipeline/ECR permissions (only when SST creates the role)
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "codepipeline:GetPipeline",
+          "codepipeline:GetPipelineState",
+          "codepipeline:GetPipelineExecution",
+          "codepipeline:ListPipelineExecutions",
+          "codepipeline:ListPipelines",
+          "codepipeline:StartPipelineExecution",
+        ],
+        resources: ["*"],
+      }]),
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "ecr:DescribeRepositories",
+          "ecr:DescribeImages",
+          "ecr:ListImages",
+        ],
+        resources: ["*"],
+      }]),
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "codebuild:BatchGetBuilds",
+          "codebuild:ListBuildsForProject",
+        ],
+        resources: ["*"],
+      }]),
+      // CloudWatch Logs for build logs
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents",
+          "logs:DescribeLogStreams",
+          "logs:DescribeLogGroups",
+        ],
+        resources: ["*"],
+      }]),
     ],
     transform: {
       function: {
@@ -415,6 +451,29 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
+      // CloudTrail for enriching events
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "cloudtrail:LookupEvents",
+        ],
+        resources: ["*"],
+      }]),
+      // CodePipeline/ECR for pipeline events
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "codepipeline:GetPipeline",
+          "codepipeline:GetPipelineState",
+          "codepipeline:ListPipelineExecutions",
+        ],
+        resources: ["*"],
+      }]),
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "ecr:DescribeRepositories",
+          "ecr:DescribeImages",
+        ],
+        resources: ["*"],
+      }]),
     ],
     transform: {
       function: {
