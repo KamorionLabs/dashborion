@@ -124,15 +124,22 @@ dashborion --help
 
 ## Authentication
 
-### Web Dashboard (SSO via Lambda@Edge)
+### Web Dashboard (SAML SSO via API Gateway)
 
-Native SAML SSO using Lambda@Edge functions deployed by SST:
+SAML SSO authentication is handled at the API Gateway level (not Lambda@Edge).
 
-| Lambda@Edge | Region | Purpose |
-|-------------|--------|---------|
-| `dashborion-{stage}-sso-protect` | us-east-1 | Validates session cookie, redirects to IdP |
-| `dashborion-{stage}-sso-acs` | us-east-1 | Processes SAML assertion, sets cookie |
-| `dashborion-{stage}-sso-metadata` | us-east-1 | Serves SP metadata XML |
+**Architecture**:
+- CloudFront serves static frontend from S3 (no Lambda@Edge)
+- API Gateway handles SAML authentication endpoints
+- Frontend calls API directly using `VITE_API_URL`
+
+**SAML Endpoints** (on API Gateway):
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/auth/saml/login` | GET | Initiates SAML flow, redirects to IdP |
+| `/api/auth/saml/acs` | POST | Assertion Consumer Service, validates SAML response |
+| `/api/auth/saml/metadata` | GET | SP metadata XML for IdP configuration |
 
 **Configuration** (`infra.config.json`):
 ```json
@@ -141,14 +148,21 @@ Native SAML SSO using Lambda@Edge functions deployed by SST:
     "enabled": true,
     "provider": "saml",
     "saml": {
-      "entityId": "dashborion-{stage}-sso",
+      "entityId": "dashborion-{stage}",
       "idpMetadataFile": "idp-metadata/dashboard.xml"
     },
-    "cookieDomain": ".example.com",
     "sessionTtlSeconds": 3600
   }
 }
 ```
+
+**IdP Configuration** (AWS Identity Center, Entra ID, Okta, etc.):
+
+| Parameter | Value |
+|-----------|-------|
+| ACS URL | `https://{api-domain}/api/auth/saml/acs` |
+| SP Entity ID | `dashborion-{stage}` |
+| SP Metadata URL | `https://{api-domain}/api/auth/saml/metadata` |
 
 **AWS Identity Center attribute mappings** (critical for RBAC):
 - `Subject` -> `${user:email}` (emailAddress format)
@@ -156,18 +170,33 @@ Native SAML SSO using Lambda@Edge functions deployed by SST:
 - `displayName` -> `${user:name}`
 - `memberOf` -> `${user:groups}` (required for RBAC)
 
-**Lambda@Edge logs**: Located in edge region (e.g., `eu-west-2` for European users), not us-east-1:
-```bash
-aws logs tail /aws/lambda/us-east-1.dashborion-{stage}-sso-protect \
-  --since 15m --region eu-west-2
-```
-
 ### CLI
 
-- **Device Flow**: `dashborion auth login` opens browser for SSO
-- **SSO Reuse**: `dashborion auth login --use-sso` reuses AWS SSO session
-- **Profile support**: `--profile <profile>` flag
-- Uses `~/.aws/credentials` or environment variables
+Three authentication methods:
+
+| Method | Command | Token Storage |
+|--------|---------|---------------|
+| Device Flow | `dashborion auth login` | Yes (`~/.dashborion/`) |
+| SSO Exchange | `dashborion auth login --use-sso` | Yes |
+| SigV4 (per-request) | `dashborion --sigv4 <cmd>` | No |
+
+**Device Flow**: Opens browser for SSO authentication, stores token locally.
+
+**SSO Exchange**: Exchanges AWS SSO session for Dashborion token.
+
+**SigV4 (Vault-style STS Identity Proof)**: Signs each request with AWS credentials.
+- Uses HashiCorp Vault's IAM auth technique
+- Client signs GetCallerIdentity request, server forwards to STS
+- Email extracted from Identity Center session name
+- Works with HTTP API v2 + REQUEST authorizer
+
+```bash
+# Examples
+dashborion auth login                    # Device flow
+dashborion auth login --use-sso          # SSO exchange
+dashborion --sigv4 auth whoami           # SigV4 per-request
+AWS_PROFILE=my-profile dashborion --sigv4 services list
+```
 
 ---
 

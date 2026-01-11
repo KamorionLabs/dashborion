@@ -82,6 +82,7 @@ Route tables, NAT gateways, VPC endpoints, and subnet associations.
 # Authentication
 dashborion auth login              # Device flow (opens browser)
 dashborion auth login --use-sso    # Reuse AWS SSO session
+dashborion --sigv4 auth whoami     # Use AWS SigV4 (no stored token)
 dashborion auth whoami             # Show current user
 
 # Services

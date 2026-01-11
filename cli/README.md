@@ -259,7 +259,7 @@ Authenticate with the Dashborion backend for full feature access:
 # Device Flow - Opens browser for SSO authentication
 dashborion auth login
 
-# AWS SSO - Reuse existing AWS SSO session
+# AWS SSO - Reuse existing AWS SSO session (exchanges for Dashborion token)
 dashborion auth login --use-sso
 
 # Check authentication status
@@ -271,6 +271,30 @@ dashborion auth logout
 ```
 
 Credentials are stored in `~/.dashborion/credentials.json`.
+
+### SigV4 Authentication (AWS Identity)
+
+Use AWS credentials directly without storing tokens. Uses Vault-style STS identity proof:
+
+```bash
+# Use --sigv4 flag with any command
+dashborion --sigv4 auth whoami
+dashborion --sigv4 services list --env staging
+
+# With specific AWS profile
+AWS_PROFILE=my-sso-profile dashborion --sigv4 services list
+```
+
+**How it works:**
+1. CLI signs a GetCallerIdentity request with your AWS credentials
+2. Signed request is sent to the server in HTTP headers
+3. Server forwards to AWS STS for identity verification
+4. Email is extracted from Identity Center session name (e.g., `AWSReservedSSO_.../user@example.com`)
+
+**Requirements:**
+- AWS credentials (via `aws sso login`, IAM user, or assumed role)
+- User must exist in Dashborion with matching email
+- Works with HTTP API v2 (no AWS_IAM auth type required)
 
 ### AWS Profile Authentication (Legacy)
 
