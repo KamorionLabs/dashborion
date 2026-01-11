@@ -2,9 +2,18 @@
 
 ## Overview
 
-Architecture d'authentification multi-méthodes sécurisée avec chiffrement KMS.
+Secure multi-method authentication architecture with KMS encryption.
 
 ## Authentication Methods
+
+Dashborion supports 4 authentication methods:
+
+| Method | Use Case | Credentials Storage |
+|--------|----------|---------------------|
+| **Cookie SAML SSO** | Web frontend via IdP | HttpOnly Cookie |
+| **Bearer Token (Device Flow)** | CLI after browser auth | `~/.dashborion/` |
+| **Bearer Token (Local)** | CLI/API with email/password | `~/.dashborion/` |
+| **SigV4 IAM** | CLI with AWS session | AWS credentials |
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -12,10 +21,10 @@ Architecture d'authentification multi-méthodes sécurisée avec chiffrement KMS
 │                                                                          │
 │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐             │
 │  │   Cookie       │  │    Bearer      │  │    SigV4       │             │
-│  │  (SAML SSO)    │  │ (Device Flow)  │  │   (IAM)        │             │
+│  │  (SAML SSO)    │  │   (Token)      │  │   (IAM)        │             │
 │  │                │  │                │  │                │             │
-│  │  HttpOnly      │  │  CLI tokens    │  │  AWS creds     │             │
-│  │  Secure        │  │  stored in     │  │  signed        │             │
+│  │  HttpOnly      │  │  Device Flow   │  │  AWS creds     │             │
+│  │  Secure        │  │  or Login      │  │  signed        │             │
 │  │  SameSite=Lax  │  │  ~/.dashborion │  │  requests      │             │
 │  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘             │
 │          │                   │                   │                       │
@@ -35,6 +44,101 @@ Architecture d'authentification multi-méthodes sécurisée avec chiffrement KMS
     │ (tokens)│◄────────►│ (encrypt) │         │ (SigV4) │
     └─────────┘          └───────────┘         └─────────┘
 ```
+
+## Key Concepts: Device Flow vs SSO vs Local
+
+### Device Flow (RFC 8628)
+
+The Device Flow is a **transport mechanism** to obtain a CLI token, not an authentication method per se. It allows the CLI to obtain a token without ever exposing credentials.
+
+```
+CLI                          Browser                      API
+ │                              │                          │
+ ├──POST /device/code──────────────────────────────────────►│
+ │◄─────────────────────────────── device_code + user_code──┤
+ │                              │                          │
+ │  "Go to URL, enter code: XXXX"                          │
+ │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─►│                          │
+ │                              ├──Auth (SSO or local)─────►│
+ │                              │◄─────────────────session──┤
+ │                              ├──POST /device/verify─────►│
+ │                              │◄───────────────success────┤
+ │                              │                          │
+ ├──POST /device/token (poll)──────────────────────────────►│
+ │◄───────────────────────────────────────access_token──────┤
+```
+
+**Browser authentication** can be:
+- **SSO SAML**: Via IdP (Azure AD, Okta, etc.)
+- **Local**: Email/password on `/auth/device`
+
+### SSO SAML (web frontend)
+
+```
+Browser                     Dashboard                    IdP (Azure AD)
+ │                              │                              │
+ ├──GET /dashboard─────────────►│                              │
+ │◄─────────redirect to IdP─────┤                              │
+ ├──────────────────────────────────────────────login──────────►│
+ │◄──────────────────────────────────────SAML assertion─────────┤
+ ├──POST /saml/acs─────────────►│                              │
+ │◄─────────cookie session──────┤                              │
+```
+
+### Local Auth (email/password)
+
+```
+Client                                                    API
+ │                                                         │
+ ├──POST /api/auth/login {email, password}─────────────────►│
+ │◄─────────────────────────────────── access_token ────────┤
+```
+
+### SigV4 IAM Auth
+
+Uses AWS credentials for authentication. Two modes:
+- **--use-sso**: Exchange AWS session for Dashborion token (stored)
+- **--sigv4**: Identity proof per request via STS (no stored token)
+
+```
+CLI (--use-sso)                                           API
+ │                                                         │
+ ├──POST /api/auth/sso/exchange {aws_credentials}──────────►│
+ │◄─────────────────────────────────── access_token ────────┤
+ │  (token stored, used as Bearer)                         │
+
+CLI (--sigv4) - Vault-style STS Identity Proof            API                    STS
+ │                                                         │                      │
+ │  1. Sign GetCallerIdentity request locally              │                      │
+ ├──GET /api/... + X-Amz-Iam-Request-* headers────────────►│                      │
+ │                                                         ├──Forward to STS──────►│
+ │                                                         │◄──Caller identity────┤
+ │◄────────────────────────────────────────── data ────────┤                      │
+ │  (no token, identity proof per request)                 │                      │
+```
+
+#### Vault-style STS Identity Proof (--sigv4)
+
+Uses the same technique as HashiCorp Vault IAM auth:
+1. **Client**: Signs a GetCallerIdentity request with AWS credentials
+2. **Client**: Sends signed components in HTTP headers:
+   - `X-Amz-Iam-Request-Method: POST`
+   - `X-Amz-Iam-Request-Url: <base64 encoded STS URL>`
+   - `X-Amz-Iam-Request-Body: <base64 encoded request body>`
+   - `X-Amz-Iam-Request-Headers: <base64 encoded signed headers>`
+3. **Server**: Forwards signed request to AWS STS
+4. **STS**: Validates signature and returns caller identity
+5. **Server**: Extracts email from Identity Center ARN (session name)
+
+This method works with **HTTP API v2 + REQUEST authorizer** unlike native AWS_IAM which requires REST API v1.
+
+### CLI Options Summary
+
+| Command | Auth | Token Stored |
+|---------|------|--------------|
+| `dashborion auth login` | Device Flow (SSO/local) | Yes |
+| `dashborion auth login --use-sso` | AWS creds exchange | Yes |
+| `dashborion --sigv4 <cmd>` | SigV4 per request | No |
 
 ## 1. Cookie Authentication (SAML SSO)
 
@@ -71,11 +175,11 @@ Set-Cookie: __dashborion_session=<session_id>;
 
 | Aspect | Query String | Cookie HttpOnly |
 |--------|--------------|-----------------|
-| Logs serveur | Token visible | Session ID only |
-| Historique browser | Token visible | Non visible |
-| Header Referer | Peut fuiter | Non inclus |
-| XSS attack | Token volable via JS | Inaccessible à JS |
-| CSRF | N/A | Protégé par SameSite |
+| Server logs | Token visible | Session ID only |
+| Browser history | Token visible | Not visible |
+| Referer header | Can leak | Not included |
+| XSS attack | Token stealable via JS | Inaccessible to JS |
+| CSRF | N/A | Protected by SameSite |
 
 ## 2. Bearer Token Authentication (Device Flow)
 
@@ -96,18 +200,18 @@ Set-Cookie: __dashborion_session=<session_id>;
 
 **Current (insecure):**
 ```json
-// DynamoDB - données en clair
+// DynamoDB - plaintext data
 {
   "pk": "TOKEN#abc123hash",
   "sk": "USER#john@example.com",
-  "email": "john@example.com",          // PII en clair!
-  "permissions": "[{...}]"              // Permissions en clair!
+  "email": "john@example.com",          // PII in plaintext!
+  "permissions": "[{...}]"              // Permissions in plaintext!
 }
 ```
 
 **Proposed (secure):**
 ```json
-// DynamoDB - données chiffrées
+// DynamoDB - encrypted data
 {
   "pk": "TOKEN#abc123hash",
   "sk": "SESSION",
@@ -131,30 +235,50 @@ Set-Cookie: __dashborion_session=<session_id>;
 }
 ```
 
-## 3. SigV4 IAM Authentication
+## 3. SigV4 IAM Authentication (Vault-style STS Identity Proof)
 
 ### Flow
 
 ```
-1. User has AWS credentials (IAM user, role, SSO)
-2. Request signed with AWS SigV4:
-   Authorization: AWS4-HMAC-SHA256
-   Credential=AKID.../20240101/eu-west-3/execute-api/aws4_request,
-   SignedHeaders=...,
-   Signature=...
-3. API Gateway validates signature with IAM
-4. Authorizer receives IAM identity:
-   - event.requestContext.identity.userArn
-   - event.requestContext.identity.accountId
-5. Authorizer maps IAM identity to Dashborion permissions
+1. User has AWS credentials (IAM user, role, Identity Center SSO)
+2. CLI signs a GetCallerIdentity request locally with AWS SigV4:
+   - Uses botocore.auth.SigV4Auth
+   - Signs for service 'sts', region 'us-east-1'
+   - Includes optional X-Dashborion-Server-ID header for replay protection
+3. CLI sends signed request components in HTTP headers:
+   - X-Amz-Iam-Request-Method: POST
+   - X-Amz-Iam-Request-Url: base64(https://sts.amazonaws.com/)
+   - X-Amz-Iam-Request-Body: base64(Action=GetCallerIdentity&Version=2011-06-15)
+   - X-Amz-Iam-Request-Headers: base64(JSON signed headers)
+4. Lambda Authorizer forwards signed request to AWS STS
+5. STS validates signature and returns:
+   - Arn: arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_.../john@example.com
+   - Account: 123456789012
+   - UserId: AROA...:john@example.com
+6. Authorizer extracts email from Identity Center session name
+7. Authorizer looks up user in DynamoDB and returns permissions
 ```
 
-### IAM Identity Mapping
+### Why Vault-style vs AWS_IAM
+
+| Aspect | AWS_IAM (REST API v1) | Vault-style STS (HTTP API v2) |
+|--------|----------------------|------------------------------|
+| API Type | REST API v1 only | HTTP API v2 compatible |
+| Authorizer | IAM auth type on route | REQUEST authorizer |
+| Identity | `requestContext.identity.userArn` | Extracted from STS response |
+| Validation | API Gateway validates | Server forwards to STS |
+| Flexibility | Limited to API Gateway | Works anywhere |
+
+### IAM Identity Extraction
 
 ```python
-# Map IAM ARN to Dashborion user
-# arn:aws:iam::123456789012:user/john -> john@company.com (via DynamoDB mapping)
-# arn:aws:sts::123456789012:assumed-role/DeveloperRole/john -> john@company.com
+# Pattern for Identity Center roles
+# arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdministratorAccess_abc123/john@example.com
+#                                        ^^^^^^^^^^^^^^^^^^ role name        ^^^^^^^^^^^^^^^^^ email (session name)
+
+# Email extracted from session name if:
+# 1. Role name starts with "AWSReservedSSO_"
+# 2. Session name matches email pattern ([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})
 ```
 
 ### Configuration in DynamoDB
@@ -281,12 +405,13 @@ def handler(event, context):
         if token_data:
             return authorize(token_data)
 
-    # 3. Try SigV4 (IAM)
-    iam_arn = event.get('requestContext', {}).get('identity', {}).get('userArn')
-    if iam_arn:
-        mapping = get_iam_mapping(iam_arn)  # DynamoDB lookup
-        if mapping:
-            return authorize(mapping)
+    # 3. Try SigV4 STS Identity Proof (Vault-style)
+    if has_identity_proof_headers(event):
+        identity = validate_sigv4_sts_auth(headers)  # Forward to STS
+        if identity and identity.email:
+            user_data = lookup_user(identity.email)
+            if user_data:
+                return authorize(user_data)
 
     # 4. Unauthorized
     return {'isAuthorized': False}
@@ -315,11 +440,13 @@ def handler(event, context):
 3. **Key Rotation**: Automatic yearly rotation
 4. **Audit**: CloudTrail logs all KMS operations
 
-### IAM Security
+### IAM/SigV4 Security
 
-1. **SigV4 Validation**: AWS handles signature validation
-2. **Identity Mapping**: Explicit mapping required (no auto-provision by default)
-3. **Audit Trail**: All IAM auth attempts logged
+1. **STS Validation**: AWS STS validates the signature server-side
+2. **Replay Protection**: Optional X-Dashborion-Server-ID header binds request to specific server
+3. **Identity Mapping**: User must exist in DynamoDB (no auto-provision by default)
+4. **Audit Trail**: All SigV4 auth attempts logged
+5. **Request Freshness**: STS signature includes timestamp (valid ~15 min)
 
 ## Migration Plan
 
@@ -339,10 +466,10 @@ def handler(event, context):
 3. Update authorizer to check cookies
 4. Frontend updates (remove token from URL handling)
 
-### Phase 4: Add SigV4 Auth
-1. Create IAM mappings table
-2. Update authorizer to check IAM identity
-3. Add mapping management endpoints
+### Phase 4: Add SigV4 Auth ✅
+1. Implement Vault-style STS identity proof
+2. Update authorizer to validate via STS forward
+3. Add CLI --sigv4 flag support
 4. Document IAM setup for users
 
 ### Phase 5: Cleanup
@@ -365,7 +492,7 @@ SESSION_TTL_SECONDS=3600
 
 # Feature flags (for gradual rollout)
 ENABLE_COOKIE_AUTH=true
-ENABLE_SIGV4_AUTH=true
+ENABLE_SIGV4_STS=true
 ENABLE_KMS_ENCRYPTION=true
 ```
 
@@ -379,7 +506,7 @@ ENABLE_KMS_ENCRYPTION=true
     "saml": {...},
     "sessionTtlSeconds": 3600,
     "cookieDomain": ".kamorion.cloud",
-    "enableSigv4": true,
+    "enableSigv4Sts": true,
     "kms": {
       "keyAlias": "dashborion-auth",
       "enableEncryption": true
@@ -407,19 +534,20 @@ dashborion auth login
 curl -H "Authorization: Bearer $TOKEN" https://api.../api/me
 ```
 
-### SigV4 Auth
+### SigV4 Auth (Vault-style)
 ```bash
-# Use AWS CLI with SigV4
-aws apigatewayv2 invoke \
-  --api-id xxx \
-  --stage prod \
-  --route-key "GET /api/me" \
-  --body '{}'
+# Use dashborion CLI with --sigv4 flag
+dashborion --sigv4 auth whoami
 
-# Or use awscurl
-awscurl --service execute-api \
-  --region eu-west-3 \
-  https://api.../api/me
+# Or with specific AWS profile
+AWS_PROFILE=my-sso-profile dashborion --sigv4 services list
+
+# Check identity proof generation (debug)
+python -c "
+from dashborion.utils.sigv4_identity import generate_sts_identity_proof
+proof = generate_sts_identity_proof()
+print(proof)
+"
 ```
 
 ## Appendix: Crypto Implementation
@@ -480,4 +608,47 @@ async function decryptData(encrypted: string, context: Record<string, string>): 
   const response = await kms.send(command);
   return JSON.parse(Buffer.from(response.Plaintext!).toString('utf-8'));
 }
+```
+
+### Python (CLI - SigV4 Identity Proof)
+
+```python
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+from botocore.credentials import Credentials
+import base64
+import json
+
+def generate_sts_identity_proof(session, server_id=None):
+    """Generate signed GetCallerIdentity request for identity proof."""
+    credentials = session.get_credentials().get_frozen_credentials()
+
+    url = 'https://sts.amazonaws.com/'
+    body = 'Action=GetCallerIdentity&Version=2011-06-15'
+
+    headers = {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+        'Host': 'sts.amazonaws.com',
+    }
+    if server_id:
+        headers['X-Dashborion-Server-ID'] = server_id
+
+    request = AWSRequest(method='POST', url=url, data=body, headers=headers)
+
+    creds = Credentials(
+        access_key=credentials.access_key,
+        secret_key=credentials.secret_key,
+        token=credentials.token,
+    )
+    SigV4Auth(creds, 'sts', 'us-east-1').add_auth(request)
+
+    # Convert to headers for transmission
+    signed_headers = {k: [str(v)] for k, v in request.headers.items()}
+
+    return {
+        'X-Amz-Iam-Request-Method': 'POST',
+        'X-Amz-Iam-Request-Url': base64.b64encode(url.encode()).decode(),
+        'X-Amz-Iam-Request-Body': base64.b64encode(body.encode()).decode(),
+        'X-Amz-Iam-Request-Headers': base64.b64encode(json.dumps(signed_headers).encode()).decode(),
+    }
 ```
