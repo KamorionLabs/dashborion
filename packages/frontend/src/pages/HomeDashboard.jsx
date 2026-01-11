@@ -1,20 +1,22 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  RefreshCw, Server, Clock, ExternalLink, Package,
-  CheckCircle, XCircle, Network, X, LogOut, User
+  RefreshCw, ExternalLink, Package,
+  CheckCircle, XCircle, Network, X
 } from 'lucide-react'
 // Configuration context
 import { useConfig, useConfigHelpers } from '../ConfigContext'
 // Auth hook
 import { useAuth } from '../hooks/useAuth'
+// Dashboard context for shell integration
+import { useDashboard } from '../contexts/DashboardContext'
 // URL state hook for deep linking
 import { useDashboardUrl } from '../hooks/useDashboardUrl'
 // Utilities
 import { fetchWithRetry, sessionExpiredEvent } from '../utils'
 import { getResourceId, findResource, findAllResources, parseResourceId } from '../utils/infraResourceHandlers'
 // Components
-import { SessionExpiredModal, MetricsChart, ProjectSelector } from '../components/common'
+import { SessionExpiredModal, MetricsChart } from '../components/common'
 import { TabbedLogsPanel, LogsBottomPanel } from '../components/logs'
 import { EventsTimelinePanel } from '../components/events'
 import { BuildPipelineCard, PipelineDetails } from '../components/pipelines'
@@ -53,6 +55,8 @@ export default function HomeDashboard() {
 
   // Auth state
   const { user, logout } = useAuth()
+  // Dashboard context for shell integration
+  const { autoRefresh, setAutoRefresh, registerRefreshCallback, setRefreshing, setLastUpdated } = useDashboard()
   // Get configuration from context (loaded by ConfigProvider)
   const appConfig = useConfig()
   const { getAwsConsoleUrl, getCodePipelineConsoleUrl, getServiceName, getDefaultAzs } = useConfigHelpers()
@@ -119,8 +123,6 @@ export default function HomeDashboard() {
   })
 
   // UI states
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [lastUpdated, setLastUpdated] = useState(null)
   const [serviceDetails, setServiceDetails] = useState(null)
   const [detailsLoading, setDetailsLoading] = useState(false)
   // Use URL env param if provided, otherwise first environment
@@ -329,7 +331,11 @@ export default function HomeDashboard() {
 
   // Helper to check if anything is loading
   const loading = Object.values(loadingStates).some(v => v)
-  const refreshing = loading
+
+  // Sync loading state with Shell context
+  useEffect(() => {
+    setRefreshing(loading)
+  }, [loading, setRefreshing])
 
   // Helper to get environment button classes from ENV_COLORS
   const getEnvButtonClasses = (env) => {
@@ -643,7 +649,7 @@ export default function HomeDashboard() {
 
   // Initial load - fetch in parallel but only for selected env
   const fetchData = useCallback(async () => {
-    setLastUpdated(new Date())
+    setLastUpdated()
     // Load all sections in parallel
     await Promise.all([
       fetchServices(selectedInfraEnv),
@@ -651,7 +657,12 @@ export default function HomeDashboard() {
       fetchImages(),
       refreshInfrastructure(selectedInfraEnv, appConfig.infrastructure)
     ])
-  }, [selectedInfraEnv, fetchServices, fetchPipelines, fetchImages, refreshInfrastructure, appConfig.infrastructure])
+  }, [selectedInfraEnv, fetchServices, fetchPipelines, fetchImages, refreshInfrastructure, appConfig.infrastructure, setLastUpdated])
+
+  // Register fetchData as the refresh callback for Shell
+  useEffect(() => {
+    registerRefreshCallback(fetchData)
+  }, [fetchData, registerRefreshCallback])
 
   const fetchMetrics = useCallback(async (env, service) => {
     const projectId = appConfig.currentProjectId || 'homebox'
@@ -1039,7 +1050,7 @@ export default function HomeDashboard() {
   )
 
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100">
+    <>
       {/* Session Expired Modal */}
       {sessionExpired && <SessionExpiredModal onReconnect={handleReconnect} />}
 
@@ -1059,67 +1070,6 @@ export default function HomeDashboard() {
           </button>
         </div>
       )}
-
-      {/* Header */}
-      <header className="bg-gray-800 border-b border-gray-700 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <img src={appConfig.branding?.logo} alt={appConfig.branding?.logoAlt} className="h-10" />
-            <div className="h-6 w-px bg-gray-600"></div>
-            <div className="flex items-center gap-2">
-              <Server className="w-6 h-6 text-brand-500" />
-              <h1 className="text-lg font-bold">{appConfig.global?.title || 'Operations Dashboard'}</h1>
-            </div>
-            <div className="h-6 w-px bg-gray-600"></div>
-            <ProjectSelector />
-          </div>
-
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoRefresh}
-                onChange={(e) => setAutoRefresh(e.target.checked)}
-                className="w-4 h-4 rounded bg-gray-700 border-gray-600 text-brand-500 focus:ring-brand-500"
-              />
-              <span className="text-sm text-gray-400">Auto-refresh</span>
-            </label>
-
-            <button
-              onClick={fetchData}
-              disabled={refreshing}
-              className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-md transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-              <span className="text-sm">{refreshing ? 'Refreshing...' : 'Refresh'}</span>
-            </button>
-
-            {lastUpdated && (
-              <div className="flex items-center gap-1 text-sm text-gray-500">
-                <Clock className="w-4 h-4" />
-                <span>{lastUpdated.toLocaleTimeString()}</span>
-              </div>
-            )}
-
-            {/* User info and logout */}
-            <div className="flex items-center gap-3 ml-4 pl-4 border-l border-gray-600">
-              {user && (
-                <div className="flex items-center gap-2 text-sm text-gray-300">
-                  <User className="w-4 h-4 text-gray-400" />
-                  <span>{user.email || user.name}</span>
-                </div>
-              )}
-              <button
-                onClick={logout}
-                className="flex items-center gap-1 px-2 py-1 text-sm text-gray-400 hover:text-white hover:bg-gray-700 rounded transition-colors"
-                title="Logout"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
 
       <div className="flex">
         {/* Events Timeline Panel - Left */}
@@ -1313,6 +1263,6 @@ export default function HomeDashboard() {
           onCloseAll={closeAllLogsTabs}
         />
       )}
-    </div>
+    </>
   )
 }

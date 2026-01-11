@@ -2,12 +2,14 @@
  * App Router
  *
  * Main router for Dashborion dashboard.
- * Uses the original single-page dashboard layout with URL-based state.
+ * Uses Shell for layout and DashboardContext for shared state.
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { ConfigProvider, useConfig } from './ConfigContext';
+import { DashboardProvider, useDashboard } from './contexts/DashboardContext';
+import { Shell } from './shell/Shell';
 
 // Pages
 import DeviceAuth from './pages/DeviceAuth';
@@ -50,6 +52,25 @@ function ProtectedRoute({ children }) {
 }
 
 /**
+ * Shell wrapper that connects to DashboardContext
+ */
+function ShellWithContext({ children }) {
+  const dashboard = useDashboard();
+
+  return (
+    <Shell
+      onRefresh={dashboard.triggerRefresh}
+      refreshing={dashboard.refreshing}
+      lastUpdated={dashboard.lastUpdated}
+      autoRefresh={dashboard.autoRefresh}
+      onAutoRefreshChange={dashboard.setAutoRefresh}
+    >
+      {children}
+    </Shell>
+  );
+}
+
+/**
  * Default route - redirects to first project/env
  */
 function DefaultRedirect() {
@@ -61,61 +82,6 @@ function DefaultRedirect() {
   const firstEnv = project?.environments?.[0] || 'staging';
 
   return <Navigate to={`/${projectId}/${firstEnv}`} replace />;
-}
-
-/**
- * Main App Router
- */
-export default function AppRouter() {
-  return (
-    <BrowserRouter>
-      <ConfigProvider>
-        <AuthProvider>
-          <Routes>
-            {/* Public routes - no auth required */}
-            <Route path="/login" element={<Login />} />
-            <Route path="/auth/device" element={<DeviceAuth />} />
-            <Route path="/403" element={<PermissionDenied />} />
-            <Route path="/permission-denied" element={<PermissionDenied />} />
-
-            {/* Protected routes */}
-            {/* Dashboard with project and env in URL */}
-            <Route
-              path="/:project/:env"
-              element={
-                <ProtectedRoute>
-                  <HomeDashboard />
-                </ProtectedRoute>
-              }
-            />
-
-            {/* Project only - redirect to first env */}
-            <Route
-              path="/:project"
-              element={
-                <ProtectedRoute>
-                  <ProjectRedirect />
-                </ProtectedRoute>
-              }
-            />
-
-            {/* Root - redirect to default project/env */}
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  <DefaultRedirect />
-                </ProtectedRoute>
-              }
-            />
-
-            {/* Catch all - redirect to home */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </AuthProvider>
-      </ConfigProvider>
-    </BrowserRouter>
-  );
 }
 
 /**
@@ -133,4 +99,63 @@ function ProjectRedirect() {
 
   const firstEnv = project.environments?.[0] || 'staging';
   return <Navigate to={`/${projectId}/${firstEnv}`} replace />;
+}
+
+/**
+ * Main App Router
+ */
+export default function AppRouter() {
+  return (
+    <BrowserRouter>
+      <ConfigProvider>
+        <AuthProvider>
+          <DashboardProvider>
+            <Routes>
+              {/* Public routes - no auth required, no shell */}
+              <Route path="/login" element={<Login />} />
+              <Route path="/auth/device" element={<DeviceAuth />} />
+              <Route path="/403" element={<PermissionDenied />} />
+              <Route path="/permission-denied" element={<PermissionDenied />} />
+
+              {/* Protected routes with Shell */}
+              {/* Dashboard with project and env in URL */}
+              <Route
+                path="/:project/:env"
+                element={
+                  <ProtectedRoute>
+                    <ShellWithContext>
+                      <HomeDashboard />
+                    </ShellWithContext>
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Project only - redirect to first env */}
+              <Route
+                path="/:project"
+                element={
+                  <ProtectedRoute>
+                    <ProjectRedirect />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Root - redirect to default project/env */}
+              <Route
+                path="/"
+                element={
+                  <ProtectedRoute>
+                    <DefaultRedirect />
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Catch all - redirect to home */}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </DashboardProvider>
+        </AuthProvider>
+      </ConfigProvider>
+    </BrowserRouter>
+  );
 }
