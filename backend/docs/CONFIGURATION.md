@@ -1,20 +1,67 @@
 # Dashborion Configuration Reference
 
-Configuration is loaded from environment variables as JSON strings.
+Configuration is loaded from **SSM Parameter Store** (recommended) or environment variables.
+
+## Configuration Storage
+
+### SSM Parameter Store (Recommended)
+
+Since v2.x, large configurations (`PROJECTS`, `CROSS_ACCOUNT_ROLES`) are stored in SSM Parameter Store to avoid Lambda's 4KB environment variable limit.
+
+**Structure:**
+```
+{prefix}/projects/{project-id}     # One parameter per project
+{prefix}/cross-account-roles       # Cross-account IAM roles
+```
+
+**Required environment variable:**
+```bash
+CONFIG_SSM_PREFIX=/dashborion/myorg  # SSM prefix for this deployment
+```
+
+**IAM permissions required:**
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "ssm:GetParameter",
+    "ssm:GetParameters",
+    "ssm:GetParametersByPath"
+  ],
+  "Resource": "arn:aws:ssm:*:*:parameter/dashborion/*"
+}
+```
+
+### infra.config.json
+
+The SSM prefix is configured in `infra.config.json`:
+
+```json
+{
+  "ssm": {
+    "prefix": "/dashborion/myorg"
+  }
+}
+```
+
+SST automatically creates SSM parameters from the `projects` and `crossAccountRoles` sections.
+
+---
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `CONFIG_SSM_PREFIX` | **Yes** | SSM parameter prefix (e.g., `/dashborion/myorg`) |
 | `AWS_REGION_DEFAULT` | No | Default AWS region (default: `eu-west-3`) |
 | `SHARED_SERVICES_ACCOUNT` | Yes | AWS account ID for shared services (ECR, etc.) |
 | `SSO_PORTAL_URL` | Yes | AWS SSO portal URL for console links |
-| `PROJECTS` | Yes | JSON object defining projects and environments |
-| `CROSS_ACCOUNT_ROLES` | Yes | JSON object mapping account IDs to IAM roles |
 | `NAMING_PATTERN` | No | JSON object for resource naming patterns |
 | `CI_PROVIDER` | No | JSON object for CI/CD provider config |
 | `ORCHESTRATOR` | No | JSON object for container orchestrator config |
 | `GITHUB_ORG` | No | GitHub organization for commit links |
+
+> **Note:** `PROJECTS` and `CROSS_ACCOUNT_ROLES` are no longer passed as environment variables. They are loaded from SSM at runtime.
 
 ---
 
@@ -258,6 +305,133 @@ All patterns are optional; defaults are shown above.
 
 ---
 
+## Per-Project Pipelines Configuration (v2.x)
+
+Since v2.x, pipelines are configured per-project with support for multiple providers.
+
+### Schema
+
+```json
+{
+  "projects": {
+    "my-project": {
+      "pipelines": {
+        "enabled": true,
+        "providers": [
+          {
+            "type": "codepipeline",
+            "category": "build",
+            "accountId": "123456789012",
+            "region": "eu-west-3",
+            "services": ["frontend", "backend"],
+            "displayName": "CodePipeline (shared-services)"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+### Provider Types
+
+| Type | Description | Required Fields |
+|------|-------------|-----------------|
+| `codepipeline` | AWS CodePipeline | `accountId`, `region`, `services` |
+| `azure-devops` | Azure DevOps Pipelines | `organization`, `project`, `services` |
+| `github-actions` | GitHub Actions | `owner`, `services` |
+| `bitbucket` | Bitbucket Pipelines | `workspace`, `services` |
+| `argocd` | ArgoCD (GitOps) | `url`, `services` |
+| `jenkins` | Jenkins CI | `url`, `services` |
+
+### Categories
+
+| Category | Description |
+|----------|-------------|
+| `build` | Build/CI pipelines (shown in Build Pipelines section) |
+| `deploy` | Deployment pipelines (GitOps, CD) |
+| `both` | Combined build and deploy |
+
+### Examples
+
+#### CodePipeline (AWS)
+
+```json
+{
+  "pipelines": {
+    "enabled": true,
+    "providers": [
+      {
+        "type": "codepipeline",
+        "category": "build",
+        "accountId": "501994300510",
+        "region": "eu-west-3",
+        "services": ["frontend", "backend", "cms"],
+        "displayName": "CodePipeline"
+      }
+    ]
+  }
+}
+```
+
+#### Azure DevOps
+
+```json
+{
+  "pipelines": {
+    "enabled": true,
+    "providers": [
+      {
+        "type": "azure-devops",
+        "category": "build",
+        "organization": "my-org",
+        "project": "MyProject",
+        "services": ["api", "worker"],
+        "pipelinePattern": "{service}-build"
+      }
+    ]
+  }
+}
+```
+
+#### Multiple Providers
+
+```json
+{
+  "pipelines": {
+    "enabled": true,
+    "providers": [
+      {
+        "type": "codepipeline",
+        "category": "build",
+        "accountId": "123456789012",
+        "region": "eu-west-3",
+        "services": ["frontend", "backend"]
+      },
+      {
+        "type": "argocd",
+        "category": "deploy",
+        "url": "https://argocd.example.com",
+        "services": ["frontend", "backend"],
+        "appPattern": "{service}-{env}"
+      }
+    ]
+  }
+}
+```
+
+#### Disabled Pipelines
+
+```json
+{
+  "pipelines": {
+    "enabled": false
+  }
+}
+```
+
+---
+
 ## Complete Example
 
 ```bash
@@ -308,26 +482,65 @@ export CI_PROVIDER='{"type": "codepipeline"}'
 
 ## SST Configuration
 
-In SST, these are typically set in `sst.config.ts`:
+Configuration is managed via `infra.config.json`:
 
-```typescript
-const config = {
-  region: "eu-central-1",
-  sharedServicesAccount: "999999999999",
-  ssoPortalUrl: "https://my-sso.awsapps.com/start",
-  projects: { /* ... */ },
-  crossAccountRoles: { /* ... */ }
-};
+```json
+{
+  "mode": "managed",
 
-// Pass to Lambda
-new Function(stack, "ApiHandler", {
-  environment: {
-    AWS_REGION_DEFAULT: config.region,
-    SHARED_SERVICES_ACCOUNT: config.sharedServicesAccount,
-    SSO_PORTAL_URL: config.ssoPortalUrl,
-    PROJECTS: JSON.stringify(config.projects),
-    CROSS_ACCOUNT_ROLES: JSON.stringify(config.crossAccountRoles),
-    // ...
+  "ssm": {
+    "prefix": "/dashborion/myapp"
+  },
+
+  "aws": {
+    "region": "eu-central-1",
+    "profile": "my-aws-profile"
+  },
+
+  "projects": {
+    "myproject": {
+      "displayName": "My Project",
+      "environments": {
+        "staging": {
+          "accountId": "111111111111",
+          "region": "eu-central-1",
+          "services": ["frontend", "backend"]
+        }
+      }
+    }
+  },
+
+  "crossAccountRoles": {
+    "111111111111": {
+      "readRoleArn": "arn:aws:iam::111111111111:role/DashboardReadRole",
+      "actionRoleArn": "arn:aws:iam::111111111111:role/DashboardActionRole"
+    }
   }
-});
+}
 ```
+
+SST will automatically:
+1. Create SSM parameters for each project under `{prefix}/projects/{project-id}`
+2. Create SSM parameter for cross-account roles at `{prefix}/cross-account-roles`
+3. Pass `CONFIG_SSM_PREFIX` to all Lambda environment variables
+4. Add IAM permissions to read SSM parameters
+
+### Deploying
+
+```bash
+# Set config directory (for external config)
+export DASHBORION_CONFIG_DIR=/path/to/config
+
+# Deploy
+npx sst deploy --stage production
+```
+
+### Multiple Deployments
+
+Each organization/deployment should use a unique SSM prefix. A single Dashborion deployment handles all projects and environments for that organization.
+
+| Organization | SSM Prefix |
+|--------------|------------|
+| Org1 | `/dashborion/org1` |
+| Org2 | `/dashborion/org2` |
+| Demo | `/dashborion/demo` |
