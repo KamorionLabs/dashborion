@@ -2,11 +2,12 @@
 Lambda Authorizer for API Gateway.
 
 Validates authentication and returns IAM policy with user context.
-Supports four authentication methods:
+Supports five authentication methods:
 1. Cookie session (from SAML SSO web flow)
 2. Bearer token (from CLI device flow)
-3. SigV4 IAM Identity Center (for AWS SSO users - AWSReservedSSO_*)
-4. SigV4 IAM Service Role (for M2M - any other IAM role)
+3. SigV4 STS Identity Proof (Vault-style - forward signed GetCallerIdentity to STS)
+4. SigV4 IAM Identity Center (for AWS SSO users - AWSReservedSSO_*)
+5. SigV4 IAM Service Role (for M2M - any other IAM role)
 
 The authorizer injects user context (email, permissions) into the request
 which downstream handlers can access via:
@@ -26,6 +27,7 @@ from typing import Dict, Any, Optional
 from auth.device_flow import validate_token
 from auth.session_auth import validate_session_cookie
 from auth.sigv4_auth import validate_sigv4_auth
+from auth.sigv4_sts_auth import validate_sigv4_sts_auth
 from auth.service_auth import validate_service_auth
 from auth.user_management import get_user, get_user_effective_permissions
 
@@ -125,13 +127,29 @@ def authenticate(
             return format_auth_result(auth_context, 'bearer')
         print("Bearer token validation failed")
 
-    # Method 3: SigV4 IAM (AWS Identity Center users)
+    # Method 3: SigV4 STS Identity Proof (Vault-style - works with HTTP API v2)
+    # Client sends signed GetCallerIdentity request, we forward to STS for verification
+    if headers.get('x-amz-iam-request-headers'):
+        enable_sigv4_sts = os.environ.get('ENABLE_SIGV4_STS', 'true').lower() == 'true'
+        if enable_sigv4_sts:
+            print("Attempting SigV4 STS Identity Proof authentication")
+            sts_identity = validate_sigv4_sts_auth(headers)
+            if sts_identity and sts_identity.email:
+                result = authenticate_sigv4_user(sts_identity.email)
+                if result:
+                    print(f"SigV4 STS valid for: {sts_identity.email}")
+                    result['auth_method'] = 'sigv4_sts'
+                    return result
+            print("SigV4 STS Identity Proof validation failed")
+
+    # Method 4 & 5: SigV4 IAM (requires AWS_IAM auth type on route - only works with REST API v1)
+    # These methods are kept for backwards compatibility but won't work with HTTP API v2 + REQUEST authorizer
     identity = request_context.get('identity', {})
     user_arn = identity.get('userArn', '')
     account_id = identity.get('accountId', '')
 
     if user_arn and 'AWSReservedSSO_' in user_arn:
-        # Identity Center user
+        # Method 4: Identity Center user (requires AWS_IAM auth)
         enable_sigv4_users = os.environ.get('ENABLE_SIGV4_USERS', 'true').lower() == 'true'
         if enable_sigv4_users:
             print(f"Attempting SigV4 IAM authentication for: {user_arn}")
@@ -144,7 +162,7 @@ def authenticate(
                     return result
             print("SigV4 IAM user validation failed")
     elif user_arn:
-        # Method 4: SigV4 IAM Service Role (M2M)
+        # Method 5: SigV4 IAM Service Role (M2M - requires AWS_IAM auth)
         enable_sigv4_services = os.environ.get('ENABLE_SIGV4_SERVICES', 'false').lower() == 'true'
         if enable_sigv4_services:
             print(f"Attempting SigV4 M2M service authentication for: {user_arn}")

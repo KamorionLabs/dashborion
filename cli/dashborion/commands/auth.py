@@ -394,7 +394,16 @@ def whoami(refresh: bool):
     Show current user information
 
     Displays the currently authenticated user and token status.
+    Works with both Bearer token and SigV4 authentication.
     """
+    from dashborion.utils.api_client import is_sigv4_mode, get_api_client
+
+    # Check if using SigV4 mode (--sigv4 flag)
+    if is_sigv4_mode():
+        _whoami_sigv4()
+        return
+
+    # Standard Bearer token flow
     credentials = load_credentials()
 
     if not credentials:
@@ -454,6 +463,63 @@ def whoami(refresh: bool):
 
         expires = datetime.fromtimestamp(credentials['expires_at'])
         click.echo(f"Token expires: {expires.strftime('%Y-%m-%d %H:%M:%S')}")
+
+
+def _whoami_sigv4():
+    """
+    Show current user using SigV4 authentication.
+
+    Uses the Vault-style STS identity proof method:
+    1. Signs a GetCallerIdentity request with AWS credentials
+    2. Sends signed request to Dashborion API
+    3. API forwards to STS for verification
+    """
+    from dashborion.utils.api_client import get_api_client, AuthenticationError
+
+    try:
+        client = get_api_client()
+        response = client.get('/api/auth/whoami')
+
+        if response.status_code == 200:
+            data = response.json()
+
+            if data.get('authenticated'):
+                click.echo(f"Email: {data.get('email')}")
+                click.echo(f"Auth method: {data.get('method')}")
+                click.echo("Token: (using AWS SigV4 - no stored token)")
+            else:
+                click.echo("Not authenticated")
+                click.echo()
+                click.echo("Your AWS credentials may not be linked to a Dashborion user.")
+                sys.exit(1)
+        elif response.status_code == 401:
+            click.echo("Authentication failed.")
+            click.echo()
+            click.echo("Possible causes:")
+            click.echo("  - AWS credentials are invalid or expired")
+            click.echo("  - Email from AWS Identity Center not found in Dashborion")
+            click.echo()
+            click.echo("Try 'aws sso login' to refresh credentials.")
+            sys.exit(1)
+        elif response.status_code == 403:
+            click.echo("Permission denied.")
+            click.echo()
+            click.echo("Your AWS identity was verified but you don't have Dashborion permissions.")
+            sys.exit(1)
+        else:
+            click.echo(f"Error: {response.status_code}")
+            try:
+                click.echo(response.json())
+            except Exception:
+                click.echo(response.text[:200])
+            sys.exit(1)
+
+    except AuthenticationError as e:
+        click.echo(f"Authentication error: {e}", err=True)
+        sys.exit(1)
+    except requests.RequestException as e:
+        click.echo(f"Request error: {e}", err=True)
+        sys.exit(1)
 
 
 @auth.command()
