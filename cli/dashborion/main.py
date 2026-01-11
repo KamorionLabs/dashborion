@@ -16,7 +16,7 @@ import yaml
 from typing import Optional
 from pathlib import Path
 
-from dashborion.commands import services, infra, diagram, k8s, pipelines, auth, context, admin
+from dashborion.commands import services, infra, diagram, k8s, pipelines, auth, context, admin, project, env
 from dashborion.config.cli_config import load_config, get_environment_config
 from dashborion.utils.output import OutputFormatter
 
@@ -33,7 +33,42 @@ class DashborionContext:
         self.region = None
         self.output_format = 'table'
         self.verbose = False
-        self.env = None
+        self._env = None
+        self._project = None
+
+        # Load project/env from current context
+        self._load_from_context()
+
+    def _load_from_context(self):
+        """Load project and environment from current CLI context"""
+        try:
+            from dashborion.commands.context import get_current_project, get_current_environment
+            self._project = get_current_project()
+            self._env = get_current_environment()
+        except Exception:
+            pass
+
+    @property
+    def project(self) -> Optional[str]:
+        """Get current project (from context or config)"""
+        if self._project:
+            return self._project
+        if self.config:
+            return self.config.get('project_name')
+        return None
+
+    @project.setter
+    def project(self, value: str):
+        self._project = value
+
+    @property
+    def env(self) -> Optional[str]:
+        """Get current environment (from context)"""
+        return self._env
+
+    @env.setter
+    def env(self, value: str):
+        self._env = value
 
     def get_aws_session(self, profile: Optional[str] = None, region: Optional[str] = None):
         """Get boto3 session with specified or configured profile/region"""
@@ -71,8 +106,10 @@ pass_context = click.make_pass_decorator(DashborionContext, ensure=True)
               help='Output format (default: table)')
 @click.option('--verbose', '-v', is_flag=True,
               help='Enable verbose output')
+@click.option('--sigv4', is_flag=True, envvar='DASHBORION_SIGV4',
+              help='Use AWS SigV4 signing instead of Bearer token')
 @pass_context
-def cli(ctx, profile, region, config_path, output_format, verbose):
+def cli(ctx, profile, region, config_path, output_format, verbose, sigv4):
     """
     Dashborion - Multi-cloud infrastructure dashboard CLI
 
@@ -101,6 +138,13 @@ def cli(ctx, profile, region, config_path, output_format, verbose):
     ctx.profile = profile
     ctx.region = region
 
+    # Enable SigV4 mode if requested
+    if sigv4:
+        from dashborion.utils.api_client import set_sigv4_mode
+        set_sigv4_mode(True, profile)
+        if verbose:
+            click.echo("Using AWS SigV4 authentication", err=True)
+
     # Load configuration
     if config_path:
         ctx.config = load_config(config_path)
@@ -126,6 +170,8 @@ def cli(ctx, profile, region, config_path, output_format, verbose):
 cli.add_command(context.context)
 cli.add_command(auth.auth)
 cli.add_command(admin.admin)
+cli.add_command(project.project)
+cli.add_command(env.env)
 cli.add_command(services.services)
 cli.add_command(infra.infra)
 cli.add_command(diagram.diagram)

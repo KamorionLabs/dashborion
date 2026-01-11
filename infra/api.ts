@@ -96,6 +96,7 @@ export function createApiGateway(
       allowOrigins: [`https://${frontendDomain}`],
       allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       allowHeaders: ["Content-Type", "Authorization", "x-sso-user-email"],
+      allowCredentials: true,
     },
     transform: {
       api: {
@@ -197,6 +198,10 @@ export function setupRoutes(
   api.route("POST /api/auth/token/refresh", lambdas.auth.arn, authOptions);
   api.route("POST /api/auth/token/revoke", lambdas.auth.arn, authOptions);
   api.route("POST /api/auth/token/issue", lambdas.auth.arn, authOptions);
+
+  // Projects and environments routes
+  api.route("GET /api/projects", lambdas.services.arn, authOptions);
+  api.route("GET /api/{project}/environments", lambdas.services.arn, authOptions);
 
   // Services routes
   api.route("GET /api/{project}/services", lambdas.services.arn, authOptions);

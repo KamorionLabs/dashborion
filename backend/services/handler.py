@@ -2,6 +2,8 @@
 Services Lambda Handler.
 
 Handles all service-related endpoints:
+- GET /api/projects - List available projects
+- GET /api/{project}/environments - List environments for a project
 - GET /api/{project}/services/{env} - List services
 - GET /api/{project}/services/{env}/{service} - Service details
 - GET /api/{project}/details/{env}/{service} - Extended service details
@@ -54,14 +56,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return json_response(200, {})
 
     # Parse path components
-    # Expected: /api/{project}/services/{env}[/{service}]
-    #       or: /api/{project}/details/{env}/{service}
-    #       or: /api/{project}/tasks/{env}/{service}/{task_id}
-    #       or: /api/{project}/logs/{env}/{service}
-    #       or: /api/{project}/metrics/{env}/{service}
-    #       or: /api/{project}/actions/deploy/{env}/{service}/{action}
     parts = path.strip('/').split('/')
-    # parts[0] = 'api', parts[1] = project, parts[2] = resource, ...
+    # parts[0] = 'api', ...
+
+    config = get_config()
+
+    # =================================================================
+    # GLOBAL ROUTES (no project context)
+    # =================================================================
+
+    # GET /api/projects - List all projects
+    if path == '/api/projects' or (len(parts) == 2 and parts[1] == 'projects'):
+        return handle_list_projects(auth, config)
+
+    # =================================================================
+    # PROJECT-SCOPED ROUTES
+    # =================================================================
 
     if len(parts) < 3:
         return error_response('invalid_path', 'Invalid path structure', 400)
@@ -69,8 +79,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     project = parts[1]
     resource = parts[2]
 
-    # Validate project
-    config = get_config()
+    # GET /api/{project}/environments - List environments for project
+    if resource == 'environments':
+        return handle_list_environments(auth, project, config)
+
+    # Validate project for other routes
     project_config = config.get_project(project)
     if not project_config:
         return error_response('not_found', f'Unknown project: {project}', 404)
@@ -90,6 +103,46 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return handle_deploy_actions(event, auth, project, parts, config)
     else:
         return error_response('not_found', f'Unknown services endpoint: {path}', 404)
+
+
+def handle_list_projects(auth, config) -> Dict[str, Any]:
+    """
+    Handle GET /api/projects - List all available projects.
+    Returns project names, display names, and environments.
+    """
+    projects_list = []
+    for project_name, project_config in config.projects.items():
+        projects_list.append({
+            'name': project_name,
+            'displayName': project_config.display_name,
+            'description': '',
+            'environments': list(project_config.environments.keys()),
+            'orchestrator': config.orchestrator.type if config.orchestrator else 'unknown'
+        })
+
+    return json_response(200, {'projects': projects_list})
+
+
+def handle_list_environments(auth, project: str, config) -> Dict[str, Any]:
+    """
+    Handle GET /api/{project}/environments - List environments for a project.
+    Returns environment names, types, and status.
+    """
+    project_config = config.get_project(project)
+    if not project_config:
+        return error_response('not_found', f'Unknown project: {project}', 404)
+
+    environments_list = []
+    for env_name, env_config in project_config.environments.items():
+        environments_list.append({
+            'name': env_name,
+            'type': config.orchestrator.type if config.orchestrator else 'unknown',
+            'status': env_config.status or 'active',
+            'region': env_config.region,
+            'description': ''
+        })
+
+    return json_response(200, {'environments': environments_list})
 
 
 def handle_services(event, auth, project: str, parts: list, config) -> Dict[str, Any]:
