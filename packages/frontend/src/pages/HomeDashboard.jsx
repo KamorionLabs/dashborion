@@ -63,6 +63,30 @@ export default function HomeDashboard() {
   const AWS_ACCOUNTS = useMemo(() => appConfig.aws?.accounts || {}, [appConfig.aws?.accounts])
   const ENV_COLORS = useMemo(() => appConfig.envColors || {}, [appConfig.envColors])
 
+  // Per-project pipelines configuration
+  const pipelinesConfig = useMemo(() => appConfig.pipelines || { enabled: false }, [appConfig.pipelines])
+  const pipelinesEnabled = pipelinesConfig.enabled
+
+  // Get build providers (CodePipeline, etc.) from pipelines config
+  const buildProviders = useMemo(() => {
+    if (!pipelinesConfig.enabled || !pipelinesConfig.providers) return []
+    return pipelinesConfig.providers.filter(p => p.category === 'build' || p.category === 'both')
+  }, [pipelinesConfig])
+
+  // Get services that have build pipelines (union of all build providers' services)
+  const PIPELINE_SERVICES = useMemo(() => {
+    const services = new Set()
+    buildProviders.forEach(provider => {
+      (provider.services || []).forEach(s => services.add(s))
+    })
+    return Array.from(services)
+  }, [buildProviders])
+
+  // Get the primary CodePipeline provider (for AWS console link)
+  const codePipelineProvider = useMemo(() => {
+    return buildProviders.find(p => p.type === 'codepipeline')
+  }, [buildProviders])
+
   // Session expiration state
   const [sessionExpired, setSessionExpired] = useState(false)
 
@@ -264,11 +288,13 @@ export default function HomeDashboard() {
   const eventsTypeFilterRef = useRef(eventsTypeFilter)
   const eventsPanelVisibleRef = useRef(eventsPanelVisible)
   const servicesRef = useRef(SERVICES)
+  const pipelineServicesRef = useRef(PIPELINE_SERVICES)
   const projectIdRef = useRef(appConfig.currentProjectId || 'homebox')
   eventsHoursRef.current = eventsHours
   eventsTypeFilterRef.current = eventsTypeFilter
   eventsPanelVisibleRef.current = eventsPanelVisible
   servicesRef.current = SERVICES
+  pipelineServicesRef.current = PIPELINE_SERVICES
   projectIdRef.current = appConfig.currentProjectId || 'homebox'
 
   // Track project changes to reset data
@@ -334,12 +360,15 @@ export default function HomeDashboard() {
 
   // Fetch build pipelines (shared across envs)
   const fetchPipelines = useCallback(async () => {
+    // Skip if pipelines are disabled for this project
+    if (!pipelinesEnabled) return
     const projectId = appConfig.currentProjectId || 'homebox'
-    const projectServices = servicesRef.current
-    if (!projectServices || projectServices.length === 0) return
+    // Use pipeline services (from providers config) instead of general services
+    const pipelineServices = pipelineServicesRef.current
+    if (!pipelineServices || pipelineServices.length === 0) return
     setLoadingStates(prev => ({ ...prev, pipelines: true }))
     try {
-      const pipelinePromises = projectServices.map(async (service) => {
+      const pipelinePromises = pipelineServices.map(async (service) => {
         const res = await fetchWithRetry(`/api/${projectId}/pipelines/build/${service}`)
         return { service, data: await res.json() }
       })
@@ -354,7 +383,7 @@ export default function HomeDashboard() {
     } finally {
       setLoadingStates(prev => ({ ...prev, pipelines: false }))
     }
-  }, [appConfig.currentProjectId])
+  }, [appConfig.currentProjectId, pipelinesEnabled])
 
   // Fetch ECR images (shared across envs)
   const fetchImages = useCallback(async () => {
@@ -1118,7 +1147,8 @@ export default function HomeDashboard() {
           style={{ marginLeft: eventsPanelVisible ? `${eventsPanelWidth}px` : '32px' }}
         >
           <div className="max-w-7xl mx-auto">
-          {/* Build Pipelines - At the top */}
+          {/* Build Pipelines - At the top (only if pipelines enabled and has services) */}
+          {pipelinesEnabled && PIPELINE_SERVICES.length > 0 && (
           <section>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -1128,21 +1158,24 @@ export default function HomeDashboard() {
                   <RefreshCw className="w-4 h-4 text-brand-500 animate-spin" />
                 )}
               </h2>
-              <a
-                href={getCodePipelineConsoleUrl(AWS_ACCOUNTS['shared-services'].id)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 text-xs bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 px-3 py-1.5 rounded-lg transition-colors"
-                title="Open AWS Console for shared-services account"
-              >
-                <span className="font-medium">{AWS_ACCOUNTS['shared-services'].alias}</span>
-                <span className="text-purple-400/60 font-mono">{AWS_ACCOUNTS['shared-services'].id}</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
+              {/* Show AWS Console link if CodePipeline provider is configured */}
+              {codePipelineProvider && (
+                <a
+                  href={getCodePipelineConsoleUrl(codePipelineProvider.accountId, codePipelineProvider.region)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-xs bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 px-3 py-1.5 rounded-lg transition-colors"
+                  title={`Open AWS CodePipeline Console (${codePipelineProvider.accountId})`}
+                >
+                  <span className="font-medium">CodePipeline</span>
+                  <span className="text-purple-400/60 font-mono">{codePipelineProvider.accountId}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {SERVICES.map(service => (
+              {PIPELINE_SERVICES.map(service => (
                 <BuildPipelineCard
                   key={service}
                   service={service}
@@ -1158,6 +1191,7 @@ export default function HomeDashboard() {
               ))}
             </div>
           </section>
+          )}
 
           {/* Infrastructure Diagram */}
           <section className="mt-8">

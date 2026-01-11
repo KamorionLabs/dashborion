@@ -8,6 +8,145 @@
 import { InfraConfig } from "./config";
 
 /**
+ * Environment color configuration
+ */
+const ENV_COLORS: Record<string, { bg: string; text: string; border: string }> = {
+  "nh-integration": { bg: "bg-cyan-500", text: "text-cyan-400", border: "border-cyan-500" },
+  "nh-staging": { bg: "bg-yellow-500", text: "text-yellow-400", border: "border-yellow-500" },
+  "nh-preprod": { bg: "bg-blue-500", text: "text-blue-400", border: "border-blue-500" },
+  "nh-production": { bg: "bg-green-500", text: "text-green-400", border: "border-green-500" },
+  "legacy-staging": { bg: "bg-orange-500", text: "text-orange-400", border: "border-orange-500" },
+  "legacy-preprod": { bg: "bg-indigo-500", text: "text-indigo-400", border: "border-indigo-500" },
+  "legacy-production": { bg: "bg-red-500", text: "text-red-400", border: "border-red-500" },
+  staging: { bg: "bg-yellow-500", text: "text-yellow-400", border: "border-yellow-500" },
+  preprod: { bg: "bg-blue-500", text: "text-blue-400", border: "border-blue-500" },
+  production: { bg: "bg-green-500", text: "text-green-400", border: "border-green-500" },
+  shared: { bg: "bg-purple-500", text: "text-purple-400", border: "border-purple-500" },
+};
+
+/**
+ * Generate frontend config.json from infra.config.json
+ */
+export function generateFrontendConfig(config: InfraConfig, stage: string): Record<string, unknown> {
+  const projects: Record<string, unknown> = {};
+  // Find first non-comment project key
+  const projectKeys = Object.keys(config.projects || {}).filter(k => !k.startsWith("_"));
+  const defaultProject = projectKeys[0] || "default";
+
+  // Convert infra.config projects to frontend config format
+  for (const [projectId, projectConfig] of Object.entries(config.projects || {})) {
+    if (projectId.startsWith("_")) continue; // Skip comments
+
+    const environments = Object.keys(projectConfig.environments || {});
+    const services = new Set<string>();
+    const accounts: Record<string, unknown> = {};
+    const envColors: Record<string, unknown> = {};
+
+    for (const [envName, envConfig] of Object.entries(projectConfig.environments || {})) {
+      // Collect services
+      (envConfig.services || []).forEach((s: string) => services.add(s));
+
+      // Build accounts mapping
+      accounts[envName] = {
+        id: envConfig.accountId,
+        alias: `${projectId}-${envName}`,
+        region: envConfig.region || config.aws?.region || "eu-central-1",
+      };
+
+      // Assign env colors
+      envColors[envName] = ENV_COLORS[envName] || ENV_COLORS.staging;
+    }
+
+    // Build pipelines config for frontend
+    const pipelinesConfig = projectConfig.pipelines?.enabled
+      ? {
+          enabled: true,
+          providers: (projectConfig.pipelines.providers || []).map(provider => ({
+            type: provider.type,
+            category: provider.category,
+            services: provider.services,
+            displayName: provider.displayName || provider.type,
+            // Include provider-specific config
+            ...(provider.type === "codepipeline" && {
+              accountId: (provider as any).accountId,
+              region: (provider as any).region || config.aws?.region || "eu-central-1",
+            }),
+            ...(provider.type === "azure-devops" && {
+              organization: (provider as any).organization,
+              project: (provider as any).project,
+              pipelinePattern: (provider as any).pipelinePattern,
+            }),
+            ...(provider.type === "github-actions" && {
+              owner: (provider as any).owner,
+              repoPattern: (provider as any).repoPattern,
+              workflowPattern: (provider as any).workflowPattern,
+            }),
+            ...(provider.type === "bitbucket" && {
+              workspace: (provider as any).workspace,
+              repoPattern: (provider as any).repoPattern,
+            }),
+            ...(provider.type === "argocd" && {
+              url: (provider as any).url,
+              appPattern: (provider as any).appPattern,
+            }),
+            ...(provider.type === "jenkins" && {
+              url: (provider as any).url,
+              jobPattern: (provider as any).jobPattern,
+            }),
+          })),
+        }
+      : { enabled: false };
+
+    projects[projectId] = {
+      name: projectConfig.displayName || projectId,
+      shortName: projectId.toUpperCase().substring(0, 4),
+      color: "#0ea5e9",
+      client: stage,
+      description: projectConfig.displayName || projectId,
+      aws: { accounts },
+      services: Array.from(services),
+      environments,
+      serviceNaming: { prefix: projectId },
+      infrastructure: {
+        discoveryTags: { Project: projectId },
+        serviceColors: {},
+        domainPattern: "{service}.{env}.example.com",
+        domains: {},
+        databases: [],
+        caches: [],
+      },
+      envColors,
+      pipelines: pipelinesConfig,
+      features: projectConfig.features || {},
+    };
+  }
+
+  return {
+    global: {
+      title: `${stage.charAt(0).toUpperCase() + stage.slice(1)} Operations`,
+      logo: "/kamorion-logo.png",
+      logoAlt: stage,
+      ssoPortalUrl: config.ssoPortalUrl || "",
+      defaultRegion: config.aws?.region || "eu-central-1",
+    },
+    api: {
+      baseUrl: "/api",
+      refreshIntervals: {
+        dashboard: 30000,
+        logs: 3000,
+      },
+    },
+    auth: {
+      logoutUrl: "/saml/logout",
+      deviceAuthPath: "/auth/device",
+    },
+    features: config.features || { pipelines: false },
+    projects,
+    defaultProject,
+  };
+}
+
+/**
  * Frontend deployment output
  */
 export interface FrontendOutput {
@@ -77,6 +216,12 @@ export async function deployFrontendToS3(
     console.log("Warning: Frontend dist not found. Run 'npm run build' in packages/frontend first.");
     return { url, cloudfrontId, s3Bucket };
   }
+
+  // Generate config.json from infra.config.json and write to dist
+  const frontendConfig = generateFrontendConfig(config, stage);
+  const configPath = path.join(frontendDistPath, "config.json");
+  fs.writeFileSync(configPath, JSON.stringify(frontendConfig, null, 2));
+  console.log(`Generated config.json for stage '${stage}' with ${Object.keys(frontendConfig.projects as object).length} projects`);
 
   if (!s3Bucket) {
     console.log("Warning: No S3 bucket configured for frontend deployment.");

@@ -74,8 +74,9 @@ export function ConfigProvider({ children }) {
     })
   }, [])
 
-  // Loading screen while config is loading
-  if (!rawConfig || !currentProjectId) {
+  // Loading screen while config is loading or project not found
+  const currentProject = rawConfig?.projects?.[currentProjectId]
+  if (!rawConfig || !currentProjectId || !currentProject) {
     return (
       <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
         <div className="text-center">
@@ -102,9 +103,6 @@ export function ConfigProvider({ children }) {
     )
   }
 
-  // Get current project config
-  const currentProject = rawConfig.projects[currentProjectId]
-
   // Build the context value - merge global config with current project
   // This maintains backward compatibility with existing useConfig() usage
   const contextValue = {
@@ -112,6 +110,7 @@ export function ConfigProvider({ children }) {
     global: rawConfig.global,
     api: rawConfig.api,
     auth: rawConfig.auth,
+    features: rawConfig.features || {},
 
     // Project-specific config (exposed at root level for backward compatibility)
     branding: {
@@ -130,6 +129,9 @@ export function ConfigProvider({ children }) {
     serviceNaming: currentProject.serviceNaming || { prefix: currentProjectId },
     envColors: currentProject.envColors || {},
     infrastructure: currentProject.infrastructure || {},
+
+    // Per-project pipelines configuration
+    pipelines: currentProject.pipelines || { enabled: false },
 
     // Project management
     currentProjectId,

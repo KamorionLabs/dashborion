@@ -140,9 +140,153 @@ export interface CrossAccountRole {
 export interface ProjectEnvironment {
   accountId: string;
   region?: string;
-  services: string[];
+  services?: string[];
   clusterName?: string;
   namespace?: string;
+  status?: string;
+  /** Override cross-account read role for this environment */
+  readRoleArn?: string;
+  /** Override cross-account action role for this environment */
+  actionRoleArn?: string;
+}
+
+/**
+ * CI/CD provider configuration
+ */
+export interface CIProviderConfig {
+  type: "codepipeline" | "github_actions" | "bitbucket" | "argocd" | "none";
+  config?: Record<string, any>;
+}
+
+/**
+ * Orchestrator configuration
+ */
+export interface OrchestratorConfig {
+  type: "ecs" | "eks" | "argocd";
+  config?: Record<string, any>;
+}
+
+/**
+ * Feature flags for frontend
+ */
+export interface FeaturesConfig {
+  pipelines?: boolean;
+  [key: string]: boolean | undefined;
+}
+
+/**
+ * Pipeline provider types
+ */
+export type PipelineProviderType = "codepipeline" | "azure-devops" | "github-actions" | "bitbucket" | "argocd" | "jenkins";
+
+/**
+ * Pipeline category - what the pipeline does
+ */
+export type PipelineCategory = "build" | "deploy" | "both";
+
+/**
+ * Base pipeline provider configuration
+ */
+export interface BasePipelineProvider {
+  /** Provider type */
+  type: PipelineProviderType;
+  /** What this provider handles: build, deploy, or both */
+  category: PipelineCategory;
+  /** Services managed by this provider */
+  services: string[];
+  /** Display name for this provider in the UI */
+  displayName?: string;
+}
+
+/**
+ * AWS CodePipeline provider
+ */
+export interface CodePipelineProvider extends BasePipelineProvider {
+  type: "codepipeline";
+  /** AWS account ID where pipelines are located */
+  accountId: string;
+  /** AWS region */
+  region?: string;
+}
+
+/**
+ * Azure DevOps provider
+ */
+export interface AzureDevOpsProvider extends BasePipelineProvider {
+  type: "azure-devops";
+  /** Azure DevOps organization */
+  organization: string;
+  /** Azure DevOps project */
+  project: string;
+  /** Pipeline name pattern (use {service} placeholder) */
+  pipelinePattern?: string;
+}
+
+/**
+ * GitHub Actions provider
+ */
+export interface GitHubActionsProvider extends BasePipelineProvider {
+  type: "github-actions";
+  /** GitHub organization or user */
+  owner: string;
+  /** Repository name pattern (use {service} placeholder) */
+  repoPattern?: string;
+  /** Workflow file pattern */
+  workflowPattern?: string;
+}
+
+/**
+ * Bitbucket Pipelines provider
+ */
+export interface BitbucketProvider extends BasePipelineProvider {
+  type: "bitbucket";
+  /** Bitbucket workspace */
+  workspace: string;
+  /** Repository name pattern (use {service} placeholder) */
+  repoPattern?: string;
+}
+
+/**
+ * ArgoCD provider (for GitOps deployments)
+ */
+export interface ArgoCDProvider extends BasePipelineProvider {
+  type: "argocd";
+  /** ArgoCD server URL */
+  url: string;
+  /** ArgoCD application name pattern (use {service}, {env} placeholders) */
+  appPattern?: string;
+}
+
+/**
+ * Jenkins provider
+ */
+export interface JenkinsProvider extends BasePipelineProvider {
+  type: "jenkins";
+  /** Jenkins server URL */
+  url: string;
+  /** Job name pattern (use {service} placeholder) */
+  jobPattern?: string;
+}
+
+/**
+ * Union type for all pipeline providers
+ */
+export type PipelineProvider =
+  | CodePipelineProvider
+  | AzureDevOpsProvider
+  | GitHubActionsProvider
+  | BitbucketProvider
+  | ArgoCDProvider
+  | JenkinsProvider;
+
+/**
+ * Per-project pipelines configuration
+ */
+export interface ProjectPipelinesConfig {
+  /** Enable/disable pipelines for this project */
+  enabled: boolean;
+  /** List of pipeline providers for this project */
+  providers?: PipelineProvider[];
 }
 
 /**
@@ -152,6 +296,18 @@ export interface ProjectConfig {
   displayName: string;
   environments: Record<string, ProjectEnvironment>;
   idpGroupMapping?: Record<string, any>;
+  /** Per-project pipelines configuration */
+  pipelines?: ProjectPipelinesConfig;
+  /** Feature flags specific to this project */
+  features?: FeaturesConfig;
+}
+
+/**
+ * SSM Parameter Store configuration
+ */
+export interface SsmConfig {
+  /** SSM parameter prefix (default: /dashborion/{stage}) */
+  prefix?: string;
 }
 
 /**
@@ -175,6 +331,14 @@ export interface InfraConfig {
   apiGateway?: ApiGatewayConfig;
   crossAccountRoles?: Record<string, CrossAccountRole>;
   projects?: Record<string, ProjectConfig>;
+  /** CI/CD provider configuration */
+  ciProvider?: CIProviderConfig;
+  /** Container orchestrator configuration */
+  orchestrator?: OrchestratorConfig;
+  /** Feature flags for frontend */
+  features?: FeaturesConfig;
+  /** SSM Parameter Store configuration for large configs */
+  ssm?: SsmConfig;
 }
 
 // ==========================================================================
@@ -227,6 +391,17 @@ export function loadConfig(): InfraConfig {
   else {
     console.log("No config found, using standalone mode");
     config = { mode: "standalone" };
+  }
+
+  // Load IdP metadata XML from file if specified
+  if (config.auth?.saml?.idpMetadataFile && !config.auth.saml.idpMetadataXml) {
+    const metadataPath = path.join(configDir, config.auth.saml.idpMetadataFile);
+    if (fs.existsSync(metadataPath)) {
+      config.auth.saml.idpMetadataXml = fs.readFileSync(metadataPath, "utf-8");
+      console.log(`Loaded IdP metadata from: ${metadataPath} (${config.auth.saml.idpMetadataXml.length} chars)`);
+    } else {
+      console.warn(`Warning: IdP metadata file not found: ${metadataPath}`);
+    }
   }
 
   cachedConfig = config;
