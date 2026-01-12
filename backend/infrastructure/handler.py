@@ -143,6 +143,7 @@ def handle_infrastructure(event, auth, project: str, parts: list, config) -> Dic
         return error_response('not_found', f'Unknown sub-resource: {sub_resource}', 404)
 
     # Main infrastructure info
+    # First try query params, then fall back to config
     discovery_tags = None
     discovery_tags_str = query_params.get('discoveryTags', '')
     if discovery_tags_str:
@@ -150,6 +151,10 @@ def handle_infrastructure(event, auth, project: str, parts: list, config) -> Dic
             discovery_tags = json.loads(discovery_tags_str)
         except json.JSONDecodeError:
             pass
+
+    # If no discovery tags from query params, get from config
+    if not discovery_tags and env_config.infrastructure:
+        discovery_tags = env_config.infrastructure.discovery_tags
 
     services_str = query_params.get('services', '')
     services_list = services_str.split(',') if services_str else None
@@ -162,11 +167,22 @@ def handle_infrastructure(event, auth, project: str, parts: list, config) -> Dic
         except json.JSONDecodeError:
             pass
 
+    # Get databases/caches from query params or config
     databases_str = query_params.get('databases', '')
-    databases_list = databases_str.split(',') if databases_str else None
+    if databases_str:
+        databases_list = databases_str.split(',')
+    elif env_config.infrastructure and env_config.infrastructure.databases:
+        databases_list = env_config.infrastructure.databases
+    else:
+        databases_list = None
 
     caches_str = query_params.get('caches', '')
-    caches_list = caches_str.split(',') if caches_str else None
+    if caches_str:
+        caches_list = caches_str.split(',')
+    elif env_config.infrastructure and env_config.infrastructure.caches:
+        caches_list = env_config.infrastructure.caches
+    else:
+        caches_list = None
 
     result = infrastructure.get_infrastructure(
         env,

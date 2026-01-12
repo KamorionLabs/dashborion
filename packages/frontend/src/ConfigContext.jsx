@@ -124,11 +124,21 @@ export function ConfigProvider({ children }) {
       defaultRegion: rawConfig.global.defaultRegion,
       accounts: currentProject.aws?.accounts || {}
     },
-    services: currentProject.services || [],
+    // Services: use explicit list, or extract from topology components for EKS projects
+    services: currentProject.services || (() => {
+      // For EKS projects with topology, extract k8s-deployment/statefulset components as services
+      if (currentProject.topology?.components) {
+        return Object.entries(currentProject.topology.components)
+          .filter(([_, comp]) => comp.type === 'k8s-deployment' || comp.type === 'k8s-statefulset')
+          .map(([name, _]) => name)
+      }
+      return []
+    })(),
     environments: currentProject.environments || [],
     serviceNaming: currentProject.serviceNaming || { prefix: currentProjectId },
     envColors: currentProject.envColors || {},
     infrastructure: currentProject.infrastructure || {},
+    topology: currentProject.topology || null,
 
     // Per-project pipelines configuration
     pipelines: currentProject.pipelines || { enabled: false },

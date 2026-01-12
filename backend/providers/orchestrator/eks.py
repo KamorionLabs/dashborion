@@ -20,6 +20,8 @@ from providers.base import (
     K8sIngressRule,
     K8sPod,
     K8sDeployment,
+    K8sPersistentVolume,
+    K8sPersistentVolumeClaim,
     ProviderFactory
 )
 from config import DashboardConfig

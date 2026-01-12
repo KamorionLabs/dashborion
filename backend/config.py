@@ -90,6 +90,14 @@ class NamingPattern:
 
 
 @dataclass
+class InfrastructureConfig:
+    """Infrastructure discovery configuration for an environment"""
+    discovery_tags: Dict[str, str] = field(default_factory=dict)  # Tags for resource discovery
+    databases: List[str] = field(default_factory=list)  # Database types to discover
+    caches: List[str] = field(default_factory=list)  # Cache types to discover
+
+
+@dataclass
 class EnvironmentConfig:
     """Configuration for a single environment within a project"""
     account_id: str
@@ -100,6 +108,7 @@ class EnvironmentConfig:
     read_role_arn: Optional[str] = None  # Override cross-account read role
     action_role_arn: Optional[str] = None  # Override cross-account action role
     status: Optional[str] = None  # Environment status (active, deployed, planned)
+    infrastructure: Optional[InfrastructureConfig] = None  # Infrastructure discovery config
 
     def to_dict(self) -> dict:
         result = {
@@ -114,6 +123,12 @@ class EnvironmentConfig:
             result['readRoleArn'] = self.read_role_arn
         if self.action_role_arn:
             result['actionRoleArn'] = self.action_role_arn
+        if self.infrastructure:
+            result['infrastructure'] = {
+                'discoveryTags': self.infrastructure.discovery_tags,
+                'databases': self.infrastructure.databases,
+                'caches': self.infrastructure.caches
+            }
         return result
 
 
@@ -362,6 +377,16 @@ def get_config() -> DashboardConfig:
         environments = {}
         envs_data = project_data.get('environments', {})
         for env_name, env_data in envs_data.items():
+            # Parse infrastructure config if present
+            infra_config = None
+            infra_data = env_data.get('infrastructure')
+            if infra_data:
+                infra_config = InfrastructureConfig(
+                    discovery_tags=infra_data.get('discoveryTags', {}),
+                    databases=infra_data.get('databases', []),
+                    caches=infra_data.get('caches', [])
+                )
+
             environments[env_name] = EnvironmentConfig(
                 account_id=env_data.get('accountId', ''),
                 services=env_data.get('services', []),
@@ -370,7 +395,8 @@ def get_config() -> DashboardConfig:
                 namespace=env_data.get('namespace'),
                 read_role_arn=env_data.get('readRoleArn'),
                 action_role_arn=env_data.get('actionRoleArn'),
-                status=env_data.get('status')
+                status=env_data.get('status'),
+                infrastructure=infra_config
             )
 
         projects[project_name] = ProjectConfig(

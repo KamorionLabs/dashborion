@@ -239,11 +239,17 @@ class EKSDynamoProvider(OrchestratorProvider):
         return 'hybris'  # Default namespace
 
     def _get_cross_account_role(self, env: str) -> Optional[str]:
-        """Get cross-account role ARN from config"""
+        """Get cross-account role ARN from config.
+        Uses config.get_read_role_arn_for_env() which resolves:
+        1. environment.readRoleArn (if set)
+        2. crossAccountRoles[accountId].readRoleArn (fallback)
+        """
         if self.config:
             env_config = self.config.get_environment(self.project, env)
             if env_config:
-                return getattr(env_config, 'cross_account_role_arn', None)
+                return self.config.get_read_role_arn_for_env(
+                    self.project, env, env_config.account_id
+                )
         return None
 
     # =========================================================================
@@ -526,6 +532,101 @@ class EKSDynamoProvider(OrchestratorProvider):
         """
         Get all services for an environment.
         Returns Dict[str, Service] where key is service name.
+
+        Uses K8s Services data (check:k8s:services:current) for service names,
+        and pods data for detailed task information.
+        """
+        # Get K8s services data (primary source for service names)
+        svc_result = self._get_data_with_refresh('services', env)
+
+        if svc_result.status in (DataStatus.ERROR, DataStatus.NO_DATA) or not svc_result.data:
+            # Fallback to pods-based detection if services data unavailable
+            return self._get_services_from_pods(env)
+
+        k8s_services = svc_result.data.get('services', [])
+        if not k8s_services:
+            return self._get_services_from_pods(env)
+
+        # Get pods data for detailed task information
+        pods_result = self._get_data_with_refresh('pods', env)
+        pods_data = pods_result.data.get('pods', []) if pods_result.data else []
+
+        # Build a map of selector -> pods for matching
+        # K8s services use selectors to match pods
+        pods_by_selector_value = {}
+        for pod in pods_data:
+            labels = pod.get('labels', {})
+            # Index by app.kubernetes.io/name and app.kubernetes.io/instance
+            for key in ['app.kubernetes.io/name', 'app.kubernetes.io/instance', 'app']:
+                if key in labels:
+                    selector_val = labels[key]
+                    if selector_val not in pods_by_selector_value:
+                        pods_by_selector_value[selector_val] = []
+                    pods_by_selector_value[selector_val].append(pod)
+
+        cluster_name = self._get_cluster_name(env) or 'unknown'
+        services = {}
+
+        for k8s_svc in k8s_services:
+            svc_name = k8s_svc.get('name', '')
+            if not svc_name:
+                continue
+
+            # Get endpoint counts from K8s service data
+            endpoints = k8s_svc.get('endpoints', {})
+            ready_count = endpoints.get('ready', 0)
+            not_ready_count = endpoints.get('notReady', 0)
+            total_count = ready_count + not_ready_count
+
+            # Find matching pods using the service's selector
+            selector = k8s_svc.get('selector', {})
+            matching_pods = []
+
+            # Try to match pods by selector values
+            for selector_key, selector_val in selector.items():
+                if selector_val in pods_by_selector_value:
+                    for pod in pods_by_selector_value[selector_val]:
+                        if pod not in matching_pods:
+                            matching_pods.append(pod)
+                    break  # Found matching pods, no need to try other selectors
+
+            # Build tasks from matching pods
+            tasks = []
+            for pod in matching_pods:
+                pod_status = pod.get('status', 'Unknown')
+                tasks.append(ServiceTask(
+                    task_id=pod.get('name', ''),
+                    status='running' if pod_status == 'Running' else 'pending',
+                    desired_status='running',
+                    health='healthy' if pod_status == 'Running' else 'unhealthy',
+                    az=pod.get('node'),
+                    private_ip=pod.get('ip'),
+                ))
+
+            # Use pod count as desired if no endpoints info (headless services)
+            if total_count == 0 and matching_pods:
+                total_count = len(matching_pods)
+                ready_count = sum(1 for p in matching_pods if p.get('status') == 'Running')
+
+            services[svc_name] = Service(
+                name=svc_name,
+                service=svc_name,
+                environment=env,
+                cluster_name=cluster_name,
+                status='ACTIVE' if ready_count > 0 else 'INACTIVE',
+                desired_count=total_count,
+                running_count=ready_count,
+                pending_count=not_ready_count,
+                tasks=tasks,
+                selector=selector,
+            )
+
+        return services
+
+    def _get_services_from_pods(self, env: str) -> Dict[str, Service]:
+        """
+        Fallback method: Get services by grouping pods.
+        Used when K8s services data is unavailable.
         """
         result = self._get_data_with_refresh('pods', env)
 
@@ -534,16 +635,24 @@ class EKSDynamoProvider(OrchestratorProvider):
 
         pods_data = result.data.get('pods', [])
 
-        # Group pods by component/app label to create services
+        # Group pods by extracting deployment/statefulset name from pod name
         services_map = {}
         for pod in pods_data:
-            # Extract component name from labels or pod name
-            labels = pod.get('labels', {})
-            component = labels.get('app') or labels.get('app.kubernetes.io/name') or pod.get('component')
-            if not component:
-                # Try to extract from pod name (e.g., hybris-0 -> hybris)
-                pod_name = pod.get('name', '')
-                component = pod_name.rsplit('-', 1)[0] if '-' in pod_name else pod_name
+            pod_name = pod.get('name', '')
+            if not pod_name:
+                continue
+
+            # Extract component name from pod name
+            # StatefulSet: hybris-bo-0 -> hybris-bo (last segment is number)
+            # Deployment: apache-5688b6db9b-8ls7j -> apache (remove 2 last segments)
+            parts = pod_name.rsplit('-', 2)
+            if len(parts) >= 3 and parts[-1].isalnum() and not parts[-1].isdigit():
+                # Deployment pattern: name-replicaset-pod
+                component = parts[0]
+            else:
+                # StatefulSet pattern: name-index
+                parts = pod_name.rsplit('-', 1)
+                component = parts[0] if parts[-1].isdigit() else pod_name
 
             if not component:
                 continue
@@ -873,6 +982,47 @@ class EKSDynamoProvider(OrchestratorProvider):
             ))
 
         return nodes
+
+    def get_pvcs(self, env: str, namespace: str = None, force_refresh: bool = False) -> Tuple[List[dict], DataResult]:
+        """
+        Get PersistentVolumeClaims from DynamoDB cache with auto-refresh.
+
+        Returns:
+            Tuple of (pvcs list, DataResult with metadata)
+
+        Each PVC dict contains:
+            name, namespace, status, volume, capacity, accessModes,
+            storageClass, volumeMode, age, labels, efsConfig (if EFS)
+        """
+        result = self._get_data_with_refresh('pvc', env, namespace=namespace, force_refresh=force_refresh)
+
+        if result.status in (DataStatus.ERROR, DataStatus.NO_DATA) or not result.data:
+            return [], result
+
+        pvcs_data = result.data.get('pvcs', [])
+        return pvcs_data, result
+
+    def get_efs_pvcs(self, env: str, namespace: str = None, force_refresh: bool = False) -> List[dict]:
+        """
+        Get EFS-backed PVCs from DynamoDB cache.
+
+        Filters PVCs by storage class containing 'efs'.
+
+        Returns:
+            List of PVC dicts that use EFS storage
+        """
+        pvcs, result = self.get_pvcs(env, namespace=namespace, force_refresh=force_refresh)
+
+        if not pvcs:
+            return []
+
+        # Filter PVCs that use EFS storage class
+        efs_pvcs = [
+            pvc for pvc in pvcs
+            if pvc.get('storageClass', '').lower().startswith('efs')
+        ]
+
+        return efs_pvcs
 
     def get_k8s_summary(self, env: str, force_refresh: bool = False) -> Dict[str, Any]:
         """Get summary of all K8s checks for an environment"""

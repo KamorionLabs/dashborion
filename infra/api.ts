@@ -252,6 +252,8 @@ export function setupRoutes(
   // Comparison routes (environment comparison)
   api.route("GET /api/{project}/comparison/config", lambdas.comparison.arn, authOptions);
   api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/summary", lambdas.comparison.arn, authOptions);
+  api.route("POST /api/{project}/comparison/{sourceEnv}/{destEnv}/trigger", lambdas.comparison.arn, authOptions);
+  api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/status", lambdas.comparison.arn, authOptions);
   api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}", lambdas.comparison.arn, authOptions);
   api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}/history", lambdas.comparison.arn, authOptions);
 }

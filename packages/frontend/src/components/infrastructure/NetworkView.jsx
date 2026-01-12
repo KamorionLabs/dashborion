@@ -30,6 +30,9 @@ export default function NetworkView({
   // Detect orchestrator type
   const isEKS = data.orchestrator === 'eks'
 
+  // For EKS: use services from backend data if SERVICES config is empty
+  const effectiveServices = SERVICES.length > 0 ? SERVICES : Object.keys(services || {})
+
   // Determine which infrastructure components exist
   const hasCloudFront = cloudfront !== null && cloudfront !== undefined
   const hasS3 = s3Buckets && s3Buckets.length > 0
@@ -288,7 +291,7 @@ export default function NetworkView({
                     {/* ECS: Services and Tasks */}
                     {!isEKS && (
                       <>
-                        {SERVICES.map((svc, svcIndex) => {
+                        {effectiveServices.map((svc, svcIndex) => {
                           const service = services?.[svc]
                           const infraService = data?.services?.[svc]
                           const svcData = infraService || service
@@ -442,7 +445,7 @@ export default function NetworkView({
 
             alb.targetGroups?.forEach((tg, tgIndex) => {
               const svc = tg.service
-              const svcIndex = SERVICES.indexOf(svc)
+              const svcIndex = effectiveServices.indexOf(svc)
               if (svcIndex === -1) return
 
               const health = tg?.health?.status

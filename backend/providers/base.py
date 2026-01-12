@@ -191,6 +191,36 @@ class K8sDeployment:
 
 
 @dataclass
+class K8sPersistentVolume:
+    """Kubernetes PersistentVolume information"""
+    name: str
+    capacity: str  # e.g. "100Gi"
+    access_modes: List[str]  # e.g. ["ReadWriteMany"]
+    reclaim_policy: str  # Retain, Delete, Recycle
+    status: str  # Available, Bound, Released, Failed
+    storage_class: Optional[str] = None
+    volume_mode: str = "Filesystem"
+    claim_ref: Optional[str] = None  # namespace/name of bound PVC
+    csi_driver: Optional[str] = None  # e.g. "efs.csi.aws.com"
+    csi_volume_handle: Optional[str] = None  # e.g. EFS filesystem ID
+    labels: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class K8sPersistentVolumeClaim:
+    """Kubernetes PersistentVolumeClaim information"""
+    name: str
+    namespace: str
+    status: str  # Pending, Bound, Lost
+    volume_name: Optional[str] = None  # Name of bound PV
+    capacity: Optional[str] = None  # e.g. "100Gi"
+    access_modes: List[str] = field(default_factory=list)
+    storage_class: Optional[str] = None
+    volume_mode: str = "Filesystem"
+    labels: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class ServiceDeployment:
     """Service deployment information"""
     deployment_id: str
@@ -231,6 +261,7 @@ class Service:
     latest_diff: Optional[TaskDefinitionDiff] = None
     console_url: Optional[str] = None
     account_id: Optional[str] = None
+    selector: Dict[str, str] = field(default_factory=dict)  # K8s selector for grouping services
 
 
 @dataclass

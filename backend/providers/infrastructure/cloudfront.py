@@ -1,10 +1,14 @@
 """
 AWS CloudFront CDN Provider implementation.
+
+Supports:
+- Tag-based discovery (EKS/NewHorizon style)
+- Domain-based discovery (legacy style)
 """
 
 import time
 from urllib.parse import quote
-from typing import List
+from typing import List, Optional, Dict
 
 from providers.base import CDNProvider, ProviderFactory
 from config import DashboardConfig
@@ -14,6 +18,11 @@ from utils.aws import get_cross_account_client, get_action_client, build_sso_con
 class CloudFrontProvider(CDNProvider):
     """
     AWS CloudFront implementation of the CDN provider.
+
+    Discovery order:
+    1. If discovery_tags provided, find distribution by tags
+    2. If domain_patterns provided, match aliases
+    3. Fallback to legacy pattern: {env}.{project}
     """
 
     def __init__(self, config: DashboardConfig, project: str):
@@ -31,87 +40,183 @@ class CloudFrontProvider(CDNProvider):
             project=self.project, env=env
         )
 
-    def get_distribution(self, env: str) -> dict:
-        """Get CloudFront distribution for an environment"""
+    def _get_resourcegroupstaggingapi_client(self, env: str):
+        """Get Resource Groups Tagging API client for tag-based discovery"""
+        env_config = self.config.get_environment(self.project, env)
+        if not env_config:
+            raise ValueError(f"Unknown environment: {env}")
+        # CloudFront tags are global (us-east-1)
+        return get_cross_account_client(
+            'resourcegroupstaggingapi', env_config.account_id, 'us-east-1',
+            project=self.project, env=env
+        )
+
+    def _find_distribution_by_tags(self, env: str, discovery_tags: Dict[str, str]) -> Optional[str]:
+        """Find CloudFront distribution ID by tags"""
+        if not discovery_tags:
+            return None
+
+        try:
+            tagging = self._get_resourcegroupstaggingapi_client(env)
+
+            # Build tag filters
+            tag_filters = [{'Key': k, 'Values': [v]} for k, v in discovery_tags.items()]
+
+            response = tagging.get_resources(
+                ResourceTypeFilters=['cloudfront:distribution'],
+                TagFilters=tag_filters
+            )
+
+            # Return first matching distribution ARN -> extract ID
+            for resource in response.get('ResourceTagMappingList', []):
+                arn = resource['ResourceARN']
+                # ARN format: arn:aws:cloudfront::account:distribution/DIST_ID
+                dist_id = arn.split('/')[-1]
+                return dist_id
+
+            return None
+        except Exception as e:
+            print(f"Tag-based CloudFront discovery failed: {e}")
+            return None
+
+    def _find_distribution_by_domain(self, env: str, cloudfront, domain_patterns: List[str]) -> Optional[dict]:
+        """Find CloudFront distribution by domain aliases"""
+        try:
+            distributions = cloudfront.list_distributions()
+            for dist in distributions.get('DistributionList', {}).get('Items', []):
+                aliases = dist.get('Aliases', {}).get('Items', [])
+                for pattern in domain_patterns:
+                    if any(pattern in alias for alias in aliases):
+                        return dist
+            return None
+        except Exception as e:
+            print(f"Domain-based CloudFront discovery failed: {e}")
+            return None
+
+    def get_distribution(self, env: str, discovery_tags: Dict[str, str] = None,
+                         domain_patterns: List[str] = None) -> dict:
+        """Get CloudFront distribution for an environment
+
+        Args:
+            env: Environment name
+            discovery_tags: Dict of tags to find distribution (e.g., {'rubix_Environment': 'stg'})
+            domain_patterns: List of domain patterns to match aliases
+        """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         try:
             cloudfront = self._get_cloudfront_client(env)
-            domain_suffix = f"{env}.{self.project}"
+            dist = None
+            dist_id = None
+            discovery_method = None
 
-            distributions = cloudfront.list_distributions()
-            for dist in distributions.get('DistributionList', {}).get('Items', []):
-                aliases = dist.get('Aliases', {}).get('Items', [])
-                if any(domain_suffix in alias for alias in aliases):
+            # 1. Try tag-based discovery first
+            if discovery_tags:
+                dist_id = self._find_distribution_by_tags(env, discovery_tags)
+                if dist_id:
+                    discovery_method = 'tags'
+
+            # 2. Try domain patterns
+            if not dist_id and domain_patterns:
+                dist = self._find_distribution_by_domain(env, cloudfront, domain_patterns)
+                if dist:
                     dist_id = dist['Id']
+                    discovery_method = 'domain'
 
-                    result = {
-                        'id': dist_id,
-                        'domainName': dist['DomainName'],
-                        'aliases': aliases,
-                        'status': dist['Status'],
-                        'enabled': dist['Enabled'],
-                        'origins': [],
-                        'cacheBehaviors': [],
-                        'webAclId': None,
-                        'consoleUrl': build_sso_console_url(
-                            self.config.sso_portal_url,
-                            env_config.account_id,
-                            f"https://console.aws.amazon.com/cloudfront/v4/home#/distributions/{dist_id}"
-                        )
-                    }
+            # 3. Fallback to legacy pattern
+            if not dist_id:
+                domain_suffix = f"{env}.{self.project}"
+                distributions = cloudfront.list_distributions()
+                for d in distributions.get('DistributionList', {}).get('Items', []):
+                    aliases = d.get('Aliases', {}).get('Items', [])
+                    if any(domain_suffix in alias for alias in aliases):
+                        dist = d
+                        dist_id = d['Id']
+                        discovery_method = 'naming'
+                        break
 
-                    # Get origins
-                    for origin in dist.get('Origins', {}).get('Items', []):
-                        origin_domain = origin['DomainName']
-                        origin_type = 'alb' if 'elb.amazonaws.com' in origin_domain else 's3' if 's3.' in origin_domain else 'custom'
-                        result['origins'].append({
-                            'id': origin['Id'],
-                            'domainName': origin_domain,
-                            'type': origin_type,
-                            'path': origin.get('OriginPath', '')
-                        })
+            if not dist_id:
+                return None
 
-                    # Get full distribution config
-                    try:
-                        dist_config = cloudfront.get_distribution(Id=dist_id)
-                        dist_detail = dist_config.get('Distribution', {}).get('DistributionConfig', {})
+            # Get distribution details if not already fetched
+            if not dist:
+                distributions = cloudfront.list_distributions()
+                for d in distributions.get('DistributionList', {}).get('Items', []):
+                    if d['Id'] == dist_id:
+                        dist = d
+                        break
 
-                        # WAF Web ACL
-                        web_acl = dist_detail.get('WebACLId', '')
-                        if web_acl:
-                            result['webAclId'] = web_acl
+            if not dist:
+                return {'error': f'Distribution {dist_id} not found in list'}
 
-                        # Default cache behavior
-                        default_behavior = dist_detail.get('DefaultCacheBehavior', {})
-                        if default_behavior:
-                            result['cacheBehaviors'].append({
-                                'pathPattern': 'Default (*)',
-                                'targetOriginId': default_behavior.get('TargetOriginId'),
-                                'viewerProtocolPolicy': default_behavior.get('ViewerProtocolPolicy'),
-                                'defaultTTL': default_behavior.get('DefaultTTL', 0),
-                                'compress': default_behavior.get('Compress', False),
-                                'lambdaEdge': len(default_behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
-                            })
+            aliases = dist.get('Aliases', {}).get('Items', [])
 
-                        # Additional cache behaviors
-                        for behavior in dist_detail.get('CacheBehaviors', {}).get('Items', []):
-                            result['cacheBehaviors'].append({
-                                'pathPattern': behavior.get('PathPattern'),
-                                'targetOriginId': behavior.get('TargetOriginId'),
-                                'viewerProtocolPolicy': behavior.get('ViewerProtocolPolicy'),
-                                'defaultTTL': behavior.get('DefaultTTL', 0),
-                                'compress': behavior.get('Compress', False),
-                                'lambdaEdge': len(behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
-                            })
-                    except:
-                        pass
+            result = {
+                'id': dist_id,
+                'domainName': dist['DomainName'],
+                'aliases': aliases,
+                'status': dist['Status'],
+                'enabled': dist['Enabled'],
+                'origins': [],
+                'cacheBehaviors': [],
+                'webAclId': None,
+                'discoveryMethod': discovery_method,
+                'consoleUrl': build_sso_console_url(
+                    self.config.sso_portal_url,
+                    env_config.account_id,
+                    f"https://console.aws.amazon.com/cloudfront/v4/home#/distributions/{dist_id}"
+                )
+            }
 
-                    return result
+            # Get origins
+            for origin in dist.get('Origins', {}).get('Items', []):
+                origin_domain = origin['DomainName']
+                origin_type = 'alb' if 'elb.amazonaws.com' in origin_domain else 's3' if 's3.' in origin_domain else 'custom'
+                result['origins'].append({
+                    'id': origin['Id'],
+                    'domainName': origin_domain,
+                    'type': origin_type,
+                    'path': origin.get('OriginPath', '')
+                })
 
-            return {'error': f'Distribution not found for domain pattern: {domain_suffix}'}
+            # Get full distribution config for more details
+            try:
+                dist_config = cloudfront.get_distribution(Id=dist_id)
+                dist_detail = dist_config.get('Distribution', {}).get('DistributionConfig', {})
+
+                # WAF Web ACL
+                web_acl = dist_detail.get('WebACLId', '')
+                if web_acl:
+                    result['webAclId'] = web_acl
+
+                # Default cache behavior
+                default_behavior = dist_detail.get('DefaultCacheBehavior', {})
+                if default_behavior:
+                    result['cacheBehaviors'].append({
+                        'pathPattern': 'Default (*)',
+                        'targetOriginId': default_behavior.get('TargetOriginId'),
+                        'viewerProtocolPolicy': default_behavior.get('ViewerProtocolPolicy'),
+                        'defaultTTL': default_behavior.get('DefaultTTL', 0),
+                        'compress': default_behavior.get('Compress', False),
+                        'lambdaEdge': len(default_behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
+                    })
+
+                # Additional cache behaviors
+                for behavior in dist_detail.get('CacheBehaviors', {}).get('Items', []):
+                    result['cacheBehaviors'].append({
+                        'pathPattern': behavior.get('PathPattern'),
+                        'targetOriginId': behavior.get('TargetOriginId'),
+                        'viewerProtocolPolicy': behavior.get('ViewerProtocolPolicy'),
+                        'defaultTTL': behavior.get('DefaultTTL', 0),
+                        'compress': behavior.get('Compress', False),
+                        'lambdaEdge': len(behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
+                    })
+            except:
+                pass
+
+            return result
 
         except Exception as e:
             return {'error': str(e)}

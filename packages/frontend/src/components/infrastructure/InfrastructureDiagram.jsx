@@ -143,6 +143,7 @@ export default function InfrastructureDiagram({ data, env, onComponentSelect, se
           SERVICES={SERVICES}
           getServiceName={getServiceName}
           domains={domains}
+          appConfig={appConfig}
         />
       )}
 

@@ -77,6 +77,7 @@ class InfrastructureAggregator:
             'workloads': {},  # Unified term for services/deployments
             'rds': None,
             'redis': None,
+            'efs': None,
             'network': None,
             'orchestrator': orchestrator_type
         }
@@ -88,10 +89,30 @@ class InfrastructureAggregator:
         if domain_config and domain_config.get('domains'):
             domain_prefixes = list(domain_config['domains'].values())
 
-        # CloudFront (using dedicated provider)
+        # For EKS: Get Ingress to find ALB hostname
+        ingress_hostname = None
+        ingresses = []
+        if orchestrator_type == 'eks':
+            try:
+                orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
+                if hasattr(orchestrator, 'get_ingresses'):
+                    ingresses = orchestrator.get_ingresses(env)
+                    # Find the first ingress with a load balancer hostname
+                    for ing in ingresses:
+                        if ing.load_balancer_hostname:
+                            ingress_hostname = ing.load_balancer_hostname
+                            break
+            except Exception as e:
+                print(f"Failed to get ingresses for ALB discovery: {e}")
+
+        # CloudFront (using dedicated provider with tag-based discovery)
         try:
             if self.cdn_provider:
-                cf_data = self._get_cloudfront_for_infrastructure(env, domain_suffix, account_id, domain_prefixes)
+                cf_data = self.cdn_provider.get_distribution(
+                    env,
+                    discovery_tags=discovery_tags,
+                    domain_patterns=domain_prefixes
+                )
                 result['cloudfront'] = cf_data
                 if cf_data and 'origins' in cf_data:
                     for origin in cf_data.get('origins', []):
@@ -101,10 +122,26 @@ class InfrastructureAggregator:
         except Exception as e:
             result['cloudfront'] = {'error': str(e)}
 
-        # ALB (using dedicated provider)
+        # ALB (using dedicated provider with tag-based and ingress-based discovery)
         try:
             if self.loadbalancer_provider:
-                result['alb'] = self.loadbalancer_provider.get_load_balancer(env, services)
+                result['alb'] = self.loadbalancer_provider.get_load_balancer(
+                    env,
+                    services=services,
+                    discovery_tags=discovery_tags,
+                    ingress_hostname=ingress_hostname
+                )
+                # Enrich ALB with ingress info for EKS
+                if result['alb'] and ingresses and orchestrator_type == 'eks':
+                    result['alb']['ingresses'] = [
+                        {
+                            'name': ing.name,
+                            'namespace': ing.namespace,
+                            'hosts': [r.host for r in ing.rules if r.host],
+                            'paths': [r.path for r in ing.rules if r.path]
+                        }
+                        for ing in ingresses
+                    ]
         except Exception as e:
             result['alb'] = {'error': str(e)}
 
@@ -148,12 +185,50 @@ class InfrastructureAggregator:
         except Exception as e:
             result['workloads'] = {'error': str(e)}
 
-        # RDS (using dedicated provider with discovery tags)
+        # RDS (using dedicated provider with tag-based discovery)
         try:
             if self.database_provider:
-                result['rds'] = self._get_rds_for_infrastructure(env, account_id, discovery_tags, databases)
+                result['rds'] = self.database_provider.get_database_status(
+                    env,
+                    discovery_tags=discovery_tags,
+                    database_types=databases
+                )
         except Exception as e:
             result['rds'] = {'error': str(e)}
+
+        # EFS (for EKS clusters) - enriched with PVC data
+        if orchestrator_type == 'eks':
+            try:
+                result['efs'] = self._get_efs_for_infrastructure(env, account_id, discovery_tags)
+
+                # Enrich with PVC data if EFS was found
+                if result['efs'] and not result['efs'].get('error'):
+                    try:
+                        orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
+                        if hasattr(orchestrator, 'get_efs_pvcs'):
+                            efs_pvcs = orchestrator.get_efs_pvcs(env)
+                            if efs_pvcs:
+                                result['efs']['pvcs'] = [
+                                    {
+                                        'name': pvc.get('name'),
+                                        'namespace': pvc.get('namespace'),
+                                        'status': pvc.get('status'),
+                                        'capacity': pvc.get('capacity'),
+                                        'storageClass': pvc.get('storageClass'),
+                                        'volumeMode': pvc.get('volumeMode'),
+                                        'age': pvc.get('age'),
+                                    }
+                                    for pvc in efs_pvcs
+                                ]
+                                result['efs']['pvcCount'] = len(efs_pvcs)
+                                # Calculate total EFS capacity from PVCs
+                                total_bytes = sum(pvc.get('capacityBytes', 0) for pvc in efs_pvcs)
+                                if total_bytes > 0:
+                                    result['efs']['pvcTotalCapacity'] = self._format_capacity(total_bytes)
+                    except Exception as e:
+                        print(f"Failed to enrich EFS with PVC data: {e}")
+            except Exception as e:
+                result['efs'] = {'error': str(e)}
 
         # ElastiCache Redis (using dedicated provider)
         if caches:
@@ -256,7 +331,8 @@ class InfrastructureAggregator:
                     'tasksByLocation': tasks_by_location,  # Unified: AZ or Node
                     'deployments': deployments,
                     'isRollingUpdate': is_rolling,
-                    'consoleUrl': svc.console_url
+                    'consoleUrl': svc.console_url,
+                    'selector': svc.selector if hasattr(svc, 'selector') else {},  # K8s selector for grouping
                 }
             except Exception as e:
                 result[name] = {'error': str(e)}
@@ -406,6 +482,65 @@ class InfrastructureAggregator:
                     )
                 }
         return None
+
+    def _format_capacity(self, bytes_value: int) -> str:
+        """Format bytes to human-readable capacity."""
+        if bytes_value >= 1024**4:
+            return f"{bytes_value / 1024**4:.0f}Ti"
+        elif bytes_value >= 1024**3:
+            return f"{bytes_value / 1024**3:.0f}Gi"
+        elif bytes_value >= 1024**2:
+            return f"{bytes_value / 1024**2:.0f}Mi"
+        elif bytes_value >= 1024:
+            return f"{bytes_value / 1024:.0f}Ki"
+        return f"{bytes_value}"
+
+    def _get_efs_for_infrastructure(self, env: str, account_id: str, discovery_tags: dict = None) -> dict:
+        """Get EFS filesystem info (filtered by discovery_tags)
+
+        Args:
+            env: Environment name
+            account_id: AWS account ID
+            discovery_tags: Dict of tags to filter EFS filesystems
+        """
+        env_config = self.config.get_environment(self.project, env)
+        efs = get_cross_account_client('efs', account_id, env_config.region, project=self.project, env=env)
+
+        try:
+            filesystems = efs.describe_file_systems()
+            for fs in filesystems.get('FileSystems', []):
+                fs_id = fs['FileSystemId']
+                fs_name = fs.get('Name', fs_id)
+
+                # Get EFS tags
+                try:
+                    tag_response = efs.describe_tags(FileSystemId=fs_id)
+                    fs_tags = tag_response.get('Tags', [])
+                except Exception:
+                    fs_tags = []
+
+                # Check if discovery_tags match (or fallback to name-based matching)
+                from providers.infrastructure.elasticache import matches_discovery_tags
+                tags_match = matches_discovery_tags(fs_tags, discovery_tags) if discovery_tags else (self.project.replace('-', '') in fs_name.lower().replace('-', ''))
+
+                if tags_match:
+                    return {
+                        'fileSystemId': fs_id,
+                        'name': fs_name,
+                        'lifeCycleState': fs['LifeCycleState'],
+                        'sizeInBytes': fs.get('SizeInBytes', {}).get('Value', 0),
+                        'performanceMode': fs.get('PerformanceMode', 'generalPurpose'),
+                        'throughputMode': fs.get('ThroughputMode', 'bursting'),
+                        'encrypted': fs.get('Encrypted', False),
+                        'numberOfMountTargets': fs.get('NumberOfMountTargets', 0),
+                        'consoleUrl': build_sso_console_url(
+                            self.config.sso_portal_url, account_id,
+                            f"https://{env_config.region}.console.aws.amazon.com/efs/home?region={env_config.region}#/file-systems/{fs_id}"
+                        )
+                    }
+            return None
+        except Exception as e:
+            return {'error': str(e)}
 
     def get_routing_details(self, env: str, service_security_groups: list = None) -> dict:
         """Get detailed routing and security information (called on demand via toggle)
