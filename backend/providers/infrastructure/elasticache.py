@@ -5,7 +5,7 @@ AWS ElastiCache Provider implementation.
 from typing import List, Optional
 
 from providers.base import CacheProvider, ProviderFactory
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, build_sso_console_url
 
 

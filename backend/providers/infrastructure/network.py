@@ -5,7 +5,7 @@ AWS VPC Network Provider implementation.
 from typing import List, Optional
 
 from providers.base import NetworkProvider, ProviderFactory
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, build_sso_console_url
 
 

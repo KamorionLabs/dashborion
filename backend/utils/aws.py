@@ -7,7 +7,7 @@ import time
 from urllib.parse import quote
 from typing import Optional
 
-from config import get_config
+from app_config import get_config
 
 
 # Cache for cross-account clients with TTL (50 minutes, credentials expire after 1 hour)

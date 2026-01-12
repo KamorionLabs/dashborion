@@ -61,15 +61,6 @@ export interface ManagedConfig {
     /** ARN of existing IAM role for Lambda@Edge functions (must be in us-east-1) */
     roleArn?: string;
   };
-  /** DynamoDB tables - reference existing tables instead of creating new ones */
-  dynamodb?: {
-    tokensTable?: string;
-    deviceCodesTable?: string;
-    usersTable?: string;
-    groupsTable?: string;
-    permissionsTable?: string;
-    auditTable?: string;
-  };
 }
 
 /**
@@ -366,11 +357,20 @@ export interface InfraConfig {
     /** AWS account ID where Step Functions are deployed */
     accountId?: string;
     /** DynamoDB table name for ops dashboard state */
-    tableName?: string;
+    stateTableName?: string;
+    /** Step function prefix for ops dashboard */
+    stepFunctionPrefix?: string;
     /** Cache TTL in seconds (default 3600) */
     cacheTtlSeconds?: number;
     /** Enable auto-refresh via Step Functions (default true) */
     autoRefresh?: boolean;
+  };
+  /** Config Registry settings */
+  configRegistry?: {
+    /** Override table name (default: derived from naming convention) */
+    tableName?: string;
+    /** Seed database with data from infra.config.json on deploy */
+    seedOnDeploy?: boolean;
   };
 }
 
@@ -446,13 +446,6 @@ export function loadConfig(): InfraConfig {
  */
 export function getLambdaRoleArn(config: InfraConfig): string | undefined {
   return config.managed?.lambda?.roleArn || config.lambda?.roleArn;
-}
-
-/**
- * Check if we should use existing DynamoDB tables
- */
-export function useExistingDynamoDB(config: InfraConfig): boolean {
-  return config.mode === "managed" && !!config.managed?.dynamodb;
 }
 
 /**

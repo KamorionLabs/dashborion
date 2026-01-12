@@ -33,7 +33,7 @@ from shared.response import (
     get_body,
     get_query_param,
 )
-from config import get_config
+from app_config import get_config
 from providers import ProviderFactory
 from providers.aggregators.infrastructure import InfrastructureAggregator
 from auth.user_management import _audit_log

@@ -1,6 +1,7 @@
 """
 Dynamic configuration system for the Operations Dashboard.
-Supports multi-project, multi-environment configurations loaded from SSM Parameter Store.
+
+Configuration is stored in DynamoDB Config Registry (CONFIG_TABLE_NAME env var).
 """
 
 import os
@@ -8,64 +9,95 @@ import json
 import boto3
 from botocore.exceptions import ClientError
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from functools import lru_cache
+from decimal import Decimal
 
-# SSM client (lazy initialized)
-_ssm_client = None
-
-
-def _get_ssm_client():
-    """Get or create SSM client."""
-    global _ssm_client
-    if _ssm_client is None:
-        _ssm_client = boto3.client('ssm')
-    return _ssm_client
+# Lazy initialized client
+_dynamodb_resource = None
 
 
-def _load_ssm_config(prefix: str) -> tuple[dict, dict]:
+class ConfigNotInitializedError(Exception):
+    """Raised when the Config Registry is not initialized or inaccessible."""
+
+    def __init__(self, message: str = "Configuration not initialized", details: Optional[str] = None):
+        self.message = message
+        self.details = details
+        super().__init__(self.message)
+
+    def to_dict(self) -> dict:
+        """Convert to dict for API response."""
+        result = {
+            "error": "CONFIG_NOT_INITIALIZED",
+            "message": self.message
+        }
+        if self.details:
+            result["details"] = self.details
+        return result
+
+
+def _get_dynamodb_resource():
+    """Get or create DynamoDB resource."""
+    global _dynamodb_resource
+    if _dynamodb_resource is None:
+        _dynamodb_resource = boto3.resource('dynamodb')
+    return _dynamodb_resource
+
+
+def _decimal_to_native(obj):
+    """Convert Decimal to int/float for JSON compatibility."""
+    if isinstance(obj, Decimal):
+        if obj % 1 == 0:
+            return int(obj)
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: _decimal_to_native(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_decimal_to_native(v) for v in obj]
+    return obj
+
+
+def _load_dynamodb_config(table_name: str) -> Tuple[dict, dict, dict, dict, dict]:
     """
-    Load PROJECTS and CROSS_ACCOUNT_ROLES from SSM Parameter Store.
-
-    Projects are discovered via GetParametersByPath under {prefix}/projects/
-    Cross-account roles are loaded from {prefix}/cross-account-roles
-
-    Args:
-        prefix: SSM parameter prefix (e.g., /dashborion/rubix)
+    Load configuration from DynamoDB Config Registry.
 
     Returns:
-        Tuple of (projects_dict, cross_account_roles_dict)
+        Tuple of (projects, environments, clusters, aws_accounts, settings)
     """
-    ssm = _get_ssm_client()
+    table = _get_dynamodb_resource().Table(table_name)
 
-    # Discover all project parameters under {prefix}/projects/
+    # Scan all items (config table is small)
+    response = table.scan()
+    items = response.get('Items', [])
+
+    # Organize by type
+    settings = {}
     projects = {}
-    paginator = ssm.get_paginator('get_parameters_by_path')
-    for page in paginator.paginate(
-        Path=f"{prefix}/projects",
-        Recursive=False,
-        WithDecryption=True
-    ):
-        for param in page.get('Parameters', []):
-            project_data = json.loads(param['Value'])
-            project_id = project_data.get('id') or param['Name'].split('/')[-1]
-            projects[project_id] = project_data
+    environments = {}  # Keyed by "projectId#envId"
+    clusters = {}
+    aws_accounts = {}
 
-    # Load cross-account roles
-    cross_account_roles = {}
-    try:
-        response = ssm.get_parameter(
-            Name=f"{prefix}/cross-account-roles",
-            WithDecryption=True
-        )
-        cross_account_roles = json.loads(response['Parameter']['Value'])
-    except ClientError as e:
-        if e.response['Error']['Code'] == 'ParameterNotFound':
-            pass  # No cross-account roles configured
-        else:
-            raise
+    for item in items:
+        item = _decimal_to_native(item)
+        pk = item.get('pk')
+        sk = item.get('sk')
 
-    return projects, cross_account_roles
+        if pk == 'GLOBAL' and sk == 'settings':
+            settings = item
+        elif pk == 'PROJECT':
+            project_id = sk
+            projects[project_id] = item
+        elif pk == 'ENV':
+            # sk format: projectId#envId
+            environments[sk] = item
+        elif pk == 'GLOBAL' and sk.startswith('cluster:'):
+            cluster_id = sk.replace('cluster:', '')
+            clusters[cluster_id] = item
+        elif pk == 'GLOBAL' and sk.startswith('aws-account:'):
+            account_id = sk.replace('aws-account:', '')
+            aws_accounts[account_id] = item
+
+    return projects, environments, clusters, aws_accounts, settings
 
 
 @dataclass
@@ -348,73 +380,125 @@ class DashboardConfig:
         }
 
 
-@lru_cache(maxsize=1)
-def get_config() -> DashboardConfig:
-    """
-    Load configuration from SSM Parameter Store.
-    Uses caching to avoid repeated parsing and SSM calls.
-    """
-
-    # Core settings
-    region = os.environ.get('AWS_REGION_DEFAULT', os.environ.get('AWS_REGION', 'eu-west-3'))
-    shared_services_account = os.environ.get('SHARED_SERVICES_ACCOUNT', '')
-    sso_portal_url = os.environ.get('SSO_PORTAL_URL', '')
-
-    # Load projects and cross-account roles from SSM
-    ssm_prefix = os.environ.get('CONFIG_SSM_PREFIX')
-    if not ssm_prefix:
-        raise ValueError("CONFIG_SSM_PREFIX environment variable is required")
-
-    projects_raw, roles_raw = _load_ssm_config(ssm_prefix)
-
-    # Parse projects
-    projects = {}
-    for project_name, project_data in projects_raw.items():
-        # Skip comment entries
-        if project_name.startswith('_'):
-            continue
-
-        environments = {}
-        envs_data = project_data.get('environments', {})
-        for env_name, env_data in envs_data.items():
-            # Parse infrastructure config if present
-            infra_config = None
-            infra_data = env_data.get('infrastructure')
-            if infra_data:
-                infra_config = InfrastructureConfig(
-                    discovery_tags=infra_data.get('discoveryTags', {}),
-                    databases=infra_data.get('databases', []),
-                    caches=infra_data.get('caches', [])
-                )
-
-            environments[env_name] = EnvironmentConfig(
-                account_id=env_data.get('accountId', ''),
-                services=env_data.get('services', []),
-                region=env_data.get('region', region),
-                cluster_name=env_data.get('clusterName'),
-                namespace=env_data.get('namespace'),
-                read_role_arn=env_data.get('readRoleArn'),
-                action_role_arn=env_data.get('actionRoleArn'),
-                status=env_data.get('status'),
-                infrastructure=infra_config
+def _parse_environment_config(env_data: dict, default_region: str) -> EnvironmentConfig:
+    """Parse environment data into EnvironmentConfig dataclass."""
+    infra_config = None
+    infra_data = env_data.get('infrastructure') or env_data.get('discoveryTags')
+    if infra_data:
+        if isinstance(infra_data, dict) and 'discoveryTags' in infra_data:
+            # Full infrastructure config
+            infra_config = InfrastructureConfig(
+                discovery_tags=infra_data.get('discoveryTags', {}),
+                databases=infra_data.get('databases', []),
+                caches=infra_data.get('caches', [])
+            )
+        else:
+            # discoveryTags only (from DynamoDB format)
+            infra_config = InfrastructureConfig(
+                discovery_tags=env_data.get('discoveryTags', {}),
+                databases=env_data.get('databases', []),
+                caches=env_data.get('caches', [])
             )
 
-        projects[project_name] = ProjectConfig(
-            name=project_name,
-            display_name=project_data.get('displayName', project_name),
+    # Support both SSM format (clusterName) and DynamoDB format (kubernetes.clusterName)
+    k8s = env_data.get('kubernetes', {})
+    cluster_name = env_data.get('clusterName') or k8s.get('clusterName')
+    namespace = env_data.get('namespace') or k8s.get('namespace')
+
+    return EnvironmentConfig(
+        account_id=env_data.get('accountId', ''),
+        services=env_data.get('services', []),
+        region=env_data.get('region', default_region),
+        cluster_name=cluster_name,
+        namespace=namespace,
+        read_role_arn=env_data.get('readRoleArn'),
+        action_role_arn=env_data.get('actionRoleArn'),
+        status=env_data.get('status'),
+        infrastructure=infra_config
+    )
+
+
+def _load_config_from_dynamodb(table_name: str, region: str) -> Tuple[dict, dict, dict, dict]:
+    """
+    Load and parse config from DynamoDB into projects and cross_account_roles.
+
+    Returns:
+        Tuple of (projects, cross_account_roles, features, comparison)
+    """
+    projects_raw, envs_raw, clusters_raw, accounts_raw, settings = _load_dynamodb_config(table_name)
+
+    # Parse projects and environments
+    projects = {}
+    for project_id, project_data in projects_raw.items():
+        # Build environments dict for this project
+        environments = {}
+        for env_key, env_data in envs_raw.items():
+            # env_key format: "projectId#envId"
+            if env_key.startswith(f"{project_id}#"):
+                env_id = env_key.split('#', 1)[1]
+                environments[env_id] = _parse_environment_config(env_data, region)
+
+        projects[project_id] = ProjectConfig(
+            name=project_id,
+            display_name=project_data.get('displayName', project_id),
             environments=environments,
             idp_group_mapping=project_data.get('idpGroupMapping')
         )
 
-    # Parse cross-account roles (indexed by account ID)
+    # Parse AWS accounts as cross-account roles
     cross_account_roles = {}
-    for account_id, role_data in roles_raw.items():
-        # Skip comment entries
-        if account_id.startswith('_'):
-            continue
+    for account_id, account_data in accounts_raw.items():
         cross_account_roles[account_id] = CrossAccountRole(
-            read_role_arn=role_data.get('readRoleArn', ''),
-            action_role_arn=role_data.get('actionRoleArn', '')
+            read_role_arn=account_data.get('readRoleArn', ''),
+            action_role_arn=account_data.get('actionRoleArn', '')
+        )
+
+    # Extract features and comparison from settings
+    features = settings.get('features', {})
+    comparison = settings.get('comparison', {})
+
+    return projects, cross_account_roles, features, comparison
+
+
+@lru_cache(maxsize=1)
+def get_config() -> DashboardConfig:
+    """
+    Load configuration from DynamoDB Config Registry.
+
+    Requires CONFIG_TABLE_NAME environment variable.
+    Raises ConfigNotInitializedError if config is not accessible or empty.
+
+    Uses caching to avoid repeated parsing and AWS calls.
+    """
+
+    # Core settings from env vars
+    region = os.environ.get('AWS_REGION_DEFAULT', os.environ.get('AWS_REGION', 'eu-west-3'))
+    shared_services_account = os.environ.get('SHARED_SERVICES_ACCOUNT', '')
+    sso_portal_url = os.environ.get('SSO_PORTAL_URL', '')
+
+    # Config table is required
+    config_table = os.environ.get('CONFIG_TABLE_NAME')
+    if not config_table:
+        raise ConfigNotInitializedError(
+            message="Configuration table not configured",
+            details="CONFIG_TABLE_NAME environment variable is not set"
+        )
+
+    # Load from DynamoDB Config Registry
+    try:
+        projects, cross_account_roles, features, comparison = _load_config_from_dynamodb(config_table, region)
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        raise ConfigNotInitializedError(
+            message="Unable to access configuration table",
+            details=f"DynamoDB error: {error_code} - {str(e)}"
+        )
+
+    # Check if config is empty (no projects configured)
+    if not projects:
+        raise ConfigNotInitializedError(
+            message="Configuration not initialized",
+            details="No projects found in Config Registry. Use the CLI or API to seed the configuration."
         )
 
     # Parse naming pattern
@@ -448,12 +532,8 @@ def get_config() -> DashboardConfig:
     # GitHub org (for commit links)
     github_org = os.environ.get('GITHUB_ORG', ci_provider.github_owner)
 
-    # Parse feature flags
-    features_raw = json.loads(os.environ.get('FEATURES', '{}'))
-    features = {k: v for k, v in features_raw.items() if isinstance(v, bool)}
-
-    # Parse comparison config (optional)
-    comparison = json.loads(os.environ.get('COMPARISON', '{}'))
+    # Filter features to boolean values only
+    features = {k: v for k, v in features.items() if isinstance(v, bool)}
 
     return DashboardConfig(
         region=region,

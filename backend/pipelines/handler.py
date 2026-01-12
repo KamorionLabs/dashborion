@@ -25,7 +25,7 @@ from shared.response import (
     get_path,
     get_body,
 )
-from config import get_config
+from app_config import get_config
 from providers import ProviderFactory
 from auth.user_management import _audit_log
 

@@ -24,7 +24,7 @@ from providers.base import (
     K8sPersistentVolumeClaim,
     ProviderFactory
 )
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, get_action_client, build_sso_console_url
 from utils.instance_specs import format_instance_type
 

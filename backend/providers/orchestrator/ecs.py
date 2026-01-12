@@ -14,7 +14,7 @@ from providers.base import (
     TaskDefinitionDiff,
     ProviderFactory
 )
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, get_action_client, build_sso_console_url
 
 

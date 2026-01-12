@@ -9,7 +9,6 @@ import { NamingHelper } from "./naming";
 import { TagsHelper } from "./tags";
 import { DynamoDBTables, getLinkableResources, getAllTableArns } from "./dynamodb";
 import { KmsKeyRef, getKmsPermissions } from "./kms";
-import { SsmParameters, getSsmReadPermissions } from "./ssm";
 
 /**
  * Lambda function references
@@ -25,6 +24,7 @@ export interface LambdaFunctions {
   events: sst.aws.Function;
   admin: sst.aws.Function;
   comparison: sst.aws.Function;
+  configRegistry: sst.aws.Function;
 }
 
 /**
@@ -33,8 +33,6 @@ export interface LambdaFunctions {
 export interface LambdaEnvVars {
   AWS_REGION_DEFAULT: string;
   AWS_ACCOUNT_ID?: string;
-  // SSM prefix for large config (PROJECTS, CROSS_ACCOUNT_ROLES)
-  CONFIG_SSM_PREFIX: string;
   CORS_ORIGINS: string;
   AUTH_PROVIDER: string;
   CI_PROVIDER: string;
@@ -47,6 +45,7 @@ export interface LambdaEnvVars {
   GROUPS_TABLE_NAME: $util.Output<string> | string;
   PERMISSIONS_TABLE_NAME: $util.Output<string> | string;
   AUDIT_TABLE_NAME: $util.Output<string> | string;
+  CONFIG_TABLE_NAME: $util.Output<string> | string;
   PYTHONPATH: string;
   // Ops Dashboard integration (Step Functions)
   OPS_DASHBOARD_TABLE?: string;
@@ -61,13 +60,12 @@ export interface LambdaEnvVars {
 /**
  * Build common environment variables
  *
- * Large configs (PROJECTS, CROSS_ACCOUNT_ROLES) are stored in SSM Parameter Store.
+ * Configuration is stored in DynamoDB Config Registry (CONFIG_TABLE_NAME).
  */
 export function buildLambdaEnv(
   config: InfraConfig,
   tables: DynamoDBTables,
   frontendDomain: string,
-  ssmPrefix: string,
   kmsKey?: KmsKeyRef
 ): LambdaEnvVars {
   // Build allowed account IDs from projects and cross-account roles
@@ -100,7 +98,6 @@ export function buildLambdaEnv(
 
   const env: LambdaEnvVars = {
     AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
-    CONFIG_SSM_PREFIX: ssmPrefix,
     CORS_ORIGINS: `https://${frontendDomain}`,
     AUTH_PROVIDER: config.auth?.provider || "simple",
     CI_PROVIDER: JSON.stringify(ciProvider),
@@ -113,6 +110,7 @@ export function buildLambdaEnv(
     GROUPS_TABLE_NAME: tables.groups.name,
     PERMISSIONS_TABLE_NAME: tables.permissions.name,
     AUDIT_TABLE_NAME: tables.audit.name,
+    CONFIG_TABLE_NAME: tables.config.name,
     PYTHONPATH: "/var/task/backend:/var/task",
   };
 
@@ -166,20 +164,16 @@ export function createLambdaFunctions(
   tags: TagsHelper,
   tables: DynamoDBTables,
   frontendDomain: string,
-  ssmParams: SsmParameters,
   kmsKey?: KmsKeyRef
 ): LambdaFunctions {
   const useExistingRole = useExistingLambdaRole(config);
   const roleArn = getLambdaRoleArn(config);
   const vpcConfig = getLambdaVpcConfig(config);
 
-  const env = buildLambdaEnv(config, tables, frontendDomain, ssmParams.prefix, kmsKey);
+  const env = buildLambdaEnv(config, tables, frontendDomain, kmsKey);
   const crossAccountRoleArns = getCrossAccountRoleArns(config);
   const tableArns = getAllTableArns(tables);
   const linkableResources = getLinkableResources(tables);
-
-  // SSM read permissions for config
-  const ssmPermissions = useExistingRole ? [] : getSsmReadPermissions(ssmParams.prefix);
 
   // Common copyFiles for Python backend
   const commonCopyFiles = [{ from: "backend", to: "backend" }];
@@ -240,7 +234,6 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoReadPermissions,
       ...kmsPermissions,
-      ...ssmPermissions,
     ],
     transform: {
       function: {
@@ -282,7 +275,6 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...kmsPermissions,
-      ...ssmPermissions,
     ],
     transform: {
       function: {
@@ -353,7 +345,6 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
-      ...ssmPermissions,
       ...sfnPermissions,
       ...(useExistingRole ? [] : [{
         actions: ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:DescribeLogStreams", "logs:DescribeLogGroups"],
@@ -381,7 +372,6 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
-      ...ssmPermissions,
       ...sfnPermissions,
     ],
     transform: {
@@ -405,7 +395,6 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
-      ...ssmPermissions,
       // CodePipeline/ECR permissions (only when SST creates the role)
       ...(useExistingRole ? [] : [{
         actions: [
@@ -465,7 +454,6 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
-      ...ssmPermissions,
       // CloudTrail for enriching events
       ...(useExistingRole ? [] : [{
         actions: [
@@ -510,7 +498,6 @@ export function createLambdaFunctions(
     ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
     permissions: [
       ...dynamoFullPermissions,
-      ...ssmPermissions,
     ],
     transform: {
       function: {
@@ -533,11 +520,31 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoReadPermissions,
       ...assumeRolePermission,
-      ...ssmPermissions,
     ],
     transform: {
       function: {
         name: naming.lambda("comparison"),
+        tags: tags.component("lambda"),
+      },
+    },
+  });
+
+  // --------------------------------------------------------------------------
+  // Config Registry Lambda (projects, environments, clusters, accounts, settings)
+  // --------------------------------------------------------------------------
+  const configRegistry = new sst.aws.Function("ConfigRegistryHandler", {
+    ...baseFunctionConfig,
+    handler: "backend/config/handler.handler",
+    memory: "256 MB",
+    timeout: "30 seconds",
+    environment: env as any,
+    ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
+    permissions: [
+      ...dynamoFullPermissions,
+    ],
+    transform: {
+      function: {
+        name: naming.lambda("config-registry"),
         tags: tags.component("lambda"),
       },
     },
@@ -554,5 +561,6 @@ export function createLambdaFunctions(
     events,
     admin,
     comparison,
+    configRegistry,
   };
 }

@@ -16,7 +16,7 @@ from providers.base import (
     ContainerImage,
     ProviderFactory
 )
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, build_sso_console_url
 
 

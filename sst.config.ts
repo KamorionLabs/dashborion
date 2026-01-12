@@ -110,7 +110,8 @@ export default $config({
     // 2. KMS key for auth encryption
     const kmsKey = config.auth?.enabled !== false ? createKmsKey(config, naming, tags) : undefined;
 
-    // 3. SSM parameters for large config (avoids Lambda 4KB env var limit)
+    // 3. SSM parameters (deprecated - config now uses DynamoDB Config Registry)
+    // Kept for backward compatibility during migration
     const ssmParams = createSsmParameters(config, naming, tags);
 
     // 4. API Certificate (if custom domain with cross-account DNS)
@@ -121,8 +122,8 @@ export default $config({
     // 5. API Gateway
     const api = createApiGateway(config, naming, tags, frontendDomain, apiDomain, apiCertificateArn);
 
-    // 6. Lambda functions (with SSM config and KMS key)
-    const lambdas = createLambdaFunctions(config, naming, tags, tables, frontendDomain, ssmParams, kmsKey);
+    // 6. Lambda functions (config is loaded from DynamoDB via CONFIG_TABLE_NAME)
+    const lambdas = createLambdaFunctions(config, naming, tags, tables, frontendDomain, kmsKey);
 
     // 7. Setup API Gateway authorizer and routes
     const authorizer = setupAuthorizer(api, lambdas.authorizer);

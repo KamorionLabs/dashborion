@@ -4,7 +4,7 @@ Infrastructure Aggregator - combines all infrastructure providers for the topolo
 
 from typing import Dict, List, Optional
 
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, build_sso_console_url
 from providers.base import ProviderFactory
 

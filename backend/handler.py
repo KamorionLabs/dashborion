@@ -25,7 +25,7 @@ Routes:
 import json
 from datetime import datetime
 
-from config import get_config
+from app_config import get_config, ConfigNotInitializedError
 from utils.aws import get_user_email
 from providers.base import ProviderFactory
 
@@ -249,6 +249,15 @@ def lambda_handler(event, context):
             'statusCode': status_code,
             'headers': headers,
             'body': json.dumps(result, default=str)
+        }
+
+    except ConfigNotInitializedError as e:
+        # Config not initialized - return 503 Service Unavailable with details
+        print(f"Config not initialized: {e.message} - {e.details}")
+        return {
+            'statusCode': 503,
+            'headers': headers,
+            'body': json.dumps(e.to_dict())
         }
 
     except Exception as e:

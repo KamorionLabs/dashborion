@@ -37,7 +37,7 @@ from providers.base import (
     K8sDeployment,
     ProviderFactory,
 )
-from config import DashboardConfig
+from app_config import DashboardConfig
 
 
 # DynamoDB table name
@@ -877,8 +877,14 @@ class EKSDynamoProvider(OrchestratorProvider):
         if result.status in (DataStatus.ERROR, DataStatus.NO_DATA) or not result.data:
             return [], result
 
-        ingresses_data = result.data.get('ingresses', [])
+        ingresses_raw = result.data.get('ingresses', [])
         ingresses = []
+
+        # Handle both dict format (by type: bo, private, unknown) and list format
+        if isinstance(ingresses_raw, dict):
+            ingresses_data = list(ingresses_raw.values())
+        else:
+            ingresses_data = ingresses_raw
 
         for ing_data in ingresses_data:
             rules = []
@@ -891,13 +897,19 @@ class EKSDynamoProvider(OrchestratorProvider):
                     service_port=rule.get('servicePort'),
                 ))
 
+            # Extract load balancer hostname from nested structure or flat field
+            lb_data = ing_data.get('loadBalancer', {})
+            lb_hostname = lb_data.get('hostname') if isinstance(lb_data, dict) else None
+            if not lb_hostname:
+                lb_hostname = ing_data.get('loadBalancerHostname')
+
             ingresses.append(K8sIngress(
                 name=ing_data.get('name', ''),
                 namespace=ing_data.get('namespace', namespace or ''),
-                ingress_class=ing_data.get('ingressClass'),
+                ingress_class=ing_data.get('class') or ing_data.get('ingressClass'),
                 rules=rules,
                 tls=ing_data.get('tls', []),
-                load_balancer_hostname=ing_data.get('loadBalancerHostname'),
+                load_balancer_hostname=lb_hostname,
                 load_balancer_ip=ing_data.get('loadBalancerIP'),
                 annotations=ing_data.get('annotations', {}),
                 labels=ing_data.get('labels', {}),

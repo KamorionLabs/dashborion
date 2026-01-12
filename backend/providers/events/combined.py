@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any
 import boto3
 
 from providers.base import EventsProvider, Event, ProviderFactory
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client
 
 

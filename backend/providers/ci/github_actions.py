@@ -16,7 +16,7 @@ from providers.base import (
     ContainerImage,
     ProviderFactory
 )
-from config import DashboardConfig
+from app_config import DashboardConfig
 
 
 class GitHubActionsProvider(CIProvider):

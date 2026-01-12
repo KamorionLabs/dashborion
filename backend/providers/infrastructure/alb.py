@@ -11,7 +11,7 @@ from typing import List, Optional, Dict
 from urllib.parse import quote
 
 from providers.base import LoadBalancerProvider, ProviderFactory
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, build_sso_console_url
 
 

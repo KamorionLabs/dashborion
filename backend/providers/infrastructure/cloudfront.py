@@ -11,7 +11,7 @@ from urllib.parse import quote
 from typing import List, Optional, Dict
 
 from providers.base import CDNProvider, ProviderFactory
-from config import DashboardConfig
+from app_config import DashboardConfig
 from utils.aws import get_cross_account_client, get_action_client, build_sso_console_url
 
 
@@ -51,10 +51,10 @@ class CloudFrontProvider(CDNProvider):
             project=self.project, env=env
         )
 
-    def _find_distribution_by_tags(self, env: str, discovery_tags: Dict[str, str]) -> Optional[str]:
-        """Find CloudFront distribution ID by tags"""
+    def _find_distribution_by_tags(self, env: str, discovery_tags: Dict[str, str]) -> List[str]:
+        """Find CloudFront distribution IDs by tags (returns all matching)"""
         if not discovery_tags:
-            return None
+            return []
 
         try:
             tagging = self._get_resourcegroupstaggingapi_client(env)
@@ -67,17 +67,18 @@ class CloudFrontProvider(CDNProvider):
                 TagFilters=tag_filters
             )
 
-            # Return first matching distribution ARN -> extract ID
+            # Return all matching distribution IDs
+            dist_ids = []
             for resource in response.get('ResourceTagMappingList', []):
                 arn = resource['ResourceARN']
                 # ARN format: arn:aws:cloudfront::account:distribution/DIST_ID
                 dist_id = arn.split('/')[-1]
-                return dist_id
+                dist_ids.append(dist_id)
 
-            return None
+            return dist_ids
         except Exception as e:
             print(f"Tag-based CloudFront discovery failed: {e}")
-            return None
+            return []
 
     def _find_distribution_by_domain(self, env: str, cloudfront, domain_patterns: List[str]) -> Optional[dict]:
         """Find CloudFront distribution by domain aliases"""
@@ -95,12 +96,16 @@ class CloudFrontProvider(CDNProvider):
 
     def get_distribution(self, env: str, discovery_tags: Dict[str, str] = None,
                          domain_patterns: List[str] = None) -> dict:
-        """Get CloudFront distribution for an environment
+        """Get CloudFront distribution(s) for an environment
 
         Args:
             env: Environment name
             discovery_tags: Dict of tags to find distribution (e.g., {'rubix_Environment': 'stg'})
             domain_patterns: List of domain patterns to match aliases
+
+        Returns:
+            For single distribution: dict with distribution details
+            For multiple distributions: dict with aggregated info and 'distributions' list
         """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
@@ -108,115 +113,153 @@ class CloudFrontProvider(CDNProvider):
 
         try:
             cloudfront = self._get_cloudfront_client(env)
-            dist = None
-            dist_id = None
+            dist_ids = []
             discovery_method = None
 
-            # 1. Try tag-based discovery first
+            # 1. Try tag-based discovery first (returns all matching)
             if discovery_tags:
-                dist_id = self._find_distribution_by_tags(env, discovery_tags)
-                if dist_id:
+                dist_ids = self._find_distribution_by_tags(env, discovery_tags)
+                if dist_ids:
                     discovery_method = 'tags'
 
-            # 2. Try domain patterns
-            if not dist_id and domain_patterns:
+            # 2. Try domain patterns (single distribution)
+            if not dist_ids and domain_patterns:
                 dist = self._find_distribution_by_domain(env, cloudfront, domain_patterns)
                 if dist:
-                    dist_id = dist['Id']
+                    dist_ids = [dist['Id']]
                     discovery_method = 'domain'
 
-            # 3. Fallback to legacy pattern
-            if not dist_id:
+            # 3. Fallback to legacy pattern (single distribution)
+            if not dist_ids:
                 domain_suffix = f"{env}.{self.project}"
                 distributions = cloudfront.list_distributions()
                 for d in distributions.get('DistributionList', {}).get('Items', []):
                     aliases = d.get('Aliases', {}).get('Items', [])
                     if any(domain_suffix in alias for alias in aliases):
-                        dist = d
-                        dist_id = d['Id']
+                        dist_ids = [d['Id']]
                         discovery_method = 'naming'
                         break
 
-            if not dist_id:
+            if not dist_ids:
                 return None
 
-            # Get distribution details if not already fetched
-            if not dist:
-                distributions = cloudfront.list_distributions()
-                for d in distributions.get('DistributionList', {}).get('Items', []):
-                    if d['Id'] == dist_id:
-                        dist = d
-                        break
+            # Fetch all distributions in one call
+            distributions_list = cloudfront.list_distributions()
+            all_dists = {d['Id']: d for d in distributions_list.get('DistributionList', {}).get('Items', [])}
 
-            if not dist:
-                return {'error': f'Distribution {dist_id} not found in list'}
+            # Build result for each distribution
+            results = []
+            all_aliases = []
+            all_origins = []
+            statuses = set()
 
-            aliases = dist.get('Aliases', {}).get('Items', [])
+            for dist_id in dist_ids:
+                dist = all_dists.get(dist_id)
+                if not dist:
+                    continue
 
-            result = {
-                'id': dist_id,
-                'domainName': dist['DomainName'],
-                'aliases': aliases,
-                'status': dist['Status'],
-                'enabled': dist['Enabled'],
-                'origins': [],
-                'cacheBehaviors': [],
+                aliases = dist.get('Aliases', {}).get('Items', [])
+                all_aliases.extend(aliases)
+                statuses.add(dist['Status'])
+
+                dist_result = {
+                    'id': dist_id,
+                    'domainName': dist['DomainName'],
+                    'aliases': aliases,
+                    'status': dist['Status'],
+                    'enabled': dist['Enabled'],
+                    'origins': [],
+                    'cacheBehaviors': [],
+                    'webAclId': None,
+                    'consoleUrl': build_sso_console_url(
+                        self.config.sso_portal_url,
+                        env_config.account_id,
+                        f"https://console.aws.amazon.com/cloudfront/v4/home#/distributions/{dist_id}"
+                    )
+                }
+
+                # Get origins
+                for origin in dist.get('Origins', {}).get('Items', []):
+                    origin_domain = origin['DomainName']
+                    origin_type = 'alb' if 'elb.amazonaws.com' in origin_domain else 's3' if 's3.' in origin_domain else 'custom'
+                    origin_info = {
+                        'id': origin['Id'],
+                        'domainName': origin_domain,
+                        'type': origin_type,
+                        'path': origin.get('OriginPath', '')
+                    }
+                    dist_result['origins'].append(origin_info)
+                    all_origins.append(origin_info)
+
+                # Get full distribution config for more details
+                try:
+                    dist_config = cloudfront.get_distribution(Id=dist_id)
+                    dist_detail = dist_config.get('Distribution', {}).get('DistributionConfig', {})
+
+                    # WAF Web ACL
+                    web_acl = dist_detail.get('WebACLId', '')
+                    if web_acl:
+                        dist_result['webAclId'] = web_acl
+
+                    # Default cache behavior
+                    default_behavior = dist_detail.get('DefaultCacheBehavior', {})
+                    if default_behavior:
+                        dist_result['cacheBehaviors'].append({
+                            'pathPattern': 'Default (*)',
+                            'targetOriginId': default_behavior.get('TargetOriginId'),
+                            'viewerProtocolPolicy': default_behavior.get('ViewerProtocolPolicy'),
+                            'defaultTTL': default_behavior.get('DefaultTTL', 0),
+                            'compress': default_behavior.get('Compress', False),
+                            'lambdaEdge': len(default_behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
+                        })
+
+                    # Additional cache behaviors
+                    for behavior in dist_detail.get('CacheBehaviors', {}).get('Items', []):
+                        dist_result['cacheBehaviors'].append({
+                            'pathPattern': behavior.get('PathPattern'),
+                            'targetOriginId': behavior.get('TargetOriginId'),
+                            'viewerProtocolPolicy': behavior.get('ViewerProtocolPolicy'),
+                            'defaultTTL': behavior.get('DefaultTTL', 0),
+                            'compress': behavior.get('Compress', False),
+                            'lambdaEdge': len(behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
+                        })
+                except:
+                    pass
+
+                results.append(dist_result)
+
+            # Single distribution: return directly (backward compatible)
+            if len(results) == 1:
+                results[0]['discoveryMethod'] = discovery_method
+                return results[0]
+
+            # Multiple distributions: return aggregated result
+            # Determine overall status
+            if all(s == 'Deployed' for s in statuses):
+                overall_status = 'Deployed'
+            elif 'InProgress' in statuses:
+                overall_status = 'InProgress'
+            else:
+                overall_status = 'Mixed'
+
+            return {
+                'id': f"{len(results)} distributions",
+                'domainName': results[0]['domainName'] if results else None,
+                'aliases': list(set(all_aliases)),  # Deduplicated
+                'status': overall_status,
+                'enabled': all(d['enabled'] for d in results),
+                'origins': all_origins,
+                'cacheBehaviors': [],  # Too complex to aggregate
                 'webAclId': None,
                 'discoveryMethod': discovery_method,
+                'distributionCount': len(results),
+                'distributions': results,  # Full details for each
                 'consoleUrl': build_sso_console_url(
                     self.config.sso_portal_url,
                     env_config.account_id,
-                    f"https://console.aws.amazon.com/cloudfront/v4/home#/distributions/{dist_id}"
+                    "https://console.aws.amazon.com/cloudfront/v4/home#/distributions"
                 )
             }
-
-            # Get origins
-            for origin in dist.get('Origins', {}).get('Items', []):
-                origin_domain = origin['DomainName']
-                origin_type = 'alb' if 'elb.amazonaws.com' in origin_domain else 's3' if 's3.' in origin_domain else 'custom'
-                result['origins'].append({
-                    'id': origin['Id'],
-                    'domainName': origin_domain,
-                    'type': origin_type,
-                    'path': origin.get('OriginPath', '')
-                })
-
-            # Get full distribution config for more details
-            try:
-                dist_config = cloudfront.get_distribution(Id=dist_id)
-                dist_detail = dist_config.get('Distribution', {}).get('DistributionConfig', {})
-
-                # WAF Web ACL
-                web_acl = dist_detail.get('WebACLId', '')
-                if web_acl:
-                    result['webAclId'] = web_acl
-
-                # Default cache behavior
-                default_behavior = dist_detail.get('DefaultCacheBehavior', {})
-                if default_behavior:
-                    result['cacheBehaviors'].append({
-                        'pathPattern': 'Default (*)',
-                        'targetOriginId': default_behavior.get('TargetOriginId'),
-                        'viewerProtocolPolicy': default_behavior.get('ViewerProtocolPolicy'),
-                        'defaultTTL': default_behavior.get('DefaultTTL', 0),
-                        'compress': default_behavior.get('Compress', False),
-                        'lambdaEdge': len(default_behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
-                    })
-
-                # Additional cache behaviors
-                for behavior in dist_detail.get('CacheBehaviors', {}).get('Items', []):
-                    result['cacheBehaviors'].append({
-                        'pathPattern': behavior.get('PathPattern'),
-                        'targetOriginId': behavior.get('TargetOriginId'),
-                        'viewerProtocolPolicy': behavior.get('ViewerProtocolPolicy'),
-                        'defaultTTL': behavior.get('DefaultTTL', 0),
-                        'compress': behavior.get('Compress', False),
-                        'lambdaEdge': len(behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
-                    })
-            except:
-                pass
-
-            return result
 
         except Exception as e:
             return {'error': str(e)}
