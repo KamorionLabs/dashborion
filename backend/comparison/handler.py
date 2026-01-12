@@ -26,7 +26,7 @@ from shared.response import (
     get_query_param,
 )
 from config import get_config
-from providers.comparison import DynamoDBComparisonProvider
+from providers.comparison import DynamoDBComparisonProvider, ComparisonOrchestratorProvider
 
 
 def _get_comparison_keys(project: str, source_env: str, dest_env: str, config) -> Tuple[str, str, str]:
@@ -143,9 +143,9 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if method == 'OPTIONS':
         return json_response(200, {})
 
-    # Only GET is supported
-    if method != 'GET':
-        return error_response('method_not_allowed', 'Only GET is supported', 405)
+    # GET and POST supported
+    if method not in ('GET', 'POST'):
+        return error_response('method_not_allowed', 'Only GET and POST are supported', 405)
 
     # Parse path: /api/{project}/comparison/...
     parts = path.strip('/').split('/')
@@ -187,7 +187,51 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # Route: /api/{project}/comparison/{sourceEnv}/{destEnv}/summary
         if len(parts) == 6 and parts[5] == 'summary':
-            return handle_summary(provider, pk, source_label, dest_label, project, source_env, dest_env)
+            # Get comparison config for refresh threshold
+            comparison_config = getattr(config, 'comparison', None) or {}
+            refresh_threshold = comparison_config.get('refreshThresholdSeconds', 3600)
+
+            # Initialize orchestrator provider
+            orch_provider = ComparisonOrchestratorProvider(
+                refresh_threshold_seconds=refresh_threshold
+            )
+
+            return handle_summary(
+                provider, orch_provider, pk, source_label, dest_label,
+                project, source_env, dest_env
+            )
+
+        # Route: /api/{project}/comparison/{sourceEnv}/{destEnv}/trigger (POST)
+        if len(parts) == 6 and parts[5] == 'trigger':
+            if method != 'POST':
+                return error_response('method_not_allowed', 'Only POST is supported for trigger', 405)
+
+            # Check action permission for trigger
+            if not check_permission(auth, Action.DEPLOY, project, source_env):
+                return error_response('forbidden', f'Permission denied: action on {project}/{source_env}', 403)
+
+            comparison_config = getattr(config, 'comparison', None) or {}
+            refresh_threshold = comparison_config.get('refreshThresholdSeconds', 3600)
+
+            orch_provider = ComparisonOrchestratorProvider(
+                refresh_threshold_seconds=refresh_threshold
+            )
+
+            force = get_query_param(event, 'force', 'false').lower() == 'true'
+            wait = get_query_param(event, 'wait', 'false').lower() == 'true'
+
+            return handle_trigger(orch_provider, project, source_env, dest_env, force, wait)
+
+        # Route: /api/{project}/comparison/{sourceEnv}/{destEnv}/status
+        if len(parts) == 6 and parts[5] == 'status':
+            comparison_config = getattr(config, 'comparison', None) or {}
+            refresh_threshold = comparison_config.get('refreshThresholdSeconds', 3600)
+
+            orch_provider = ComparisonOrchestratorProvider(
+                refresh_threshold_seconds=refresh_threshold
+            )
+
+            return handle_status(orch_provider, project, source_env, dest_env)
 
         # Route: /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}
         if len(parts) >= 6:
@@ -234,6 +278,7 @@ def handle_config(project: str, config, auth) -> Dict[str, Any]:
 
 def handle_summary(
     provider: DynamoDBComparisonProvider,
+    orch_provider: ComparisonOrchestratorProvider,
     pk: str,
     source_label: str,
     dest_label: str,
@@ -241,7 +286,7 @@ def handle_summary(
     source_env: str,
     dest_env: str
 ) -> Dict[str, Any]:
-    """Handle comparison summary request"""
+    """Handle comparison summary request with execution status"""
     try:
         summary = provider.get_comparison_summary(
             pk=pk,
@@ -252,7 +297,62 @@ def handle_summary(
         result['project'] = project
         result['sourceEnv'] = source_env
         result['destEnv'] = dest_env
+
+        # Add execution status
+        exec_state = orch_provider.get_execution_state(project, source_env, dest_env)
+        result['executionStatus'] = exec_state.to_dict()
+
+        # Add refresh info
+        last_updated = summary.last_updated.isoformat() if summary.last_updated else None
+        result['shouldAutoRefresh'] = orch_provider.should_auto_refresh(
+            project, source_env, dest_env, last_updated, summary.pending_checks
+        )
+        result['refreshThresholdSeconds'] = orch_provider.refresh_threshold_seconds
+
         return json_response(200, result)
+
+    except Exception as e:
+        return error_response('error', str(e), 500)
+
+
+def handle_trigger(
+    provider: ComparisonOrchestratorProvider,
+    project: str,
+    source_env: str,
+    dest_env: str,
+    force: bool = False,
+    wait: bool = False,
+) -> Dict[str, Any]:
+    """Handle trigger comparison request"""
+    try:
+        result = provider.trigger_orchestrator(
+            project=project,
+            source_env=source_env,
+            dest_env=dest_env,
+            force=force,
+            wait=wait,
+        )
+        return json_response(200, result)
+
+    except Exception as e:
+        return error_response('error', str(e), 500)
+
+
+def handle_status(
+    provider: ComparisonOrchestratorProvider,
+    project: str,
+    source_env: str,
+    dest_env: str,
+) -> Dict[str, Any]:
+    """Handle execution status request"""
+    try:
+        exec_state = provider.get_execution_state(project, source_env, dest_env)
+        return json_response(200, {
+            'project': project,
+            'sourceEnv': source_env,
+            'destEnv': dest_env,
+            **exec_state.to_dict(),
+        })
 
     except Exception as e:
         return error_response('error', str(e), 500)

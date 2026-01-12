@@ -102,11 +102,15 @@ class ComparisonSummary:
     target: str
     source_label: str
     destination_label: str
-    overall_status: str  # synced, differs, critical
+    overall_status: str  # synced, differs, critical, incomplete, incomplete_differs, incomplete_critical
     overall_sync_percentage: float
     items: List[ComparisonItem] = field(default_factory=list)
     categories: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     last_updated: Optional[datetime] = None
+    # New fields for tracking completeness
+    total_checks: int = 0
+    completed_checks: int = 0
+    pending_checks: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -119,6 +123,10 @@ class ComparisonSummary:
             'items': [item.to_dict() for item in self.items],
             'categories': self.categories,
             'lastUpdated': self.last_updated.isoformat() if self.last_updated else None,
+            # Completeness info for frontend
+            'totalChecks': self.total_checks,
+            'completedChecks': self.completed_checks,
+            'pendingChecks': self.pending_checks,
         }
 
 
@@ -327,15 +335,29 @@ class DynamoDBComparisonProvider:
         total_synced = sum(1 for i in items if i.status == 'synced')
         total_differs = sum(1 for i in items if i.status == 'differs')
         total_critical = sum(1 for i in items if i.status == 'critical')
-        total_items = len([i for i in items if i.status not in ('pending', 'error')])
+        total_pending = sum(1 for i in items if i.status == 'pending')
+        total_error = sum(1 for i in items if i.status == 'error')
+        total_with_data = len([i for i in items if i.status not in ('pending', 'error')])
+        total_items = len(items)
 
-        if total_critical > 0:
+        # Determine overall status - "incomplete" if checks are missing data
+        if total_pending > 0 or total_error > 0:
+            # Checks are missing data - status reflects this
+            if total_critical > 0:
+                overall_status = 'incomplete_critical'
+            elif total_differs > 0:
+                overall_status = 'incomplete_differs'
+            else:
+                overall_status = 'incomplete'
+        elif total_critical > 0:
             overall_status = 'critical'
         elif total_differs > 0:
             overall_status = 'differs'
         else:
             overall_status = 'synced'
 
+        # Calculate percentage including ALL checks (pending = 0%)
+        # This gives a realistic view: 2 synced out of 11 total = 18%, not 100%
         overall_percentage = (total_synced / total_items * 100) if total_items > 0 else 0
 
         return ComparisonSummary(
@@ -348,6 +370,9 @@ class DynamoDBComparisonProvider:
             items=items,
             categories=categories_summary,
             last_updated=latest_update,
+            total_checks=total_items,
+            completed_checks=total_with_data,
+            pending_checks=total_pending,
         )
 
     def get_comparison_detail(

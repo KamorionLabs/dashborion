@@ -281,6 +281,123 @@ environments:
 | `/api/pipelines/deploy/{env}/{service}` | GET | Deploy pipeline status |
 | `/api/images/{service}` | GET | ECR images |
 
+### Comparison (Environment Sync)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/{project}/comparison/config` | GET | Available comparison pairs |
+| `/api/{project}/comparison/{sourceEnv}/{destEnv}/summary` | GET | Comparison summary with execution status |
+| `/api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}` | GET | Detailed comparison for a check type |
+| `/api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}/history` | GET | Historical comparison data |
+| `/api/{project}/comparison/{sourceEnv}/{destEnv}/trigger` | POST | Trigger comparison orchestrator |
+| `/api/{project}/comparison/{sourceEnv}/{destEnv}/status` | GET | Execution status |
+
+---
+
+## Comparison Feature
+
+The Comparison feature provides visual environment synchronization monitoring between source and destination environments.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Frontend (React)                                                        │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐         │
+│  │ ComparisonPage  │  │ HeroSummary     │  │ SimpleView      │         │
+│  │ (main page)     │  │ (donut charts)  │  │ (non-tech view) │         │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘         │
+│           └────────────────────┼────────────────────┘                   │
+│                                │                                         │
+│  ┌─────────────────────────────┴─────────────────────────────┐         │
+│  │ ComparisonCard, SyncStatusRing, SyncFlowConnector         │         │
+│  └───────────────────────────────────────────────────────────┘         │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   │ API calls
+┌──────────────────────────────────▼──────────────────────────────────────┐
+│  Backend (Lambda)                                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │ comparison/handler.py - Routes and permission checks                 ││
+│  └──────────────────────────────────┬──────────────────────────────────┘│
+│                                     │                                    │
+│  ┌──────────────────────────────────┴──────────────────────────────────┐│
+│  │ providers/comparison/                                                ││
+│  │ ├── dynamodb.py - DynamoDBComparisonProvider (read comparison data) ││
+│  │ └── orchestrator.py - ComparisonOrchestratorProvider (trigger SF)   ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   │
+┌──────────────────────────────────▼──────────────────────────────────────┐
+│  Step Functions (ops-dashboard-*)                                        │
+│  ├── k8s-pods-compare, k8s-services-compare, k8s-ingress-compare       │
+│  ├── k8s-pvc-compare, k8s-secrets-compare                               │
+│  ├── config-sm-compare (Secrets Manager), config-ssm-compare (SSM)     │
+│  └── Orchestrator: ops-dashboard-comparison-orchestrator                │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                   │
+┌──────────────────────────────────▼──────────────────────────────────────┐
+│  DynamoDB (ops-dashboard-shared-state)                                   │
+│  pk: {project}#comparison:{sourceEnv}:{destEnv}                         │
+│  sk: check:{category}:{type}:current                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Frontend Components
+
+| Component | Location | Description |
+|-----------|----------|-------------|
+| `ComparisonPage` | `components/comparison/` | Main page with view selector |
+| `HeroSummary` | `components/comparison/` | Overview with animated donut charts |
+| `SimpleView` | `components/comparison/` | Simplified view for non-technical users |
+| `ReadinessView` | `components/comparison/` | Full technical details |
+| `ComparisonCard` | `components/comparison/` | Individual check card with progress bar |
+| `SyncStatusRing` | `components/comparison/` | Animated SVG donut chart |
+| `SyncFlowConnector` | `components/comparison/` | Animated flow line between environments |
+| `ViewSelector` | `components/comparison/` | Toggle between Simple/Technical views |
+
+### Backend Providers
+
+| Provider | Location | Description |
+|----------|----------|-------------|
+| `DynamoDBComparisonProvider` | `providers/comparison/dynamodb.py` | Read comparison data from DynamoDB |
+| `ComparisonOrchestratorProvider` | `providers/comparison/orchestrator.py` | Trigger Step Function orchestrator |
+
+### Key Features
+
+**Auto-refresh**: When `shouldAutoRefresh` is true (data stale or pending checks), frontend automatically triggers comparison.
+
+**Execution tracking**: Prevents duplicate Step Function executions via DynamoDB state.
+
+**View modes**:
+- **Simple View**: Big status indicator, category summary bars, friendly for non-technical users
+- **Technical View**: Full grid of comparison cards, detailed metrics
+
+**Status indicators**:
+- **synced** (green): Environments match
+- **differs** (yellow): Minor differences
+- **critical** (red): Major differences
+- **incomplete** (orange): Missing data, needs trigger
+
+### Configuration (`infra.config.json`)
+
+```json
+{
+  "projects": {
+    "my-project": {
+      "comparison": {
+        "refreshThresholdSeconds": 3600
+      }
+    }
+  },
+  "comparison": {
+    "groups": [
+      { "prefix": "src-", "label": "Source", "role": "source" },
+      { "prefix": "dst-", "label": "Destination", "role": "destination" }
+    ]
+  }
+}
+```
+
 ---
 
 ## Conventions

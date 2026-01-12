@@ -101,10 +101,24 @@ export default function ComparisonCard({
   const StatusIcon = config.icon;
   const TypeIcon = CHECK_TYPE_ICONS[checkType] || Server;
 
-  const formatTime = (date) => {
-    if (!date) return 'Never';
+  const formatDateTime = (date) => {
+    if (!date) return null;
     const d = new Date(date);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    if (isToday) {
+      return `Today ${time}`;
+    } else if (isYesterday) {
+      return `Yesterday ${time}`;
+    } else {
+      return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + time;
+    }
   };
 
   return (
@@ -168,11 +182,16 @@ export default function ComparisonCard({
       </div>
 
       {/* Last updated */}
-      {lastUpdated && (
-        <div className="mt-2 text-xs text-gray-500 text-right">
-          Updated {formatTime(lastUpdated)}
-        </div>
-      )}
+      <div className="mt-2 text-xs text-gray-500 text-right">
+        {lastUpdated ? (
+          <>
+            <Clock className="w-3 h-3 inline mr-1" />
+            {formatDateTime(lastUpdated)}
+          </>
+        ) : (
+          <span className="text-gray-600 italic">No data yet</span>
+        )}
+      </div>
     </div>
   );
 }

@@ -4,6 +4,7 @@
  * Shows source and destination health with animated sync flow between them.
  */
 
+import { AlertTriangle, Clock } from 'lucide-react';
 import SyncStatusRing from './SyncStatusRing';
 import SyncFlowConnector from './SyncFlowConnector';
 
@@ -14,7 +15,12 @@ export default function HeroSummary({
   overallSyncPercentage = 0,
   categories = {},
   lastUpdated,
+  totalChecks = 0,
+  completedChecks = 0,
+  pendingChecks = 0,
 }) {
+  // Check if comparison is incomplete
+  const isIncomplete = overallStatus?.startsWith('incomplete');
   // Calculate category percentages
   const categoryStats = Object.entries(categories).map(([name, stats]) => ({
     name,
@@ -27,10 +33,24 @@ export default function HeroSummary({
   const sourceHealth = Math.min(100, overallSyncPercentage + 5);
   const destHealth = overallSyncPercentage;
 
-  const formatTime = (date) => {
+  const formatDateTime = (date) => {
     if (!date) return null;
     const d = new Date(date);
-    return d.toLocaleString();
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    if (isToday) {
+      return `Today ${time}`;
+    } else if (isYesterday) {
+      return `Yesterday ${time}`;
+    } else {
+      return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + time;
+    }
   };
 
   return (
@@ -39,11 +59,26 @@ export default function HeroSummary({
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-bold text-gray-100">Environment Comparison</h2>
         {lastUpdated && (
-          <span className="text-sm text-gray-500">
-            Last updated: {formatTime(lastUpdated)}
+          <span className="text-sm text-gray-500 flex items-center gap-1">
+            <Clock className="w-3.5 h-3.5" />
+            {formatDateTime(lastUpdated)}
           </span>
         )}
       </div>
+
+      {/* Incomplete warning banner */}
+      {isIncomplete && (
+        <div className="mb-6 p-4 bg-orange-500/10 border border-orange-500/30 rounded-lg flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-orange-400 flex-shrink-0" />
+          <div className="flex-1">
+            <span className="text-orange-300 font-medium">Comparison Incomplete</span>
+            <span className="text-orange-400/80 ml-2">
+              Only {completedChecks} of {totalChecks} checks have data.
+              {pendingChecks > 0 && ` ${pendingChecks} checks pending.`}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Main hero section */}
       <div className="flex items-center justify-center gap-8 py-6">
