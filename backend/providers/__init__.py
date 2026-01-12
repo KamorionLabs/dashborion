@@ -21,7 +21,7 @@ from .ci.github_actions import GitHubActionsProvider
 
 # Orchestrator Providers
 from .orchestrator.ecs import ECSProvider
-from .orchestrator.eks import EKSProvider
+from .orchestrator.eks_dynamo import EKSDynamoProvider
 
 # Events Provider
 from .events.combined import CombinedEventsProvider
@@ -44,7 +44,7 @@ __all__ = [
     'CodePipelineProvider',
     'GitHubActionsProvider',
     'ECSProvider',
-    'EKSProvider',
+    'EKSDynamoProvider',
     'CombinedEventsProvider',
     'RDSProvider',
     'CloudFrontProvider',

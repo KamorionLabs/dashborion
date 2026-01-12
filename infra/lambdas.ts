@@ -9,6 +9,7 @@ import { NamingHelper } from "./naming";
 import { TagsHelper } from "./tags";
 import { DynamoDBTables, getLinkableResources, getAllTableArns } from "./dynamodb";
 import { KmsKeyRef, getKmsPermissions } from "./kms";
+import { SsmParameters, getSsmReadPermissions } from "./ssm";
 
 /**
  * Lambda function references
@@ -23,6 +24,7 @@ export interface LambdaFunctions {
   pipelines: sst.aws.Function;
   events: sst.aws.Function;
   admin: sst.aws.Function;
+  comparison: sst.aws.Function;
 }
 
 /**
@@ -30,10 +32,15 @@ export interface LambdaFunctions {
  */
 export interface LambdaEnvVars {
   AWS_REGION_DEFAULT: string;
-  PROJECTS: string;
-  CROSS_ACCOUNT_ROLES: string;
+  AWS_ACCOUNT_ID?: string;
+  // SSM prefix for large config (PROJECTS, CROSS_ACCOUNT_ROLES)
+  CONFIG_SSM_PREFIX: string;
   CORS_ORIGINS: string;
   AUTH_PROVIDER: string;
+  CI_PROVIDER: string;
+  ORCHESTRATOR: string;
+  FEATURES: string;
+  COMPARISON: string;
   TOKENS_TABLE_NAME: $util.Output<string> | string;
   DEVICE_CODES_TABLE_NAME: $util.Output<string> | string;
   USERS_TABLE_NAME: $util.Output<string> | string;
@@ -41,6 +48,8 @@ export interface LambdaEnvVars {
   PERMISSIONS_TABLE_NAME: $util.Output<string> | string;
   AUDIT_TABLE_NAME: $util.Output<string> | string;
   PYTHONPATH: string;
+  // Ops Dashboard integration (Step Functions)
+  OPS_DASHBOARD_TABLE?: string;
   // Auth security
   KMS_KEY_ARN?: $util.Output<string> | string;
   COOKIE_DOMAIN?: string;
@@ -51,51 +60,16 @@ export interface LambdaEnvVars {
 
 /**
  * Build common environment variables
+ *
+ * Large configs (PROJECTS, CROSS_ACCOUNT_ROLES) are stored in SSM Parameter Store.
  */
 export function buildLambdaEnv(
   config: InfraConfig,
   tables: DynamoDBTables,
   frontendDomain: string,
+  ssmPrefix: string,
   kmsKey?: KmsKeyRef
 ): LambdaEnvVars {
-  // Convert projects (skip _comment keys)
-  const projectsWithServices: Record<string, any> = {};
-  if (config.projects) {
-    for (const [id, project] of Object.entries(config.projects)) {
-      if (id.startsWith("_") || typeof project !== "object" || project === null) continue;
-      const environments: Record<string, any> = {};
-      if (project.environments) {
-        for (const [envId, env] of Object.entries(project.environments)) {
-          if (envId.startsWith("_") || typeof env !== "object" || env === null) continue;
-          environments[envId] = {
-            accountId: env.accountId,
-            region: env.region || config.aws?.region || "eu-west-3",
-            clusterName: env.clusterName,
-            namespace: env.namespace,
-            services: env.services || [],
-          };
-        }
-      }
-      projectsWithServices[id] = {
-        displayName: project.displayName,
-        environments,
-        idpGroupMapping: project.idpGroupMapping,
-      };
-    }
-  }
-
-  // Convert cross-account roles (skip _comment keys)
-  const crossAccountRoles: Record<string, { readRoleArn: string; actionRoleArn?: string }> = {};
-  if (config.crossAccountRoles) {
-    for (const [accountId, role] of Object.entries(config.crossAccountRoles)) {
-      if (accountId.startsWith("_") || typeof role !== "object" || role === null) continue;
-      crossAccountRoles[accountId] = {
-        readRoleArn: role.readRoleArn,
-        actionRoleArn: role.actionRoleArn,
-      };
-    }
-  }
-
   // Build allowed account IDs from projects and cross-account roles
   const allowedAccountIds = new Set<string>();
   if (config.auth?.allowedAwsAccountIds) {
@@ -112,12 +86,27 @@ export function buildLambdaEnv(
     }
   }
 
+  // Build CI provider config (support "none" to disable pipelines)
+  const ciProvider = {
+    type: config.ciProvider?.type || "codepipeline",
+    config: config.ciProvider?.config || {},
+  };
+
+  // Build orchestrator config
+  const orchestrator = {
+    type: config.orchestrator?.type || "ecs",
+    config: config.orchestrator?.config || {},
+  };
+
   const env: LambdaEnvVars = {
     AWS_REGION_DEFAULT: config.aws?.region || "eu-west-3",
-    PROJECTS: JSON.stringify(projectsWithServices),
-    CROSS_ACCOUNT_ROLES: JSON.stringify(crossAccountRoles),
+    CONFIG_SSM_PREFIX: ssmPrefix,
     CORS_ORIGINS: `https://${frontendDomain}`,
     AUTH_PROVIDER: config.auth?.provider || "simple",
+    CI_PROVIDER: JSON.stringify(ciProvider),
+    ORCHESTRATOR: JSON.stringify(orchestrator),
+    FEATURES: JSON.stringify(config.features || {}),
+    COMPARISON: JSON.stringify(config.comparison || {}),
     TOKENS_TABLE_NAME: tables.tokens.name,
     DEVICE_CODES_TABLE_NAME: tables.deviceCodes.name,
     USERS_TABLE_NAME: tables.users.name,
@@ -141,6 +130,14 @@ export function buildLambdaEnv(
   }
   env.ENABLE_SIGV4_USERS = String(config.auth?.enableSigv4Users ?? true);
   env.ENABLE_SIGV4_SERVICES = String(config.auth?.enableSigv4Services ?? false);
+
+  // Ops Dashboard integration (for EKS DynamoDB provider to trigger Step Functions)
+  if (config.opsIntegration?.accountId) {
+    env.AWS_ACCOUNT_ID = config.opsIntegration.accountId;
+  }
+  if (config.opsIntegration?.tableName) {
+    env.OPS_DASHBOARD_TABLE = config.opsIntegration.tableName;
+  }
 
   return env;
 }
@@ -169,16 +166,20 @@ export function createLambdaFunctions(
   tags: TagsHelper,
   tables: DynamoDBTables,
   frontendDomain: string,
+  ssmParams: SsmParameters,
   kmsKey?: KmsKeyRef
 ): LambdaFunctions {
   const useExistingRole = useExistingLambdaRole(config);
   const roleArn = getLambdaRoleArn(config);
   const vpcConfig = getLambdaVpcConfig(config);
 
-  const env = buildLambdaEnv(config, tables, frontendDomain, kmsKey);
+  const env = buildLambdaEnv(config, tables, frontendDomain, ssmParams.prefix, kmsKey);
   const crossAccountRoleArns = getCrossAccountRoleArns(config);
   const tableArns = getAllTableArns(tables);
   const linkableResources = getLinkableResources(tables);
+
+  // SSM read permissions for config
+  const ssmPermissions = useExistingRole ? [] : getSsmReadPermissions(ssmParams.prefix);
 
   // Common copyFiles for Python backend
   const commonCopyFiles = [{ from: "backend", to: "backend" }];
@@ -220,6 +221,12 @@ export function createLambdaFunctions(
   // KMS permissions for auth encryption
   const kmsPermissions = useExistingRole || !kmsKey ? [] : getKmsPermissions(kmsKey);
 
+  // Step Functions permissions for ops dashboard integration (EKS provider refresh)
+  const sfnPermissions = useExistingRole || !config.opsIntegration?.accountId ? [] : [{
+    actions: ["states:StartExecution", "states:DescribeExecution"],
+    resources: [`arn:aws:states:${config.aws?.region || "eu-central-1"}:${config.opsIntegration.accountId}:stateMachine:ops-dashboard-*`],
+  }];
+
   // --------------------------------------------------------------------------
   // Authorizer Lambda
   // --------------------------------------------------------------------------
@@ -233,6 +240,7 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoReadPermissions,
       ...kmsPermissions,
+      ...ssmPermissions,
     ],
     transform: {
       function: {
@@ -274,6 +282,7 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...kmsPermissions,
+      ...ssmPermissions,
     ],
     transform: {
       function: {
@@ -338,12 +347,14 @@ export function createLambdaFunctions(
     ...baseFunctionConfig,
     handler: "backend/services/handler.handler",
     memory: "512 MB",
-    timeout: "60 seconds",
+    timeout: "120 seconds",  // Increased for Step Function refresh wait
     environment: env as any,
     ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
+      ...ssmPermissions,
+      ...sfnPermissions,
       ...(useExistingRole ? [] : [{
         actions: ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:DescribeLogStreams", "logs:DescribeLogGroups"],
         resources: ["*"],
@@ -364,12 +375,14 @@ export function createLambdaFunctions(
     ...baseFunctionConfig,
     handler: "backend/infrastructure/handler.handler",
     memory: "512 MB",
-    timeout: "60 seconds",
+    timeout: "120 seconds",  // Increased for Step Function refresh wait
     environment: env as any,
     ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
+      ...ssmPermissions,
+      ...sfnPermissions,
     ],
     transform: {
       function: {
@@ -392,6 +405,7 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
+      ...ssmPermissions,
       // CodePipeline/ECR permissions (only when SST creates the role)
       ...(useExistingRole ? [] : [{
         actions: [
@@ -451,6 +465,7 @@ export function createLambdaFunctions(
     permissions: [
       ...dynamoFullPermissions,
       ...assumeRolePermission,
+      ...ssmPermissions,
       // CloudTrail for enriching events
       ...(useExistingRole ? [] : [{
         actions: [
@@ -493,10 +508,36 @@ export function createLambdaFunctions(
     timeout: "30 seconds",
     environment: env as any,
     ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
-    permissions: dynamoFullPermissions,
+    permissions: [
+      ...dynamoFullPermissions,
+      ...ssmPermissions,
+    ],
     transform: {
       function: {
         name: naming.lambda("admin"),
+        tags: tags.component("lambda"),
+      },
+    },
+  });
+
+  // --------------------------------------------------------------------------
+  // Comparison Lambda (env comparison)
+  // --------------------------------------------------------------------------
+  const comparison = new sst.aws.Function("ComparisonHandler", {
+    ...baseFunctionConfig,
+    handler: "backend/comparison/handler.handler",
+    memory: "256 MB",
+    timeout: "30 seconds",
+    environment: env as any,
+    ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
+    permissions: [
+      ...dynamoReadPermissions,
+      ...assumeRolePermission,
+      ...ssmPermissions,
+    ],
+    transform: {
+      function: {
+        name: naming.lambda("comparison"),
         tags: tags.component("lambda"),
       },
     },
@@ -512,5 +553,6 @@ export function createLambdaFunctions(
     pipelines,
     events,
     admin,
+    comparison,
   };
 }

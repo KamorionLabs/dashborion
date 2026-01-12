@@ -1,0 +1,21 @@
+{
+  "table_name": "dashborion-homebox-users",
+  "item_count": 1,
+  "decrypted_count": 0,
+  "items": [
+    {
+      "displayName": "jean",
+      "gsi1sk": "USER#jean@kamorion.com",
+      "defaultRole": "admin",
+      "updatedAt": "1767966396",
+      "disabled": false,
+      "createdAt": "1767966396",
+      "sk": "PROFILE",
+      "pk": "USER#jean@kamorion.com",
+      "email": "jean@kamorion.com",
+      "createdBy": "sso-bootstrap",
+      "gsi1pk": "ROLE#admin",
+      "localGroups": []
+    }
+  ]
+}

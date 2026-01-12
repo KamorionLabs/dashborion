@@ -64,6 +64,9 @@ class InfrastructureAggregator:
                 'cms': f"https://cms.{domain_suffix}"
             }
 
+        # Determine orchestrator type
+        orchestrator_type = getattr(self.config.orchestrator, 'type', 'ecs') if self.config.orchestrator else 'ecs'
+
         result = {
             'environment': env,
             'accountId': account_id,
@@ -71,11 +74,11 @@ class InfrastructureAggregator:
             'cloudfront': None,
             'alb': None,
             's3Buckets': [],
-            'services': {},
+            'workloads': {},  # Unified term for services/deployments
             'rds': None,
             'redis': None,
             'network': None,
-            'orchestrator': 'ecs'
+            'orchestrator': orchestrator_type
         }
 
         cloudfront_s3_origins = set()
@@ -125,18 +128,25 @@ class InfrastructureAggregator:
         except Exception as e:
             result['s3Buckets'] = [{'error': str(e)}]
 
-        # ECS Services - still from orchestrator provider (keeps ECS-specific logic together)
+        # Workloads (ECS Services or K8s Deployments)
         try:
             orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
-            result['services'] = orchestrator._get_services_for_infrastructure(
-                orchestrator._get_ecs_client(env),
-                env,
-                self.config.get_cluster_name(self.project, env),
-                account_id,
-                services
-            )
+
+            if orchestrator_type == 'eks':
+                # EKS: Use get_services which returns Service dataclass objects
+                services_data = orchestrator.get_services(env)
+                result['workloads'] = self._normalize_workloads_from_services(services_data, account_id)
+            else:
+                # ECS: Use original method
+                result['workloads'] = orchestrator._get_services_for_infrastructure(
+                    orchestrator._get_ecs_client(env),
+                    env,
+                    self.config.get_cluster_name(self.project, env),
+                    account_id,
+                    services
+                )
         except Exception as e:
-            result['services'] = {'error': str(e)}
+            result['workloads'] = {'error': str(e)}
 
         # RDS (using dedicated provider with discovery tags)
         try:
@@ -159,6 +169,97 @@ class InfrastructureAggregator:
                 result['network'] = self.network_provider.get_network_info(env)
         except Exception as e:
             result['network'] = {'error': str(e)}
+
+        # Add 'services' alias for backward compatibility with frontend
+        # Frontend components use data.services, unified backend uses workloads
+        result['services'] = result['workloads']
+
+        return result
+
+    def _normalize_workloads_from_services(self, services_data: dict, account_id: str) -> dict:
+        """Normalize Service dataclass objects to unified workload format.
+
+        Converts EKS/ECS Service objects to a consistent dict format for the frontend.
+
+        Args:
+            services_data: Dict of {service_name: Service} or {service_name: {'error': ...}}
+            account_id: AWS account ID for console URLs
+
+        Returns:
+            Dict of normalized workload data
+        """
+        if isinstance(services_data, dict) and 'error' in services_data:
+            return services_data
+
+        result = {}
+        for name, svc in services_data.items():
+            # Handle error cases
+            if isinstance(svc, dict) and 'error' in svc:
+                result[name] = svc
+                continue
+
+            try:
+                # Convert Service dataclass to dict
+                tasks = []
+                tasks_by_location = {}
+
+                for task in (svc.tasks or []):
+                    task_info = {
+                        'taskId': task.task_id[:8] if task.task_id else '',
+                        'fullId': task.task_id,
+                        'status': task.status.upper() if task.status else 'UNKNOWN',
+                        'desiredStatus': task.desired_status.upper() if task.desired_status else 'RUNNING',
+                        'health': task.health.upper() if task.health else 'UNKNOWN',
+                        'revision': task.revision,
+                        'isLatest': task.is_latest,
+                        'az': task.az,  # Node name for EKS, AZ for ECS
+                        'ip': task.private_ip,
+                        'startedAt': task.started_at.isoformat() if task.started_at else None
+                    }
+                    tasks.append(task_info)
+
+                    # Group by location (AZ for ECS, node for EKS)
+                    location = task.az or 'unknown'
+                    if location not in tasks_by_location:
+                        tasks_by_location[location] = []
+                    tasks_by_location[location].append(task_info)
+
+                # Convert deployments
+                deployments = []
+                for dep in (svc.deployments or []):
+                    deployments.append({
+                        'status': dep.status.upper() if dep.status else 'PRIMARY',
+                        'taskDefinition': dep.task_definition,
+                        'revision': dep.revision,
+                        'desiredCount': dep.desired_count,
+                        'runningCount': dep.running_count,
+                        'pendingCount': dep.pending_count,
+                        'rolloutState': dep.rollout_state,
+                        'rolloutStateReason': dep.rollout_reason,
+                        'isPrimary': dep.status.lower() == 'primary' if dep.status else True
+                    })
+
+                # Check for rolling update
+                is_rolling = len(deployments) > 1 or svc.pending_count > 0
+
+                result[name] = {
+                    'name': svc.name,
+                    'type': 'k8s-deployment' if self.config.orchestrator and self.config.orchestrator.type == 'eks' else 'ecs-service',
+                    'status': svc.status.upper() if svc.status else 'ACTIVE',
+                    'runningCount': svc.running_count,
+                    'desiredCount': svc.desired_count,
+                    'pendingCount': svc.pending_count,
+                    'health': 'healthy' if svc.running_count == svc.desired_count and svc.desired_count > 0 else 'unhealthy',
+                    'currentRevision': svc.task_definition.get('revision') if svc.task_definition else None,
+                    'image': svc.task_definition.get('image') if svc.task_definition else None,
+                    'tasks': tasks,
+                    'tasksByLocation': tasks_by_location,  # Unified: AZ or Node
+                    'deployments': deployments,
+                    'isRollingUpdate': is_rolling,
+                    'consoleUrl': svc.console_url
+                }
+            except Exception as e:
+                result[name] = {'error': str(e)}
 
         return result
 

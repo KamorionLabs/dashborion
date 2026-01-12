@@ -5,13 +5,25 @@
 
 declare module "sst" {
   export interface Resource {
-    "ApiHandler": {
+    "AdminHandler": {
       "name": string
       "type": "sst.aws.Function"
     }
     "AuditTable": {
       "name": string
       "type": "sst.aws.Dynamo"
+    }
+    "AuthHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "Authorizer": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "ComparisonHandler": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "DashborionApi": {
       "type": "sst.aws.ApiGatewayV2"
@@ -21,13 +33,37 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Dynamo"
     }
+    "EventsHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "GroupsTable": {
       "name": string
       "type": "sst.aws.Dynamo"
     }
+    "HealthHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "InfrastructureHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
     "PermissionsTable": {
       "name": string
       "type": "sst.aws.Dynamo"
+    }
+    "PipelinesHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "SamlHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "ServicesHandler": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "TokensTable": {
       "name": string

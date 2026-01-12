@@ -83,6 +83,114 @@ class ServiceTask:
 
 
 @dataclass
+class K8sNodePod:
+    """Pod running on a Kubernetes node"""
+    name: str
+    namespace: str
+    component: Optional[str] = None  # hybris, apache, etc.
+    status: str = "Running"
+    ready: bool = True
+    restarts: int = 0
+    requests_cpu: Optional[str] = None
+    requests_memory: Optional[str] = None
+    usage_cpu: Optional[str] = None
+    usage_memory: Optional[str] = None
+
+
+@dataclass
+class K8sNode:
+    """Kubernetes node information"""
+    name: str
+    instance_type: str
+    instance_type_display: Optional[str] = None  # With specs (e.g. "m5.xlarge (4 vCPU, 16 GB)")
+    zone: Optional[str] = None
+    region: Optional[str] = None
+    nodegroup: Optional[str] = None
+    status: str = "Ready"
+    capacity_cpu: Optional[str] = None
+    capacity_memory: Optional[str] = None
+    capacity_pods: Optional[int] = None
+    allocatable_cpu: Optional[str] = None
+    allocatable_memory: Optional[str] = None
+    allocatable_pods: Optional[int] = None
+    usage_cpu: Optional[str] = None
+    usage_memory: Optional[str] = None
+    pod_count: int = 0
+    subnet_id: Optional[str] = None
+    instance_id: Optional[str] = None
+    labels: Dict[str, str] = field(default_factory=dict)
+    pods: List['K8sNodePod'] = field(default_factory=list)
+
+
+@dataclass
+class K8sService:
+    """Kubernetes Service information"""
+    name: str
+    namespace: str
+    service_type: str  # ClusterIP, NodePort, LoadBalancer, ExternalName
+    cluster_ip: Optional[str] = None
+    external_ip: Optional[str] = None
+    ports: List[Dict[str, Any]] = field(default_factory=list)
+    selector: Dict[str, str] = field(default_factory=dict)
+    labels: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class K8sIngressRule:
+    """Kubernetes Ingress rule"""
+    host: str
+    path: str
+    path_type: str = "Prefix"
+    service_name: Optional[str] = None
+    service_port: Optional[int] = None
+
+
+@dataclass
+class K8sIngress:
+    """Kubernetes Ingress information"""
+    name: str
+    namespace: str
+    ingress_class: Optional[str] = None
+    rules: List[K8sIngressRule] = field(default_factory=list)
+    tls: List[Dict[str, Any]] = field(default_factory=list)
+    load_balancer_hostname: Optional[str] = None
+    load_balancer_ip: Optional[str] = None
+    annotations: Dict[str, str] = field(default_factory=dict)
+    labels: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class K8sPod:
+    """Kubernetes Pod information"""
+    name: str
+    namespace: str
+    status: str  # Running, Pending, Succeeded, Failed, Unknown
+    ready: str  # e.g. "1/1", "0/1"
+    restarts: int = 0
+    age: Optional[str] = None
+    ip: Optional[str] = None
+    node: Optional[str] = None
+    containers: List[Dict[str, Any]] = field(default_factory=list)
+    labels: Dict[str, str] = field(default_factory=dict)
+    annotations: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class K8sDeployment:
+    """Kubernetes Deployment information"""
+    name: str
+    namespace: str
+    ready: str  # e.g. "3/3"
+    available: int = 0
+    up_to_date: int = 0
+    age: Optional[str] = None
+    image: Optional[str] = None
+    replicas: int = 0
+    strategy: Optional[str] = None
+    labels: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class ServiceDeployment:
     """Service deployment information"""
     deployment_id: str
@@ -393,9 +501,12 @@ class ProviderFactory:
         cls._cdn_providers[provider_type] = provider_class
 
     @classmethod
-    def get_ci_provider(cls, config, project: str) -> CIProvider:
-        """Get CI provider instance based on config"""
+    def get_ci_provider(cls, config, project: str) -> Optional[CIProvider]:
+        """Get CI provider instance based on config. Returns None if disabled."""
         provider_type = config.ci_provider.type
+        # Allow disabling CI provider with type "none" or "disabled"
+        if provider_type in ('none', 'disabled', ''):
+            return None
         if provider_type not in cls._ci_providers:
             raise ValueError(f"Unknown CI provider type: {provider_type}")
         return cls._ci_providers[provider_type](config, project)

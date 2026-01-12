@@ -1,12 +1,11 @@
 /**
  * Fetch utilities with SSO session handling
  *
- * Supports two API access modes:
- * 1. Direct API URL (VITE_API_URL) - for Bearer token authenticated requests
- * 2. CloudFront proxy (relative URL) - for SSO cookie-based auth requests
+ * Supports two authentication modes:
+ * 1. Bearer token (stored in localStorage) - for CLI and after SSO token exchange
+ * 2. Cookie auth (withCredentials) - for initial SSO session validation
  *
- * SSO users must first exchange their cookie for a Bearer token via CloudFront,
- * then all subsequent requests can go directly to the API.
+ * After SAML SSO, the cookie is exchanged for a Bearer token via /api/auth/token/issue.
  */
 
 // Direct API URL - for authenticated requests with Bearer token
@@ -14,14 +13,11 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 /**
  * Build full API URL by prepending base URL to path
- * Uses direct API URL if configured and we have a Bearer token,
- * otherwise falls back to relative URL (CloudFront proxy)
  *
  * @param {string} path - API path (e.g., '/api/health')
- * @param {boolean} forceProxy - Force use of CloudFront proxy (for SSO auth)
  * @returns {string} Full URL
  */
-export const apiUrl = (path, forceProxy = false) => {
+export const apiUrl = (path) => {
   // If path is already absolute URL, return as-is
   if (path.startsWith('http://') || path.startsWith('https://')) {
     return path
@@ -29,27 +25,13 @@ export const apiUrl = (path, forceProxy = false) => {
 
   const cleanPath = path.startsWith('/') ? path : `/${path}`
 
-  // Force proxy mode (for SSO auth endpoints that need Lambda@Edge)
-  if (forceProxy) {
-    return cleanPath
-  }
-
   // Use direct API URL if configured
   if (API_BASE_URL) {
     const base = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL
     return `${base}${cleanPath}`
   }
 
-  // Fallback to relative URL (CloudFront proxy)
-  return cleanPath
-}
-
-/**
- * Get the CloudFront proxy URL (always relative)
- * Use this for SSO-related endpoints that require Lambda@Edge processing
- */
-export const proxyUrl = (path) => {
-  const cleanPath = path.startsWith('/') ? path : `/${path}`
+  // Fallback to relative URL
   return cleanPath
 }
 
@@ -88,22 +70,22 @@ export const clearAuthTokens = () => {
  * @param {string} url - API path
  * @param {object} options - Fetch options
  * @param {number} maxRetries - Max retry attempts
- * @param {boolean} forceProxy - Force CloudFront proxy (for SSO auth endpoints)
+ * @param {boolean} withCredentials - Include cookies for cross-origin requests (SAML cookie auth)
  */
-export const fetchWithRetry = async (url, options = {}, maxRetries = 3, forceProxy = false) => {
-  const fullUrl = apiUrl(url, forceProxy)
+export const fetchWithRetry = async (url, options = {}, maxRetries = 3, withCredentials = false) => {
+  const fullUrl = apiUrl(url)
   let lastError
 
-  // Add auth headers (unless forcing proxy for SSO cookie auth)
-  const authHeaders = forceProxy ? {} : getAuthHeaders()
+  // Add auth headers (unless using cookie auth with credentials)
+  const authHeaders = withCredentials ? {} : getAuthHeaders()
   const mergedOptions = {
     ...options,
     headers: {
       ...authHeaders,
       ...options.headers,
     },
-    // Include credentials for SSO cookie when using proxy
-    ...(forceProxy && { credentials: 'include' }),
+    // Include credentials for SSO cookie auth (cross-origin)
+    ...(withCredentials && { credentials: 'include' }),
   }
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {

@@ -3,7 +3,7 @@
 from typing import Any
 
 class Resource:
-    class ApiHandler:
+    class AdminHandler:
         name: str
         type: str
     class App:
@@ -12,16 +12,43 @@ class Resource:
     class AuditTable:
         name: str
         type: str
+    class AuthHandler:
+        name: str
+        type: str
+    class Authorizer:
+        name: str
+        type: str
+    class ComparisonHandler:
+        name: str
+        type: str
     class DashborionApi:
         type: str
         url: str
     class DeviceCodesTable:
         name: str
         type: str
+    class EventsHandler:
+        name: str
+        type: str
     class GroupsTable:
         name: str
         type: str
+    class HealthHandler:
+        name: str
+        type: str
+    class InfrastructureHandler:
+        name: str
+        type: str
     class PermissionsTable:
+        name: str
+        type: str
+    class PipelinesHandler:
+        name: str
+        type: str
+    class SamlHandler:
+        name: str
+        type: str
+    class ServicesHandler:
         name: str
         type: str
     class TokensTable:

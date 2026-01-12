@@ -1,0 +1,44 @@
+{
+  "timestamp": "20260110_220825",
+  "profile": "homebox-shared-services/AdministratorAccess",
+  "region": "eu-west-3",
+  "decrypted": false,
+  "tables": [
+    {
+      "name": "dashborion-homebox-audit",
+      "items": 3,
+      "decrypted": 0,
+      "file": "dashborion-homebox-audit.json"
+    },
+    {
+      "name": "dashborion-homebox-device-codes",
+      "items": 0,
+      "decrypted": 0,
+      "file": "dashborion-homebox-device-codes.json"
+    },
+    {
+      "name": "dashborion-homebox-groups",
+      "items": 0,
+      "decrypted": 0,
+      "file": "dashborion-homebox-groups.json"
+    },
+    {
+      "name": "dashborion-homebox-permissions",
+      "items": 1,
+      "decrypted": 0,
+      "file": "dashborion-homebox-permissions.json"
+    },
+    {
+      "name": "dashborion-homebox-tokens",
+      "items": 15,
+      "decrypted": 0,
+      "file": "dashborion-homebox-tokens.json"
+    },
+    {
+      "name": "dashborion-homebox-users",
+      "items": 1,
+      "decrypted": 0,
+      "file": "dashborion-homebox-users.json"
+    }
+  ]
+}

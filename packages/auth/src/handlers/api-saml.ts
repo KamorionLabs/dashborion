@@ -181,7 +181,7 @@ function buildCookie(
     `${COOKIE_NAME}=${sessionId}`,
     'HttpOnly',
     'Secure',
-    'SameSite=Lax',
+    'SameSite=None',  // Must be None for cross-origin cookie (frontend → API)
     'Path=/',
     `Max-Age=${config.sessionTtlSeconds}`,
   ];

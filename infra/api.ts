@@ -218,6 +218,7 @@ export function setupRoutes(
   api.route("GET /api/{project}/infrastructure/{env}/routing", lambdas.infrastructure.arn, authOptions);
   api.route("GET /api/{project}/infrastructure/{env}/enis", lambdas.infrastructure.arn, authOptions);
   api.route("GET /api/{project}/infrastructure/{env}/security-group/{sgId}", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/nodes", lambdas.infrastructure.arn, authOptions);
   api.route("POST /api/{project}/actions/rds/{env}/{action}", lambdas.infrastructure.arn, authOptions);
   api.route("POST /api/{project}/actions/cloudfront/{env}/invalidate", lambdas.infrastructure.arn, authOptions);
 
@@ -247,4 +248,10 @@ export function setupRoutes(
   api.route("POST /api/admin/permissions", lambdas.admin.arn, authOptions);
   api.route("DELETE /api/admin/permissions/{id}", lambdas.admin.arn, authOptions);
   api.route("GET /api/admin/audit", lambdas.admin.arn, authOptions);
+
+  // Comparison routes (environment comparison)
+  api.route("GET /api/{project}/comparison/config", lambdas.comparison.arn, authOptions);
+  api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/summary", lambdas.comparison.arn, authOptions);
+  api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}", lambdas.comparison.arn, authOptions);
+  api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}/history", lambdas.comparison.arn, authOptions);
 }

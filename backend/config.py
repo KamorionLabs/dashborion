@@ -1,13 +1,71 @@
 """
 Dynamic configuration system for the Operations Dashboard.
-Supports multi-project, multi-environment configurations loaded from environment variables.
+Supports multi-project, multi-environment configurations loaded from SSM Parameter Store.
 """
 
 import os
 import json
+import boto3
+from botocore.exceptions import ClientError
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from functools import lru_cache
+
+# SSM client (lazy initialized)
+_ssm_client = None
+
+
+def _get_ssm_client():
+    """Get or create SSM client."""
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client('ssm')
+    return _ssm_client
+
+
+def _load_ssm_config(prefix: str) -> tuple[dict, dict]:
+    """
+    Load PROJECTS and CROSS_ACCOUNT_ROLES from SSM Parameter Store.
+
+    Projects are discovered via GetParametersByPath under {prefix}/projects/
+    Cross-account roles are loaded from {prefix}/cross-account-roles
+
+    Args:
+        prefix: SSM parameter prefix (e.g., /dashborion/rubix)
+
+    Returns:
+        Tuple of (projects_dict, cross_account_roles_dict)
+    """
+    ssm = _get_ssm_client()
+
+    # Discover all project parameters under {prefix}/projects/
+    projects = {}
+    paginator = ssm.get_paginator('get_parameters_by_path')
+    for page in paginator.paginate(
+        Path=f"{prefix}/projects",
+        Recursive=False,
+        WithDecryption=True
+    ):
+        for param in page.get('Parameters', []):
+            project_data = json.loads(param['Value'])
+            project_id = project_data.get('id') or param['Name'].split('/')[-1]
+            projects[project_id] = project_data
+
+    # Load cross-account roles
+    cross_account_roles = {}
+    try:
+        response = ssm.get_parameter(
+            Name=f"{prefix}/cross-account-roles",
+            WithDecryption=True
+        )
+        cross_account_roles = json.loads(response['Parameter']['Value'])
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'ParameterNotFound':
+            pass  # No cross-account roles configured
+        else:
+            raise
+
+    return projects, cross_account_roles
 
 
 @dataclass
@@ -159,6 +217,12 @@ class DashboardConfig:
     # Optional GitHub configuration for commit links
     github_org: Optional[str] = None
 
+    # Feature flags for frontend
+    features: Dict[str, bool] = field(default_factory=dict)
+
+    # Comparison configuration (groups for env pairing)
+    comparison: Dict[str, Any] = field(default_factory=dict)
+
     # Console URL patterns
     console_urls: Dict[str, str] = field(default_factory=lambda: {
         'ecs_cluster': "https://{region}.console.aws.amazon.com/ecs/v2/clusters/{cluster}/services?region={region}",
@@ -261,6 +325,7 @@ class DashboardConfig:
             'ciProvider': self.ci_provider.type,
             'orchestrator': self.orchestrator.type,
             'githubOrg': self.github_org,
+            'features': self.features,
             'projects': {
                 name: proj.to_dict()
                 for name, proj in self.projects.items()
@@ -271,8 +336,8 @@ class DashboardConfig:
 @lru_cache(maxsize=1)
 def get_config() -> DashboardConfig:
     """
-    Load configuration from environment variables.
-    Uses caching to avoid repeated parsing.
+    Load configuration from SSM Parameter Store.
+    Uses caching to avoid repeated parsing and SSM calls.
     """
 
     # Core settings
@@ -280,8 +345,14 @@ def get_config() -> DashboardConfig:
     shared_services_account = os.environ.get('SHARED_SERVICES_ACCOUNT', '')
     sso_portal_url = os.environ.get('SSO_PORTAL_URL', '')
 
-    # Parse projects JSON
-    projects_raw = json.loads(os.environ.get('PROJECTS', '{}'))
+    # Load projects and cross-account roles from SSM
+    ssm_prefix = os.environ.get('CONFIG_SSM_PREFIX')
+    if not ssm_prefix:
+        raise ValueError("CONFIG_SSM_PREFIX environment variable is required")
+
+    projects_raw, roles_raw = _load_ssm_config(ssm_prefix)
+
+    # Parse projects
     projects = {}
     for project_name, project_data in projects_raw.items():
         # Skip comment entries
@@ -309,8 +380,7 @@ def get_config() -> DashboardConfig:
             idp_group_mapping=project_data.get('idpGroupMapping')
         )
 
-    # Parse cross-account roles JSON (indexed by account ID)
-    roles_raw = json.loads(os.environ.get('CROSS_ACCOUNT_ROLES', '{}'))
+    # Parse cross-account roles (indexed by account ID)
     cross_account_roles = {}
     for account_id, role_data in roles_raw.items():
         # Skip comment entries
@@ -352,6 +422,13 @@ def get_config() -> DashboardConfig:
     # GitHub org (for commit links)
     github_org = os.environ.get('GITHUB_ORG', ci_provider.github_owner)
 
+    # Parse feature flags
+    features_raw = json.loads(os.environ.get('FEATURES', '{}'))
+    features = {k: v for k, v in features_raw.items() if isinstance(v, bool)}
+
+    # Parse comparison config (optional)
+    comparison = json.loads(os.environ.get('COMPARISON', '{}'))
+
     return DashboardConfig(
         region=region,
         shared_services_account=shared_services_account,
@@ -361,7 +438,9 @@ def get_config() -> DashboardConfig:
         naming_pattern=naming_pattern,
         ci_provider=ci_provider,
         orchestrator=orchestrator,
-        github_org=github_org
+        github_org=github_org,
+        features=features,
+        comparison=comparison
     )
 
 

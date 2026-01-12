@@ -86,6 +86,8 @@ def handle_pipelines(event, auth, project: str, parts: list, config) -> Dict[str
         return error_response('forbidden', f'Permission denied: read on {project}/{permission_env}', 403)
 
     ci = ProviderFactory.get_ci_provider(config, project)
+    if not ci:
+        return error_response('not_configured', 'CI/CD provider not configured for this project', 501)
 
     if pipeline_type == 'build':
         pipeline = ci.get_build_pipeline(service)
@@ -115,6 +117,9 @@ def handle_images(event, auth, project: str, parts: list, config) -> Dict[str, A
         return error_response('forbidden', f'Permission denied: read on {project}', 403)
 
     ci = ProviderFactory.get_ci_provider(config, project)
+    if not ci:
+        return error_response('not_configured', 'CI/CD provider not configured for this project', 501)
+
     images = ci.get_images(service)
 
     return json_response(200, {
@@ -151,6 +156,8 @@ def handle_build_action(event, auth, project: str, parts: list, config) -> Dict[
     source_revision = body.get('sourceRevision', '')
 
     ci = ProviderFactory.get_ci_provider(config, project)
+    if not ci:
+        return error_response('not_configured', 'CI/CD provider not configured for this project', 501)
 
     # Audit log start
     _audit_log(email, 'build_trigger', {

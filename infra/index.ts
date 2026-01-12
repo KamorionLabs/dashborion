@@ -14,6 +14,7 @@ export * from "./tags";
 // Resources
 export * from "./dynamodb";
 export * from "./kms";
+export * from "./ssm";
 export * from "./lambdas";
 export * from "./api";
 export * from "./frontend";

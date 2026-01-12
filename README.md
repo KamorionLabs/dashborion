@@ -306,8 +306,10 @@ In AWS Identity Center > Applications > Add application > Add custom SAML 2.0 ap
 
 | Setting | Value |
 |---------|-------|
-| Application ACS URL | `https://your-dashboard.example.com/saml/acs` |
+| Application ACS URL | `https://your-api.example.com/api/auth/saml/acs` |
 | Application SAML audience | Must match `auth.saml.entityId` in `infra.config.json` |
+
+**Important**: The ACS URL points to the **API domain** (not the frontend), using the path `/api/auth/saml/acs`. You can verify this by checking the SP metadata at `https://your-api.example.com/api/auth/saml/metadata`.
 
 #### 3. Attribute Mappings (Critical)
 

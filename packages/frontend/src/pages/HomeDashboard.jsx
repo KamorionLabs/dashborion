@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   RefreshCw, ExternalLink, Package,
-  CheckCircle, XCircle, Network, X
+  CheckCircle, XCircle, Network, X,
+  ChevronDown
 } from 'lucide-react'
 // Configuration context
 import { useConfig, useConfigHelpers } from '../ConfigContext'
@@ -22,6 +23,136 @@ import { EventsTimelinePanel } from '../components/events'
 import { BuildPipelineCard, PipelineDetails } from '../components/pipelines'
 import { InfrastructureDiagram, InfrastructureDetailsPanel } from '../components/infrastructure'
 import { ServiceDetailsPanel, TaskDetails } from '../components/services'
+
+/**
+ * Environment Dropdown - Groups environments by type (NH/Legacy)
+ */
+function EnvironmentDropdown({ environments, selected, onChange, envColors }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const dropdownRef = useRef(null)
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // Group environments by prefix
+  const groups = useMemo(() => {
+    const nhEnvs = environments.filter(e => e.startsWith('nh-'))
+    const legacyEnvs = environments.filter(e => e.startsWith('legacy-'))
+    const otherEnvs = environments.filter(e => !e.startsWith('nh-') && !e.startsWith('legacy-'))
+    return { nh: nhEnvs, legacy: legacyEnvs, other: otherEnvs }
+  }, [environments])
+
+  // Get display name for environment
+  const getDisplayName = (env) => {
+    if (env.startsWith('nh-')) return env.replace('nh-', '').replace('-', ' ')
+    if (env.startsWith('legacy-')) return env.replace('legacy-', '').replace('-', ' ')
+    return env
+  }
+
+  // Get color classes for environment
+  const getEnvColor = (env) => {
+    const colors = envColors[env] || {}
+    return colors.bg || 'bg-gray-500'
+  }
+
+  const selectedColor = envColors[selected] || {}
+  const selectedBg = selectedColor.bg || 'bg-gray-500'
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors ${selectedBg} text-white`}
+      >
+        <span className="capitalize">{selected.replace(/-/g, ' ')}</span>
+        <ChevronDown className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute right-0 top-full mt-1 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+          {/* New Horizon environments */}
+          {groups.nh.length > 0 && (
+            <div>
+              <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 bg-gray-750 border-b border-gray-700">
+                New Horizon
+              </div>
+              {groups.nh.map(env => (
+                <button
+                  key={env}
+                  onClick={() => { onChange(env); setIsOpen(false) }}
+                  className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 transition-colors ${
+                    selected === env
+                      ? `${getEnvColor(env)} text-white`
+                      : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${getEnvColor(env)}`}></span>
+                  <span className="capitalize">{getDisplayName(env)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Legacy environments */}
+          {groups.legacy.length > 0 && (
+            <div>
+              <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 bg-gray-750 border-b border-gray-700">
+                Legacy
+              </div>
+              {groups.legacy.map(env => (
+                <button
+                  key={env}
+                  onClick={() => { onChange(env); setIsOpen(false) }}
+                  className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 transition-colors ${
+                    selected === env
+                      ? `${getEnvColor(env)} text-white`
+                      : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${getEnvColor(env)}`}></span>
+                  <span className="capitalize">{getDisplayName(env)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Other environments */}
+          {groups.other.length > 0 && (
+            <div>
+              {(groups.nh.length > 0 || groups.legacy.length > 0) && (
+                <div className="px-3 py-1.5 text-xs font-semibold text-gray-400 bg-gray-750 border-b border-gray-700">
+                  Other
+                </div>
+              )}
+              {groups.other.map(env => (
+                <button
+                  key={env}
+                  onClick={() => { onChange(env); setIsOpen(false) }}
+                  className={`w-full px-3 py-2 text-left text-sm flex items-center gap-2 transition-colors ${
+                    selected === env
+                      ? `${getEnvColor(env)} text-white`
+                      : 'text-gray-300 hover:bg-gray-700'
+                  }`}
+                >
+                  <span className={`w-2 h-2 rounded-full ${getEnvColor(env)}`}></span>
+                  <span className="capitalize">{env}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function HomeDashboard() {
   // URL params for deep linking
@@ -113,6 +244,7 @@ export default function HomeDashboard() {
   const [metrics, setMetrics] = useState({})
   const [serviceConfig, setServiceConfig] = useState({})
   const [infrastructure, setInfrastructure] = useState({})
+  const [nodes, setNodes] = useState({})  // K8s nodes for EKS orchestrator
 
   // Loading states - per section
   const [loadingStates, setLoadingStates] = useState({
@@ -474,6 +606,18 @@ export default function HomeDashboard() {
       setLoadingStates(prev => ({ ...prev, infrastructure: false }))
     }
   }, [appConfig.services, appConfig.currentProjectId])  // Depend on services for filtering
+
+  // Fetch K8s nodes for EKS orchestrator
+  const fetchNodes = useCallback(async (env) => {
+    const projectId = appConfig.currentProjectId || 'homebox'
+    try {
+      const res = await fetchWithRetry(`/api/${projectId}/infrastructure/${env}/nodes?includePods=true`)
+      const data = await res.json()
+      setNodes(prev => ({ ...prev, [env]: data.nodes || [] }))
+    } catch (error) {
+      console.error('Error fetching nodes:', error)
+    }
+  }, [appConfig.currentProjectId])
 
   // Force refresh infrastructure (bypass cache)
   const refreshInfrastructure = useCallback(async (env, infraConfig) => {
@@ -958,6 +1102,14 @@ export default function HomeDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInfraEnv, appConfig.infrastructure])  // Re-run when env or project changes
 
+  // Fetch K8s nodes when infrastructure is loaded and orchestrator is EKS
+  useEffect(() => {
+    const infraData = infrastructure[selectedInfraEnv]
+    if (infraData?.orchestrator === 'eks') {
+      fetchNodes(selectedInfraEnv)
+    }
+  }, [infrastructure, selectedInfraEnv, fetchNodes])
+
   // Refetch events when filter or hours change (not on env change - handled above)
   const prevEnvRef = useRef(selectedInfraEnv)
   useEffect(() => {
@@ -1165,21 +1317,31 @@ export default function HomeDashboard() {
                   </a>
                 )}
               </div>
-              <div className="flex gap-2">
-                {ENVIRONMENTS.map(env => (
-                  <button
-                    key={env}
-                    onClick={() => handleEnvChange(env)}
-                    className={`px-3 py-1 rounded text-sm capitalize transition-colors ${
-                      selectedInfraEnv === env
-                        ? `${(ENV_COLORS[env] || { bg: 'bg-gray-500' }).bg} text-white`
-                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                    }`}
-                  >
-                    {env}
-                  </button>
-                ))}
-              </div>
+              {/* Environment selector - dropdown when > 4 envs, buttons otherwise */}
+              {ENVIRONMENTS.length > 4 ? (
+                <EnvironmentDropdown
+                  environments={ENVIRONMENTS}
+                  selected={selectedInfraEnv}
+                  onChange={handleEnvChange}
+                  envColors={ENV_COLORS}
+                />
+              ) : (
+                <div className="flex gap-2">
+                  {ENVIRONMENTS.map(env => (
+                    <button
+                      key={env}
+                      onClick={() => handleEnvChange(env)}
+                      className={`px-3 py-1 rounded text-sm capitalize transition-colors ${
+                        selectedInfraEnv === env
+                          ? `${(ENV_COLORS[env] || { bg: 'bg-gray-500' }).bg} text-white`
+                          : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      }`}
+                    >
+                      {env}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Loading overlay for infrastructure */}
@@ -1208,6 +1370,7 @@ export default function HomeDashboard() {
                   selectedComponent={selectedInfraComponent}
                   services={services[selectedInfraEnv]}
                   pipelines={pipelines}
+                  nodes={nodes[selectedInfraEnv]}
                   onForceReload={handleForceReload}
                   onDeployLatest={handleDeployLatest}
                   onScaleService={handleScaleService}

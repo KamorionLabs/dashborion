@@ -16,6 +16,7 @@ import DeviceAuth from './pages/DeviceAuth';
 import PermissionDenied from './pages/PermissionDenied';
 import Login from './pages/Login';
 import HomeDashboard from './pages/HomeDashboard';
+import ComparisonPage from './pages/comparison/ComparisonPage';
 
 /**
  * Loading screen
@@ -118,6 +119,28 @@ export default function AppRouter() {
               <Route path="/permission-denied" element={<PermissionDenied />} />
 
               {/* Protected routes with Shell */}
+              {/* Comparison view */}
+              <Route
+                path="/:project/comparison/:sourceEnv/:destEnv"
+                element={
+                  <ProtectedRoute>
+                    <ShellWithContext>
+                      <ComparisonPage />
+                    </ShellWithContext>
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/:project/comparison"
+                element={
+                  <ProtectedRoute>
+                    <ShellWithContext>
+                      <ComparisonPage />
+                    </ShellWithContext>
+                  </ProtectedRoute>
+                }
+              />
+
               {/* Dashboard with project and env in URL */}
               <Route
                 path="/:project/:env"

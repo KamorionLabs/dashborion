@@ -37,12 +37,19 @@ export function generateFrontendConfig(config: InfraConfig, stage: string): Reco
   for (const [projectId, projectConfig] of Object.entries(config.projects || {})) {
     if (projectId.startsWith("_")) continue; // Skip comments
 
-    const environments = Object.keys(projectConfig.environments || {});
+    // Filter out disabled environments (enabled: false)
+    const environments = Object.keys(projectConfig.environments || {}).filter(envName => {
+      const envConfig = (projectConfig.environments || {})[envName];
+      return envConfig.enabled !== false; // Include if enabled is true or undefined
+    });
     const services = new Set<string>();
     const accounts: Record<string, unknown> = {};
     const envColors: Record<string, unknown> = {};
 
     for (const [envName, envConfig] of Object.entries(projectConfig.environments || {})) {
+      // Skip disabled environments
+      if (envConfig.enabled === false) continue;
+
       // Collect services
       (envConfig.services || []).forEach((s: string) => services.add(s));
 

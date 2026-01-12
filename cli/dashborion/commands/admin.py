@@ -21,34 +21,22 @@ import requests
 
 from dashborion.commands.auth import get_valid_token, get_api_base_url
 from dashborion.commands.context import get_current_context
-
-
-def _get_auth_headers() -> dict:
-    """Get authorization headers for API requests"""
-    token = get_valid_token()
-    if not token:
-        raise click.ClickException(
-            "Not authenticated. Run 'dashborion auth login' first."
-        )
-    return {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+from dashborion.utils.api_client import get_api_client, AuthenticationError
 
 
 def _api_request(method: str, path: str, data: dict = None, params: dict = None) -> dict:
-    """Make authenticated API request"""
-    api_url = get_api_base_url()
-    headers = _get_auth_headers()
-
-    url = f"{api_url}{path}"
-
+    """Make authenticated API request using centralized client"""
     try:
+        client = get_api_client()
+
         if method == 'GET':
-            response = requests.get(url, headers=headers, params=params, timeout=30)
+            response = client.get(path, params=params)
         elif method == 'POST':
-            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response = client.post(path, json_data=data)
         elif method == 'PUT':
-            response = requests.put(url, headers=headers, json=data, timeout=30)
+            response = client.put(path, json_data=data)
         elif method == 'DELETE':
-            response = requests.delete(url, headers=headers, json=data, timeout=30)
+            response = client.delete(path, json_data=data)
         else:
             raise ValueError(f"Unknown method: {method}")
 
@@ -59,6 +47,8 @@ def _api_request(method: str, path: str, data: dict = None, params: dict = None)
 
         return response.json()
 
+    except AuthenticationError as e:
+        raise click.ClickException(str(e))
     except requests.RequestException as e:
         raise click.ClickException(f"API request failed: {e}")
 

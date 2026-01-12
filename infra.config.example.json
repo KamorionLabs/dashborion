@@ -73,11 +73,9 @@
     "enabled": true,
     "provider": "saml",
     "saml": {
-      "_comment": "SAML IdP configuration (AWS Identity Center / Microsoft Entra ID / Okta)",
+      "_comment": "SAML IdP configuration (AWS Identity Center / Microsoft Entra ID / Okta). ACS URL is always /api/auth/saml/acs",
       "entityId": "dashborion",
-      "idpMetadataUrl": "https://portal.sso.eu-west-3.amazonaws.com/saml/metadata/...",
-      "acsPath": "/saml/acs",
-      "metadataPath": "/saml/metadata"
+      "idpMetadataUrl": "https://portal.sso.eu-west-3.amazonaws.com/saml/metadata/..."
     },
     "sessionTtlSeconds": 3600,
     "cookieDomain": ".example.com",

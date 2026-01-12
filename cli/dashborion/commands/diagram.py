@@ -1,7 +1,8 @@
-"""Diagram command group for Dashborion CLI"""
+"""Diagram command group for Dashborion CLI - API-based implementation"""
 
 import click
 import sys
+import base64
 from pathlib import Path
 from typing import Optional
 
@@ -14,80 +15,70 @@ def diagram():
     pass
 
 
+def _get_collector(ctx, env: Optional[str] = None):
+    """Get API collector configured for the environment."""
+    from dashborion.collectors.api import APICollector
+    from dashborion.utils.api_client import get_api_client
+    from dashborion.config.cli_config import get_environment_config
+
+    # Use provided env or fall back to context env
+    effective_env = env or ctx.env
+    env_config = get_environment_config(ctx.config or {}, effective_env) if effective_env else {}
+
+    # Get project from context
+    project = ctx.project
+    if not project:
+        click.echo("No project selected. Use 'dashborion project use <name>'", err=True)
+        sys.exit(1)
+
+    client = get_api_client()
+    return APICollector(client, project), env_config, effective_env
+
+
 @diagram.command('generate')
-@click.option('--env', '-e', help='Environment name (uses config)')
-@click.option('--config', '-c', 'yaml_config', type=click.Path(exists=True),
-              help='YAML config file for diagram generation')
+@click.option('--env', '-e', help='Environment name (default: from context)')
 @click.option('--output', '-o', default='architecture', help='Output filename (without extension)')
 @click.option('--format', '-f', 'output_format', type=click.Choice(['png', 'svg', 'pdf']),
               default='png', help='Output format')
-@click.option('--context', help='Kubernetes context (for EKS)')
 @click.option('--namespaces', '-n', multiple=True, help='Kubernetes namespaces to include')
 @click.option('--include-rds', is_flag=True, help='Include RDS databases')
 @click.option('--include-elasticache', is_flag=True, help='Include ElastiCache clusters')
 @click.option('--include-cloudfront', is_flag=True, help='Include CloudFront distributions')
 @click.pass_obj
-def generate_diagram(ctx, env: Optional[str], yaml_config: Optional[str], output: str,
-                     output_format: str, context: Optional[str], namespaces: tuple,
+def generate_diagram(ctx, env: Optional[str], output: str, output_format: str, namespaces: tuple,
                      include_rds: bool, include_elasticache: bool, include_cloudfront: bool):
-    """Generate architecture diagram from infrastructure"""
+    """Generate architecture diagram from infrastructure via API"""
 
     try:
-        if yaml_config:
-            # Generate from YAML config
-            from dashborion.generators.diagram import generate_diagrams_from_yaml
-            generate_diagrams_from_yaml(yaml_config)
-            click.echo(f"Diagram(s) generated from {yaml_config}")
+        collector, env_config, effective_env = _get_collector(ctx, env)
 
-        elif env:
-            # Generate from environment config
-            from dashborion.config.cli_config import get_environment_config
+        click.echo(f"Generating diagram for environment: {effective_env}")
 
-            env_config = get_environment_config(ctx.config or {}, env)
+        result = collector.generate_diagram(
+            env=effective_env,
+            output_format=output_format,
+            namespaces=list(namespaces) if namespaces else ['default'],
+            include_rds=include_rds,
+            include_elasticache=include_elasticache,
+            include_cloudfront=include_cloudfront
+        )
 
-            session = ctx.get_aws_session(
-                profile=env_config.get('aws_profile'),
-                region=env_config.get('aws_region')
-            )
+        if result.get('error'):
+            click.echo(f"Error: {result.get('error')}", err=True)
+            sys.exit(1)
 
-            env_type = env_config.get('type', 'ecs')
+        # Save the diagram to file
+        output_file = f"{output}.{output_format}"
+        diagram_data = result.get('data')
 
-            from dashborion.generators.diagram import DiagramGenerator
-
-            generator = DiagramGenerator(
-                session=session,
-                context=context or env_config.get('context'),
-                namespaces=list(namespaces) or env_config.get('namespaces', ['default']),
-                include_rds=include_rds,
-                include_elasticache=include_elasticache,
-                include_cloudfront=include_cloudfront
-            )
-
-            output_file = f"{output}.{output_format}"
-            generator.generate(output_file, env_type=env_type, cluster=env_config.get('cluster'))
+        if diagram_data:
+            # Decode base64 and write to file
+            decoded_data = base64.b64decode(diagram_data)
+            with open(output_file, 'wb') as f:
+                f.write(decoded_data)
             click.echo(f"Diagram generated: {output_file}")
-
-        elif context:
-            # Generate from Kubernetes context directly
-            from dashborion.generators.diagram import DiagramGenerator
-
-            session = ctx.get_aws_session()
-
-            generator = DiagramGenerator(
-                session=session,
-                context=context,
-                namespaces=list(namespaces) or ['default'],
-                include_rds=include_rds,
-                include_elasticache=include_elasticache,
-                include_cloudfront=include_cloudfront
-            )
-
-            output_file = f"{output}.{output_format}"
-            generator.generate(output_file, env_type='eks')
-            click.echo(f"Diagram generated: {output_file}")
-
         else:
-            click.echo("Please specify --env, --config, or --context", err=True)
+            click.echo("No diagram data received from API", err=True)
             sys.exit(1)
 
     except Exception as e:
@@ -108,7 +99,7 @@ def generate_diagram(ctx, env: Optional[str], yaml_config: Optional[str], output
 @click.pass_obj
 def publish_diagram(ctx, env: Optional[str], diagram_file: Optional[str],
                     confluence_page: str, title: Optional[str], space: Optional[str]):
-    """Publish diagram to Confluence"""
+    """Publish diagram to Confluence via API"""
 
     try:
         # Determine file to publish
@@ -127,32 +118,34 @@ def publish_diagram(ctx, env: Optional[str], diagram_file: Optional[str],
             click.echo(f"Diagram file not found: {file_path}", err=True)
             sys.exit(1)
 
-        # Get Confluence config
-        confluence_config = ctx.config.get('confluence', {})
+        collector, env_config, effective_env = _get_collector(ctx, env)
 
-        confluence_url = confluence_config.get('url')
-        confluence_space = space or confluence_config.get('space_key')
+        # Read file and encode to base64
+        with open(file_path, 'rb') as f:
+            diagram_data = base64.b64encode(f.read()).decode('utf-8')
 
-        if not confluence_url:
-            click.echo("Confluence URL not configured. Set in config file or CONFLUENCE_URL env var", err=True)
-            sys.exit(1)
-
-        from dashborion.publishers.confluence import ConfluencePublisher
-
-        publisher = ConfluencePublisher.from_env_or_config(
-            config=confluence_config
-        )
-
+        file_format = file_path.suffix.lstrip('.') or 'png'
         page_title = title or f"Architecture - {file_path.stem}"
 
-        publisher.publish_diagram(
-            file_path=str(file_path),
+        click.echo(f"Publishing {file_path} to Confluence page {confluence_page}...")
+
+        result = collector.publish_diagram(
+            diagram_data=diagram_data,
+            file_format=file_format,
+            confluence_page=confluence_page,
             title=page_title,
-            parent_page_id=confluence_page,
-            space_key=confluence_space
+            space=space
         )
 
-        click.echo(f"Diagram published to Confluence page {confluence_page}")
+        if result.get('error'):
+            click.echo(f"Error: {result.get('error')}", err=True)
+            sys.exit(1)
+
+        if result.get('success'):
+            click.echo(f"Diagram published to Confluence page {confluence_page}")
+        else:
+            click.echo("Publish failed with unknown error", err=True)
+            sys.exit(1)
 
     except Exception as e:
         click.echo(f"Error publishing diagram: {e}", err=True)
@@ -168,27 +161,19 @@ def list_templates(ctx):
     """List available diagram templates"""
     formatter = OutputFormatter(ctx.output_format)
 
-    templates = [
-        {
-            'name': 'ecs-basic',
-            'description': 'Basic ECS cluster with ALB and RDS',
-            'resources': 'ECS, ALB, RDS'
-        },
-        {
-            'name': 'eks-full',
-            'description': 'Full EKS cluster with ingress and services',
-            'resources': 'EKS, Ingress, Services, RDS'
-        },
-        {
-            'name': 'multi-region',
-            'description': 'Multi-region architecture with CloudFront',
-            'resources': 'CloudFront, ALB, ECS/EKS, RDS, ElastiCache'
-        },
-        {
-            'name': 'serverless',
-            'description': 'Serverless architecture with Lambda',
-            'resources': 'API Gateway, Lambda, DynamoDB, S3'
-        }
-    ]
+    try:
+        collector, _, _ = _get_collector(ctx)
+        templates = collector.list_diagram_templates()
 
-    formatter.output(templates, title="Available Diagram Templates")
+        if isinstance(templates, dict) and templates.get('error'):
+            click.echo(f"Error: {templates.get('error')}", err=True)
+            sys.exit(1)
+
+        formatter.output(templates, title="Available Diagram Templates")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        if ctx.verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)

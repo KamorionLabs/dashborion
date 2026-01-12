@@ -311,6 +311,26 @@ export interface SsmConfig {
 }
 
 /**
+ * Comparison group configuration
+ */
+export interface ComparisonGroup {
+  /** Environment prefix to match (e.g., "legacy-", "nh-") */
+  prefix: string;
+  /** Display label for this group (e.g., "Legacy", "New Horizon") */
+  label: string;
+  /** Role in comparison: "source" or "destination" */
+  role: "source" | "destination";
+}
+
+/**
+ * Comparison configuration for environment pairing
+ */
+export interface ComparisonConfig {
+  /** Groups define how environments are paired for comparison */
+  groups?: ComparisonGroup[];
+}
+
+/**
  * Main infrastructure configuration file
  */
 export interface InfraConfig {
@@ -337,8 +357,21 @@ export interface InfraConfig {
   orchestrator?: OrchestratorConfig;
   /** Feature flags for frontend */
   features?: FeaturesConfig;
+  /** Comparison configuration for environment pairing */
+  comparison?: ComparisonConfig;
   /** SSM Parameter Store configuration for large configs */
   ssm?: SsmConfig;
+  /** Ops Dashboard integration for Step Function refresh */
+  opsIntegration?: {
+    /** AWS account ID where Step Functions are deployed */
+    accountId?: string;
+    /** DynamoDB table name for ops dashboard state */
+    tableName?: string;
+    /** Cache TTL in seconds (default 3600) */
+    cacheTtlSeconds?: number;
+    /** Enable auto-refresh via Step Functions (default true) */
+    autoRefresh?: boolean;
+  };
 }
 
 // ==========================================================================

@@ -9,7 +9,7 @@ import SimpleView from './SimpleView'
 import NetworkView from './NetworkView'
 import RoutingView from './RoutingView'
 
-export default function InfrastructureDiagram({ data, env, onComponentSelect, selectedComponent, services: envServices, pipelines, onForceReload, onDeployLatest, onScaleService, actionLoading, onOpenLogsPanel, onTailDeployLogs, view, onViewChange }) {
+export default function InfrastructureDiagram({ data, env, onComponentSelect, selectedComponent, services: envServices, pipelines, onForceReload, onDeployLatest, onScaleService, actionLoading, onOpenLogsPanel, onTailDeployLogs, view, onViewChange, nodes }) {
   const { canDeploy, canScale } = useAuth()
   const [viewMode, setViewMode] = useState(view || 'simple') // 'simple', 'network', or 'routing'
 
@@ -151,6 +151,7 @@ export default function InfrastructureDiagram({ data, env, onComponentSelect, se
           env={env}
           data={data}
           services={envServices}
+          nodes={nodes}
           onComponentSelect={onComponentSelect}
           selectedComponent={selectedComponent}
           serviceColors={serviceColors}

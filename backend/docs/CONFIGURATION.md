@@ -209,6 +209,144 @@ Both roles must trust the Lambda execution role:
 
 ---
 
+## Topology Configuration
+
+The `topology` section defines the application architecture for the infrastructure diagram. It enables customization of how components are displayed and connected.
+
+### Schema
+
+```json
+{
+  "topology": {
+    "components": {
+      "component-id": {
+        "type": "service-type",
+        "layer": "layer-name",
+        "label": "Display Label",
+        "group": "optional-group"
+      }
+    },
+    "connections": [
+      { "from": "component-a", "to": "component-b", "protocol": "https" }
+    ],
+    "layers": ["layer1", "layer2", "layer3"]
+  }
+}
+```
+
+### Component Types
+
+| Type | Description | Orchestrator |
+|------|-------------|--------------|
+| `cdn` | Content Delivery Network (CloudFront) | Both |
+| `loadbalancer` | Application Load Balancer | Both |
+| `ecs-service` | ECS Fargate Service | ECS |
+| `k8s-deployment` | Kubernetes Deployment | EKS |
+| `k8s-statefulset` | Kubernetes StatefulSet | EKS |
+| `rds` | RDS/Aurora Database | Both |
+| `elasticache` | ElastiCache (Redis/Memcached) | Both |
+| `efs` | Elastic File System | Both |
+| `s3` | S3 Bucket | Both |
+
+### Layers
+
+Layers define the vertical position of components in the diagram:
+
+| Layer | Description | Typical Components |
+|-------|-------------|-------------------|
+| `edge` | Internet-facing CDN | CloudFront |
+| `ingress` | Load balancing | ALB, Ingress |
+| `frontend` | User-facing services | Next.js, React |
+| `proxy` | Reverse proxies | Apache, HAProxy, Nginx |
+| `application` | Business logic | Backend services |
+| `search` | Search engines | Solr, Elasticsearch |
+| `data` | Data persistence | RDS, Redis, EFS |
+
+### Example: ECS Application
+
+```json
+{
+  "topology": {
+    "components": {
+      "cloudfront": { "type": "cdn", "layer": "edge", "label": "CloudFront" },
+      "alb": { "type": "loadbalancer", "layer": "ingress", "label": "ALB" },
+      "frontend": { "type": "ecs-service", "layer": "frontend", "label": "Frontend" },
+      "backend": { "type": "ecs-service", "layer": "application", "label": "Backend API" },
+      "cms": { "type": "ecs-service", "layer": "application", "label": "CMS" },
+      "rds": { "type": "rds", "layer": "data", "label": "Aurora PostgreSQL" },
+      "redis": { "type": "elasticache", "layer": "data", "label": "Redis Cache" }
+    },
+    "connections": [
+      { "from": "cloudfront", "to": "alb", "protocol": "https" },
+      { "from": "alb", "to": "frontend", "protocol": "http" },
+      { "from": "alb", "to": "backend", "protocol": "http" },
+      { "from": "frontend", "to": "backend", "protocol": "http" },
+      { "from": "backend", "to": "rds", "protocol": "jdbc" },
+      { "from": "backend", "to": "redis", "protocol": "redis" },
+      { "from": "cms", "to": "rds", "protocol": "jdbc" }
+    ],
+    "layers": ["edge", "ingress", "frontend", "application", "data"]
+  }
+}
+```
+
+### Example: EKS Application (Hybris)
+
+```json
+{
+  "topology": {
+    "components": {
+      "cloudfront": { "type": "cdn", "layer": "edge", "label": "CloudFront" },
+      "alb": { "type": "loadbalancer", "layer": "ingress", "label": "ALB" },
+      "nextjs": { "type": "k8s-deployment", "layer": "frontend", "label": "Next.JS" },
+      "apache": { "type": "k8s-deployment", "layer": "proxy", "label": "Apache" },
+      "haproxy": { "type": "k8s-deployment", "layer": "proxy", "label": "HAProxy" },
+      "hybris-fo": { "type": "k8s-deployment", "layer": "application", "label": "Hybris FO" },
+      "hybris-bo": { "type": "k8s-deployment", "layer": "application", "label": "Hybris BO", "group": "backoffice" },
+      "solr-follower": { "type": "k8s-statefulset", "layer": "search", "label": "Solr Follower" },
+      "solr-leader": { "type": "k8s-statefulset", "layer": "search", "label": "Solr Leader", "group": "backoffice" },
+      "aurora": { "type": "rds", "layer": "data", "label": "Aurora" },
+      "efs": { "type": "efs", "layer": "data", "label": "EFS" }
+    },
+    "connections": [
+      { "from": "cloudfront", "to": "alb", "protocol": "https" },
+      { "from": "alb", "to": "nextjs", "protocol": "http" },
+      { "from": "nextjs", "to": "apache", "protocol": "http" },
+      { "from": "apache", "to": "haproxy", "protocol": "http" },
+      { "from": "haproxy", "to": "hybris-fo", "protocol": "http" },
+      { "from": "hybris-fo", "to": "solr-follower", "protocol": "solr" },
+      { "from": "hybris-fo", "to": "aurora", "protocol": "jdbc" },
+      { "from": "hybris-fo", "to": "efs", "protocol": "nfs" }
+    ],
+    "layers": ["edge", "ingress", "frontend", "proxy", "application", "search", "data"]
+  }
+}
+```
+
+### Placement
+
+The `topology` section can be placed at:
+
+1. **Project level** - applies to all environments of the project
+2. **Environment level** - overrides project-level topology for a specific environment
+
+```json
+{
+  "projects": {
+    "myproject": {
+      "topology": { /* project-level */ },
+      "environments": {
+        "staging": {
+          "topology": { /* environment-level override */ }
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
 ## NAMING_PATTERN Configuration
 
 Customize resource naming conventions. Supports placeholders: `{project}`, `{env}`, `{service}`.

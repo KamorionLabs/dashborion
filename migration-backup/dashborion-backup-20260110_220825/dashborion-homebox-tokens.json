@@ -1,0 +1,169 @@
+{
+  "table_name": "dashborion-homebox-tokens",
+  "item_count": 15,
+  "decrypted_count": 0,
+  "items": [
+    {
+      "client_id": "sso-exchange",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770656718",
+      "sk": "TOKEN#05a1fefc3832d7bbe4915911d19eaf6a5cda59e6f60b4fca9bc417bbc419a228",
+      "pk": "REFRESH#56180b931f42e62e034b13683cbd7b5d36f90496b24201bebf4bd2fca3ff7f1e",
+      "email": "jean@kamorion.com",
+      "token_hash": "05a1fefc3832d7bbe4915911d19eaf6a5cda59e6f60b4fca9bc417bbc419a228",
+      "expires_at": "1770570318"
+    },
+    {
+      "token_type": "Bearer",
+      "user_id": "jean@kamorion.com",
+      "client_id": "sso-exchange",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1768068318",
+      "sk": "USER#jean@kamorion.com",
+      "scope": "read write",
+      "pk": "TOKEN#05a1fefc3832d7bbe4915911d19eaf6a5cda59e6f60b4fca9bc417bbc419a228",
+      "email": "jean@kamorion.com",
+      "token_hash": "05a1fefc3832d7bbe4915911d19eaf6a5cda59e6f60b4fca9bc417bbc419a228",
+      "expires_at": "1767981918",
+      "refresh_hash": "56180b931f42e62e034b13683cbd7b5d36f90496b24201bebf4bd2fca3ff7f1e"
+    },
+    {
+      "client_id": "web-login",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770583844",
+      "sk": "TOKEN#72578183bf4d09236287813585fa3fd142b52b01b55ab4399b6d99c4dcb12c10",
+      "pk": "REFRESH#5c971501dfaf19cccf6549a7ab96f842086fb38f5c481bf666177077380cc2bb",
+      "email": "admin@homebox.local",
+      "token_hash": "72578183bf4d09236287813585fa3fd142b52b01b55ab4399b6d99c4dcb12c10",
+      "expires_at": "1770497444"
+    },
+    {
+      "client_id": "web-login",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770585388",
+      "sk": "TOKEN#6c8120791bc8dd0cc8326d473e2ce4934e4e8b2bec908df101b95e3082278f2e",
+      "pk": "REFRESH#4514f5bdda6c55561f9a3fa68b67a06cf7afd72a97b68e3fa23fd7ca8076d3a8",
+      "email": "admin@homebox.local",
+      "token_hash": "6c8120791bc8dd0cc8326d473e2ce4934e4e8b2bec908df101b95e3082278f2e",
+      "expires_at": "1770498988"
+    },
+    {
+      "token_type": "Bearer",
+      "user_id": "jean@kamorion.com",
+      "client_id": "dashborion-cli",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"], \"source\": \"user\"}]",
+      "ttl": "1768056400",
+      "sk": "USER#jean@kamorion.com",
+      "scope": "read write",
+      "pk": "TOKEN#5150fca9c1687e4c7986bc9b1a056150f60c9434bf416c42e2d958ff0c0add99",
+      "email": "jean@kamorion.com",
+      "token_hash": "5150fca9c1687e4c7986bc9b1a056150f60c9434bf416c42e2d958ff0c0add99",
+      "expires_at": "1767970000",
+      "refresh_hash": "da20e412987bc0eb98f4f45dc307c641a867fb7b63f0879b4ff1067650b17f0e"
+    },
+    {
+      "client_id": "web-login",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770576578",
+      "sk": "TOKEN#d218bccd6462730034a4c9ca7f12861a5e40feee6aa49f44c71a4712416384d0",
+      "pk": "REFRESH#a608d5751e8f32bbe2dab5199615628e81c5be05342cdf58d7af22c8a05b8fd6",
+      "email": "admin@homebox.local",
+      "token_hash": "d218bccd6462730034a4c9ca7f12861a5e40feee6aa49f44c71a4712416384d0",
+      "expires_at": "1770490178"
+    },
+    {
+      "client_id": "sso-exchange",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770656732",
+      "sk": "TOKEN#0d0344ee85ff341a41aec1edceba0bd3e7a41f6d29fac405e1b775ebd9038b19",
+      "pk": "REFRESH#ab0403c66e5de669e2dac4d387072671bd3de85c24b2998878adbebe3821fada",
+      "email": "jean@kamorion.com",
+      "token_hash": "0d0344ee85ff341a41aec1edceba0bd3e7a41f6d29fac405e1b775ebd9038b19",
+      "expires_at": "1770570332"
+    },
+    {
+      "client_id": "dashborion-cli",
+      "permissions": "[]",
+      "ttl": "1770643032",
+      "sk": "TOKEN#91d0cc1ec2b3fa12e20c5806aaa41e31419c20a379f3d0881104dc126925a964",
+      "pk": "REFRESH#4f2a3500689ffbe2ccf8c4020872d4c94922da9d6fe304bdef0d409ea4b82ee4",
+      "email": "jean@kamorion.com",
+      "token_hash": "91d0cc1ec2b3fa12e20c5806aaa41e31419c20a379f3d0881104dc126925a964",
+      "expires_at": "1770556632"
+    },
+    {
+      "client_id": "dashborion-cli",
+      "permissions": "[]",
+      "ttl": "1770643513",
+      "sk": "TOKEN#01901076d514546ebf7bc788359a307f6ee333595f9bbf556369b24abb2144e2",
+      "pk": "REFRESH#b6bb3913d7c3dd54d415e8c0e6f92ed99461665068ccf5a6175e3a258a4eab43",
+      "email": "jean@kamorion.com",
+      "token_hash": "01901076d514546ebf7bc788359a307f6ee333595f9bbf556369b24abb2144e2",
+      "expires_at": "1770557113"
+    },
+    {
+      "client_id": "web-login",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770571152",
+      "sk": "TOKEN#a8a2a5219d3e60495bd8807fd9627f54c5d8c04010fdf1ab9e4d24979f408cd2",
+      "pk": "REFRESH#eedba8320f38bfc1052e8872e6985b3b894a22f8f23bc084d73b38ce06ba693f",
+      "email": "admin@homebox.local",
+      "token_hash": "a8a2a5219d3e60495bd8807fd9627f54c5d8c04010fdf1ab9e4d24979f408cd2",
+      "expires_at": "1770484752"
+    },
+    {
+      "client_id": "web-login",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770571234",
+      "sk": "TOKEN#2d9fff1775b613f35e05873533d795211e73682b86a58e2060e254f4c155cfaf",
+      "pk": "REFRESH#d221f7016f9f21a0d114dc3a50c9c6d8a1995d0bd160d547d7f1368e607d7f4a",
+      "email": "admin@homebox.local",
+      "token_hash": "2d9fff1775b613f35e05873533d795211e73682b86a58e2060e254f4c155cfaf",
+      "expires_at": "1770484834"
+    },
+    {
+      "client_id": "web-login",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1770583015",
+      "sk": "TOKEN#12c878a7c2934435af4701d10e90d8c8f72612e67970b9c2f2afc1d43b8554dd",
+      "pk": "REFRESH#7f49698740d7a6df5ed5051675d8bceb85370347448004177857cf27a57fbdf9",
+      "email": "admin@homebox.local",
+      "token_hash": "12c878a7c2934435af4701d10e90d8c8f72612e67970b9c2f2afc1d43b8554dd",
+      "expires_at": "1770496615"
+    },
+    {
+      "client_id": "dashborion-cli",
+      "permissions": "[]",
+      "ttl": "1770600217",
+      "sk": "TOKEN#3bc34c55c6b826ceffb575c12c0e041b85803c4d32eb2212ae49c74b61479936",
+      "pk": "REFRESH#216fab6f112436303ce834057af4d144aefd437ca8a8dd2cbcd5efcd3bd6666c",
+      "email": "jean@kamorion.com",
+      "token_hash": "3bc34c55c6b826ceffb575c12c0e041b85803c4d32eb2212ae49c74b61479936",
+      "expires_at": "1770513817"
+    },
+    {
+      "token_type": "Bearer",
+      "user_id": "jean@kamorion.com",
+      "client_id": "sso-exchange",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"]}]",
+      "ttl": "1768068332",
+      "sk": "USER#jean@kamorion.com",
+      "scope": "read write",
+      "pk": "TOKEN#0d0344ee85ff341a41aec1edceba0bd3e7a41f6d29fac405e1b775ebd9038b19",
+      "email": "jean@kamorion.com",
+      "token_hash": "0d0344ee85ff341a41aec1edceba0bd3e7a41f6d29fac405e1b775ebd9038b19",
+      "expires_at": "1767981932",
+      "refresh_hash": "ab0403c66e5de669e2dac4d387072671bd3de85c24b2998878adbebe3821fada"
+    },
+    {
+      "client_id": "dashborion-cli",
+      "permissions": "[{\"project\": \"*\", \"environment\": \"*\", \"role\": \"admin\", \"resources\": [\"*\"], \"source\": \"user\"}]",
+      "ttl": "1770644800",
+      "sk": "TOKEN#5150fca9c1687e4c7986bc9b1a056150f60c9434bf416c42e2d958ff0c0add99",
+      "pk": "REFRESH#da20e412987bc0eb98f4f45dc307c641a867fb7b63f0879b4ff1067650b17f0e",
+      "email": "jean@kamorion.com",
+      "token_hash": "5150fca9c1687e4c7986bc9b1a056150f60c9434bf416c42e2d958ff0c0add99",
+      "expires_at": "1770558400"
+    }
+  ]
+}

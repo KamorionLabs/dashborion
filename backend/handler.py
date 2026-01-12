@@ -5,6 +5,8 @@ Main entry point using provider abstraction layer.
 Routes:
   - /api/health - Health check
   - /api/config - Dashboard configuration
+  - /api/projects - List available projects
+  - /api/{project}/environments - List environments for a project
   - /api/{project}/services/{env} - List services
   - /api/{project}/services/{env}/{service} - Service details
   - /api/{project}/details/{env}/{service} - Extended service details
@@ -160,6 +162,54 @@ def lambda_handler(event, context):
                         result = {'error': 'Authentication required', 'code': 401}
             else:
                 result = {'error': 'Admin handlers not available'}
+
+        # =================================================================
+        # PROJECTS LISTING (global route)
+        # =================================================================
+        elif path == '/api/projects':
+            # Return list of projects with basic info
+            try:
+                auth = authorize_request(event, require_auth=True)
+                projects_list = []
+                for project_name, project_config in config.projects.items():
+                    projects_list.append({
+                        'name': project_name,
+                        'displayName': project_config.display_name,
+                        'description': '',  # Could be added to ProjectConfig
+                        'environments': list(project_config.environments.keys()),
+                        'orchestrator': config.orchestrator.type if config.orchestrator else 'unknown'
+                    })
+                result = {'projects': projects_list}
+            except Exception as e:
+                result = {'error': 'Authentication required', 'code': 401}
+
+        # =================================================================
+        # PROJECT ENVIRONMENTS LISTING: /api/{project}/environments
+        # =================================================================
+        elif path.startswith('/api/') and path.endswith('/environments'):
+            parts = path.split('/')
+            if len(parts) == 4:  # /api/{project}/environments
+                project_name = parts[2]
+                project_config = config.get_project(project_name)
+                if not project_config:
+                    result = {'error': f'Unknown project: {project_name}'}
+                else:
+                    try:
+                        auth = authorize_request(event, require_auth=True)
+                        environments_list = []
+                        for env_name, env_config in project_config.environments.items():
+                            environments_list.append({
+                                'name': env_name,
+                                'type': config.orchestrator.type if config.orchestrator else 'unknown',
+                                'status': env_config.status or 'active',
+                                'region': env_config.region,
+                                'description': ''
+                            })
+                        result = {'environments': environments_list}
+                    except Exception as e:
+                        result = {'error': 'Authentication required', 'code': 401}
+            else:
+                result = {'error': f'Unknown path: {path}'}
 
         # =================================================================
         # PROJECT-SCOPED ROUTES: /api/{project}/...
@@ -484,6 +534,241 @@ def route_project_request(project, resource, parts, method, body, event,
         return {'error': 'Invalid path. Use /api/{project}/events/{env}'}
 
     # -------------------------------------------------------------
+    # KUBERNETES ENDPOINTS: /api/{project}/k8s/{env}/...
+    # Direct K8s resource access for EKS environments
+    # -------------------------------------------------------------
+    elif resource == 'k8s':
+        if len(parts) >= 5:
+            env = parts[4]
+            env_config = config.get_environment(project, env)
+            if not env_config:
+                return {'error': f'Unknown environment: {env} for project {project}'}
+
+            # Check if environment is EKS
+            if env_config.orchestrator_type != 'eks':
+                return {'error': f'Environment {env} is not EKS-based'}
+
+            k8s_resource = parts[5] if len(parts) > 5 else 'pods'
+            resource_name = parts[6] if len(parts) > 6 else None
+
+            namespace = query_params.get('namespace')
+            selector = query_params.get('selector')
+
+            if k8s_resource == 'pods':
+                # GET /api/{project}/k8s/{env}/pods?namespace=x&selector=y
+                pods = orchestrator.get_pods(env, namespace=namespace, selector=selector)
+                return {
+                    'project': project,
+                    'environment': env,
+                    'pods': [_format_k8s_pod(p) for p in pods]
+                }
+
+            elif k8s_resource == 'services':
+                # GET /api/{project}/k8s/{env}/services?namespace=x
+                services = orchestrator.get_k8s_services(env, namespace=namespace)
+                return {
+                    'project': project,
+                    'environment': env,
+                    'services': [_format_k8s_service(s) for s in services]
+                }
+
+            elif k8s_resource == 'deployments':
+                # GET /api/{project}/k8s/{env}/deployments?namespace=x
+                deployments = orchestrator.get_deployments(env, namespace=namespace)
+                return {
+                    'project': project,
+                    'environment': env,
+                    'deployments': [_format_k8s_deployment(d) for d in deployments]
+                }
+
+            elif k8s_resource == 'ingresses':
+                # GET /api/{project}/k8s/{env}/ingresses?namespace=x
+                ingresses = orchestrator.get_ingresses(env, namespace=namespace)
+                return {
+                    'project': project,
+                    'environment': env,
+                    'ingresses': [_format_k8s_ingress(i) for i in ingresses]
+                }
+
+            elif k8s_resource == 'nodes':
+                # GET /api/{project}/k8s/{env}/nodes
+                include_metrics = query_params.get('metrics', 'true').lower() == 'true'
+                nodes = orchestrator.get_nodes(env, include_metrics=include_metrics)
+                return {
+                    'project': project,
+                    'environment': env,
+                    'nodes': [_format_k8s_node(n) for n in nodes]
+                }
+
+            elif k8s_resource == 'namespaces':
+                # GET /api/{project}/k8s/{env}/namespaces
+                namespaces = orchestrator.get_namespaces(env)
+                return {
+                    'project': project,
+                    'environment': env,
+                    'namespaces': namespaces
+                }
+
+            elif k8s_resource == 'logs' and resource_name:
+                # GET /api/{project}/k8s/{env}/logs/{pod}?namespace=x&container=y&tail=100
+                container = query_params.get('container')
+                tail = int(query_params.get('tail', 100))
+                since = query_params.get('since')
+                logs = orchestrator.get_pod_logs(
+                    env, resource_name,
+                    namespace=namespace or 'default',
+                    container=container,
+                    tail=tail,
+                    since=since
+                )
+                return {
+                    'project': project,
+                    'environment': env,
+                    'pod': resource_name,
+                    'logs': logs
+                }
+
+            elif k8s_resource in ['pod', 'service', 'deployment', 'ingress', 'node'] and resource_name:
+                # GET /api/{project}/k8s/{env}/{type}/{name}?namespace=x
+                resource_data = orchestrator.describe_k8s_resource(
+                    env, k8s_resource, resource_name,
+                    namespace=namespace or 'default'
+                )
+                return {
+                    'project': project,
+                    'environment': env,
+                    'resourceType': k8s_resource,
+                    'name': resource_name,
+                    'resource': resource_data
+                }
+
+            return {'error': f'Unknown k8s resource: {k8s_resource}'}
+
+        return {'error': 'Invalid path. Use /api/{project}/k8s/{env}/{resource}'}
+
+    # -------------------------------------------------------------
+    # PIPELINES LIST ENDPOINT: /api/{project}/pipelines/list
+    # -------------------------------------------------------------
+    elif resource == 'pipelines' and len(parts) >= 5 and parts[4] == 'list':
+        # GET /api/{project}/pipelines/list?prefix=x&type=build
+        prefix = query_params.get('prefix')
+        pipeline_type = query_params.get('type')
+        pipelines = ci.list_pipelines(prefix=prefix, pipeline_type=pipeline_type)
+        return {
+            'project': project,
+            'pipelines': [_format_pipeline_summary(p) for p in pipelines]
+        }
+
+    # -------------------------------------------------------------
+    # DIAGRAM ENDPOINTS: /api/{project}/diagram/...
+    # -------------------------------------------------------------
+    elif resource == 'diagram':
+        if len(parts) >= 5:
+            action = parts[4]
+
+            if action == 'templates':
+                # GET /api/{project}/diagram/templates
+                templates = _get_diagram_templates()
+                return {
+                    'project': project,
+                    'templates': templates
+                }
+
+            elif action == 'generate' and method == 'POST':
+                # POST /api/{project}/diagram/generate
+                # Body: {env, outputFormat, namespaces, includeRds, includeElasticache, includeCloudfront}
+                env = body.get('env')
+                output_format = body.get('outputFormat', 'png')
+                namespaces = body.get('namespaces', ['default'])
+                include_rds = body.get('includeRds', False)
+                include_elasticache = body.get('includeElasticache', False)
+                include_cloudfront = body.get('includeCloudfront', False)
+
+                if not env:
+                    return {'error': 'Environment required for diagram generation'}
+
+                env_config = config.get_environment(project, env)
+                if not env_config:
+                    return {'error': f'Unknown environment: {env} for project {project}'}
+
+                try:
+                    from generators.diagram import DiagramGenerator
+
+                    generator = DiagramGenerator(
+                        env_config=env_config,
+                        orchestrator=orchestrator,
+                        infrastructure=infrastructure,
+                        namespaces=namespaces,
+                        include_rds=include_rds,
+                        include_elasticache=include_elasticache,
+                        include_cloudfront=include_cloudfront
+                    )
+
+                    # Generate diagram and return base64 encoded
+                    diagram_data = generator.generate_base64(
+                        output_format=output_format,
+                        env_type=env_config.orchestrator_type,
+                        cluster=env_config.cluster_name
+                    )
+
+                    return {
+                        'project': project,
+                        'environment': env,
+                        'format': output_format,
+                        'data': diagram_data,
+                        'filename': f'{project}-{env}-architecture.{output_format}'
+                    }
+                except ImportError:
+                    return {'error': 'Diagram generator not available on server'}
+                except Exception as e:
+                    return {'error': f'Diagram generation failed: {str(e)}'}
+
+            elif action == 'publish' and method == 'POST':
+                # POST /api/{project}/diagram/publish
+                # Body: {diagramData, format, confluencePage, title, space}
+                auth, error = check_action_permission(event, project, '*', 'publish', 'diagram')
+                if error:
+                    return error
+
+                diagram_data = body.get('diagramData')
+                file_format = body.get('format', 'png')
+                confluence_page = body.get('confluencePage')
+                title = body.get('title')
+                space = body.get('space')
+
+                if not diagram_data or not confluence_page:
+                    return {'error': 'diagramData and confluencePage are required'}
+
+                try:
+                    from publishers.confluence import ConfluencePublisher
+
+                    confluence_config = config.confluence if hasattr(config, 'confluence') else {}
+                    publisher = ConfluencePublisher.from_env_or_config(config=confluence_config)
+
+                    page_title = title or f'Architecture - {project}'
+                    result = publisher.publish_diagram_from_base64(
+                        data=diagram_data,
+                        file_format=file_format,
+                        title=page_title,
+                        parent_page_id=confluence_page,
+                        space_key=space
+                    )
+
+                    log_audit_event(auth, 'publish', project, '*', 'diagram', 'success',
+                                    {'page': confluence_page, 'title': page_title})
+                    return {
+                        'success': True,
+                        'pageId': confluence_page,
+                        'title': page_title
+                    }
+                except ImportError:
+                    return {'error': 'Confluence publisher not available on server'}
+                except Exception as e:
+                    return {'error': f'Publish failed: {str(e)}'}
+
+        return {'error': 'Invalid diagram path. Use /api/{project}/diagram/{templates|generate|publish}'}
+
+    # -------------------------------------------------------------
     # ACTION ENDPOINTS: /api/{project}/actions/...
     # Permission checks: operator or admin required for all actions
     # -------------------------------------------------------------
@@ -588,6 +873,96 @@ def route_project_request(project, resource, parts, method, body, event,
                 return {'error': 'Use invalidate for CloudFront action'}
 
         return {'error': 'Invalid action path'}
+
+    # -------------------------------------------------------------
+    # COMPARISON ENDPOINTS: /api/{project}/comparison/...
+    # Generic environment comparison (source vs destination)
+    # Routes:
+    #   GET /api/{project}/comparison/config - Get comparison configuration
+    #   GET /api/{project}/comparison/{sourceEnv}/{destEnv}/summary - Comparison summary
+    #   GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType} - Detailed comparison
+    #   GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}/history - History
+    # -------------------------------------------------------------
+    elif resource == 'comparison':
+        from providers.comparison import DynamoDBComparisonProvider
+
+        if len(parts) < 5:
+            return {'error': 'Invalid path. Use /api/{project}/comparison/{sourceEnv}/{destEnv}/summary'}
+
+        # GET /api/{project}/comparison/config - Return comparison configuration
+        if parts[4] == 'config':
+            return _get_comparison_config(project, config)
+
+        # Routes with source/dest envs
+        if len(parts) < 6:
+            return {'error': 'Invalid path. Use /api/{project}/comparison/{sourceEnv}/{destEnv}/summary'}
+
+        source_env = parts[4]
+        dest_env = parts[5]
+
+        # Validate environments exist
+        source_env_config = config.get_environment(project, source_env)
+        dest_env_config = config.get_environment(project, dest_env)
+
+        if not source_env_config:
+            return {'error': f'Unknown source environment: {source_env} for project {project}'}
+        if not dest_env_config:
+            return {'error': f'Unknown destination environment: {dest_env} for project {project}'}
+
+        # Get comparison config for this pair
+        comparison_config = _get_comparison_pair_config(project, source_env, dest_env, config)
+        provider = DynamoDBComparisonProvider(
+            table_name=comparison_config.get('tableName'),
+            region=comparison_config.get('region'),
+        )
+
+        domain = comparison_config.get('domain', 'comparison')
+        target = comparison_config.get('target')
+        source_label = comparison_config.get('sourceLabel', source_env)
+        dest_label = comparison_config.get('destinationLabel', dest_env)
+
+        if len(parts) == 6:
+            # /api/{project}/comparison/{sourceEnv}/{destEnv} - redirect to summary
+            return {'error': 'Use /api/{project}/comparison/{sourceEnv}/{destEnv}/summary'}
+
+        sub_resource = parts[6]
+
+        if sub_resource == 'summary':
+            # GET /api/{project}/comparison/{sourceEnv}/{destEnv}/summary
+            try:
+                summary = provider.get_comparison_summary(
+                    domain=domain,
+                    target=target,
+                    source_label=source_label,
+                    destination_label=dest_label,
+                )
+                result = summary.to_dict()
+                result['project'] = project
+                result['sourceEnvironment'] = source_env
+                result['destinationEnvironment'] = dest_env
+                return result
+            except Exception as e:
+                return {'error': str(e)}
+
+        else:
+            # GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}
+            check_type = sub_resource
+
+            if len(parts) >= 8 and parts[7] == 'history':
+                # GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}/history
+                limit = int(query_params.get('limit', '50'))
+                history = provider.get_comparison_history(domain, target, check_type, limit)
+                return {
+                    'checkType': check_type,
+                    'count': len(history),
+                    'history': history,
+                }
+
+            # GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}
+            detail = provider.get_comparison_detail(domain, target, check_type)
+            if detail is None:
+                return {'error': f'No data for check type: {check_type}'}
+            return detail
 
     return {'error': f'Unknown resource: {resource}'}
 
@@ -705,6 +1080,168 @@ def _get_task_definition_diffs(orchestrator, config, project: str, env: str, ite
 
     except Exception as e:
         return {'error': str(e)}
+
+
+# =============================================================================
+# COMPARISON HELPERS
+# =============================================================================
+
+def _get_comparison_config(project: str, config) -> dict:
+    """
+    Get comparison configuration for a project.
+
+    Returns available comparison pairs and their configuration.
+    Configuration can come from:
+    1. Project config (comparison.pairs)
+    2. Auto-generated from environments
+
+    Args:
+        project: Project name
+        config: DashboardConfig instance
+
+    Returns:
+        dict with comparison configuration
+    """
+    project_config = config.get_project(project)
+    if not project_config:
+        return {'error': f'Unknown project: {project}'}
+
+    # Get environments for this project
+    environments = list(project_config.environments.keys())
+
+    # Check if project has explicit comparison config
+    # This would be in project_config if we add comparison field to ProjectConfig
+    comparison_config = getattr(project_config, 'comparison', None)
+
+    if comparison_config and comparison_config.get('pairs'):
+        # Use explicit configuration
+        return {
+            'project': project,
+            'enabled': comparison_config.get('enabled', True),
+            'pairs': comparison_config.get('pairs', []),
+            'environments': environments,
+        }
+
+    # Auto-generate pairs from environments
+    # Group by base env (staging, preprod, production) and source type (legacy, nh)
+    pairs = []
+    env_groups = {}
+
+    for env in environments:
+        # Parse environment name to extract base and source
+        if env.startswith('legacy-'):
+            source_type = 'legacy'
+            base_env = env.replace('legacy-', '')
+        elif env.startswith('nh-'):
+            source_type = 'nh'
+            base_env = env.replace('nh-', '')
+        else:
+            continue  # Skip unknown patterns
+
+        if base_env not in env_groups:
+            env_groups[base_env] = {'legacy': None, 'nh': None}
+        env_groups[base_env][source_type] = env
+
+    # Create pairs for each base env that has both legacy and nh
+    for base_env, sources in env_groups.items():
+        if sources['legacy'] and sources['nh']:
+            pairs.append({
+                'id': f"{base_env}-legacy-vs-nh",
+                'label': f"{base_env.title()}: Legacy vs NH",
+                'source': {
+                    'env': sources['legacy'],
+                    'label': 'Legacy',
+                },
+                'destination': {
+                    'env': sources['nh'],
+                    'label': 'New Horizon',
+                },
+            })
+
+    return {
+        'project': project,
+        'enabled': len(pairs) > 0,
+        'pairs': pairs,
+        'environments': environments,
+        'allowCustomPairs': True,  # Allow selecting any env pair
+    }
+
+
+def _get_comparison_pair_config(project: str, source_env: str, dest_env: str, config) -> dict:
+    """
+    Get configuration for a specific comparison pair.
+
+    Determines the DynamoDB keys and labels for a source/destination pair.
+
+    Args:
+        project: Project name
+        source_env: Source environment name
+        dest_env: Destination environment name
+        config: DashboardConfig instance
+
+    Returns:
+        dict with domain, target, labels, and table configuration
+    """
+    # Check if project has explicit comparison config with this pair
+    project_config = config.get_project(project)
+    comparison_config = getattr(project_config, 'comparison', None) if project_config else None
+
+    if comparison_config and comparison_config.get('pairs'):
+        for pair in comparison_config['pairs']:
+            if (pair.get('source', {}).get('env') == source_env and
+                pair.get('destination', {}).get('env') == dest_env):
+                # Found explicit configuration
+                state_key = pair.get('stateKey', {})
+                return {
+                    'domain': state_key.get('domain', 'comparison'),
+                    'target': state_key.get('target', f"{project}-{source_env}-vs-{dest_env}"),
+                    'sourceLabel': pair.get('source', {}).get('label', source_env),
+                    'destinationLabel': pair.get('destination', {}).get('label', dest_env),
+                    'tableName': state_key.get('tableName'),
+                    'region': state_key.get('region'),
+                }
+
+    # Auto-generate configuration
+    # Extract instance from project (e.g., mro-mi2 -> mi2)
+    instance = project.replace('mro-', '').lower() if project.startswith('mro-') else project.lower()
+
+    # Determine base environment (staging, preprod, production -> stg, ppd, prd)
+    env_map = {
+        'integration': 'int',
+        'staging': 'stg',
+        'preprod': 'ppd',
+        'production': 'prd',
+    }
+
+    # Extract base env from source or dest
+    base_env = None
+    for env in [source_env, dest_env]:
+        for full, short in env_map.items():
+            if full in env:
+                base_env = short
+                break
+        if base_env:
+            break
+
+    if not base_env:
+        base_env = 'comparison'
+
+    # Determine labels
+    source_label = source_env
+    dest_label = dest_env
+    if 'legacy' in source_env.lower():
+        source_label = 'Legacy'
+    if 'nh-' in dest_env.lower() or 'newhorizon' in dest_env.lower():
+        dest_label = 'New Horizon'
+
+    return {
+        'domain': 'mro',  # Default domain
+        'target': f"{instance}-{base_env}-comparison",
+        'sourceLabel': source_label,
+        'destinationLabel': dest_label,
+        'tableName': None,  # Use default
+        'region': None,  # Use default
+    }
 
 
 # =============================================================================
@@ -840,3 +1377,148 @@ def _format_image(img):
         'sizeBytes': img.size_bytes,
         'sizeMB': img.size_mb
     }
+
+
+# =============================================================================
+# KUBERNETES FORMATTING HELPERS
+# =============================================================================
+
+def _format_k8s_pod(pod):
+    """Format K8s pod for API response"""
+    if isinstance(pod, dict):
+        return pod
+    return {
+        'name': pod.name,
+        'namespace': pod.namespace,
+        'status': pod.status,
+        'ready': pod.ready,
+        'restarts': pod.restarts,
+        'age': pod.age,
+        'ip': pod.ip,
+        'node': pod.node,
+        'containers': pod.containers if hasattr(pod, 'containers') else []
+    }
+
+
+def _format_k8s_service(svc):
+    """Format K8s service for API response"""
+    if isinstance(svc, dict):
+        return svc
+    return {
+        'name': svc.name,
+        'namespace': svc.namespace,
+        'type': svc.service_type,
+        'clusterIP': svc.cluster_ip,
+        'externalIP': svc.external_ip,
+        'ports': svc.ports,
+        'selector': svc.selector,
+        'labels': svc.labels
+    }
+
+
+def _format_k8s_deployment(deploy):
+    """Format K8s deployment for API response"""
+    if isinstance(deploy, dict):
+        return deploy
+    return {
+        'name': deploy.name,
+        'namespace': deploy.namespace,
+        'ready': deploy.ready,
+        'available': deploy.available,
+        'upToDate': deploy.up_to_date,
+        'age': deploy.age,
+        'image': deploy.image if hasattr(deploy, 'image') else None
+    }
+
+
+def _format_k8s_ingress(ing):
+    """Format K8s ingress for API response"""
+    if isinstance(ing, dict):
+        return ing
+    return {
+        'name': ing.name,
+        'namespace': ing.namespace,
+        'ingressClass': ing.ingress_class,
+        'hosts': [r.host for r in ing.rules] if ing.rules else [],
+        'address': ing.load_balancer_hostname or ing.load_balancer_ip,
+        'rules': [
+            {
+                'host': r.host,
+                'path': r.path,
+                'pathType': r.path_type,
+                'serviceName': r.service_name,
+                'servicePort': r.service_port
+            }
+            for r in ing.rules
+        ] if ing.rules else [],
+        'tls': ing.tls,
+        'annotations': ing.annotations
+    }
+
+
+def _format_k8s_node(node):
+    """Format K8s node for API response"""
+    if isinstance(node, dict):
+        return node
+    return {
+        'name': node.name,
+        'status': node.status,
+        'instanceType': node.instance_type,
+        'instanceTypeDisplay': node.instance_type_display,
+        'zone': node.zone,
+        'region': node.region,
+        'nodegroup': node.nodegroup,
+        'capacity': {
+            'cpu': node.capacity_cpu,
+            'memory': node.capacity_memory
+        },
+        'allocatable': {
+            'cpu': node.allocatable_cpu,
+            'memory': node.allocatable_memory
+        },
+        'usage': {
+            'cpu': node.usage_cpu,
+            'memory': node.usage_memory
+        } if node.usage_cpu or node.usage_memory else None,
+        'subnetId': node.subnet_id,
+        'instanceId': node.instance_id
+    }
+
+
+def _format_pipeline_summary(pipeline):
+    """Format pipeline for list view"""
+    if isinstance(pipeline, dict):
+        return pipeline
+    return {
+        'name': pipeline.name,
+        'type': pipeline.pipeline_type,
+        'service': pipeline.service,
+        'status': pipeline.last_execution.status if pipeline.last_execution else 'unknown',
+        'lastRun': pipeline.last_execution.started_at.isoformat() if pipeline.last_execution and pipeline.last_execution.started_at else None
+    }
+
+
+def _get_diagram_templates():
+    """Get available diagram templates"""
+    return [
+        {
+            'name': 'ecs-basic',
+            'description': 'Basic ECS cluster with ALB and RDS',
+            'resources': 'ECS, ALB, RDS'
+        },
+        {
+            'name': 'eks-full',
+            'description': 'Full EKS cluster with ingress and services',
+            'resources': 'EKS, Ingress, Services, RDS'
+        },
+        {
+            'name': 'multi-region',
+            'description': 'Multi-region architecture with CloudFront',
+            'resources': 'CloudFront, ALB, ECS/EKS, RDS, ElastiCache'
+        },
+        {
+            'name': 'serverless',
+            'description': 'Serverless architecture with Lambda',
+            'resources': 'API Gateway, Lambda, DynamoDB, S3'
+        }
+    ]

@@ -18,10 +18,113 @@ import {
   Home,
   Clock,
   Server,
+  ArrowLeftRight,
+  RotateCcw,
+  LayoutDashboard,
 } from 'lucide-react';
 import { useConfig } from '../ConfigContext';
 import { useAuth } from '../hooks/useAuth';
 import { ProjectSelector } from '../components/common';
+
+/**
+ * View Navigation - Links to different views based on features
+ */
+function ViewNavigation() {
+  const config = useConfig();
+  const location = useLocation();
+
+  // Get current project from URL
+  const pathParts = location.pathname.split('/').filter(Boolean);
+  const currentProject = pathParts[0];
+
+  if (!currentProject || currentProject === 'login' || currentProject === 'auth') {
+    return null;
+  }
+
+  // Check which features are enabled
+  const features = config.features || {};
+  const projectFeatures = config.projects?.[currentProject]?.features || {};
+
+  // Features are opt-in: only show if explicitly enabled at global or project level
+  // Project-level setting overrides global setting
+  const showComparison = projectFeatures.comparison ?? features.comparison ?? false;
+  const showRefresh = projectFeatures.refresh ?? features.refresh ?? false;
+
+  // Determine current view
+  const isComparison = location.pathname.includes('/comparison');
+  const isRefresh = location.pathname.includes('/refresh');
+  const isDashboard = !isComparison && !isRefresh;
+
+  // Get first env for dashboard link
+  const projectConfig = config.projects?.[currentProject];
+  const firstEnv = (() => {
+    const envs = projectConfig?.environments;
+    if (!envs) return null;
+    if (Array.isArray(envs)) {
+      const first = envs[0];
+      return typeof first === 'string' ? first : first?.id || first?.name;
+    }
+    return Object.keys(envs)[0];
+  })();
+
+  const navItems = [
+    {
+      id: 'dashboard',
+      label: 'Dashboard',
+      icon: LayoutDashboard,
+      href: firstEnv ? `/${currentProject}/${firstEnv}` : `/${currentProject}`,
+      active: isDashboard,
+      show: true,
+    },
+    {
+      id: 'comparison',
+      label: 'Comparison',
+      icon: ArrowLeftRight,
+      href: `/${currentProject}/comparison`,
+      active: isComparison,
+      show: showComparison,
+    },
+    {
+      id: 'refresh',
+      label: 'Refresh',
+      icon: RotateCcw,
+      href: `/${currentProject}/refresh`,
+      active: isRefresh,
+      show: showRefresh,
+    },
+  ];
+
+  const visibleItems = navItems.filter(item => item.show);
+
+  // Don't show navigation if only dashboard is available
+  if (visibleItems.length <= 1) {
+    return null;
+  }
+
+  return (
+    <nav className="flex items-center gap-1">
+      {visibleItems.map((item) => {
+        const Icon = item.icon;
+        return (
+          <Link
+            key={item.id}
+            to={item.href}
+            className={`
+              flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium
+              transition-colors
+              ${item.active
+                ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
+                : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700/50'}
+            `}
+          >
+            <Icon className="w-4 h-4" />
+            <span className="hidden lg:inline">{item.label}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
 
 /**
  * Role badge colors
@@ -71,6 +174,8 @@ function Header({
         </div>
         <div className="h-6 w-px bg-gray-600"></div>
         <ProjectSelector />
+        <div className="h-6 w-px bg-gray-600"></div>
+        <ViewNavigation />
       </div>
 
       {/* Right: Auto-refresh + Refresh + User */}

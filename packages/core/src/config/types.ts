@@ -159,6 +159,10 @@ export interface FeatureFlags {
   events?: boolean;
   /** Enable actions (deploy, scale, etc.) */
   actions?: boolean;
+  /** Enable environment comparison view (source vs destination) */
+  comparison?: boolean;
+  /** Enable refresh/migration operations view */
+  refresh?: boolean;
 }
 
 /**

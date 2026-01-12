@@ -68,15 +68,15 @@ export function AuthProvider({ children }) {
             setUser(data.user);
             setPermissions(data.permissions || []);
           } else if (response.status === 401) {
-            // Token expired/invalid - clear and retry via proxy
+            // Token expired/invalid - clear and retry with cookie
             clearAuthTokens();
-            await tryAuthViaProxy();
+            await tryAuthViaCookie();
           } else {
             throw new Error(`Failed to fetch user info: ${response.status}`);
           }
         } else {
-          // No token - try via CloudFront proxy (for SSO cookie auth)
-          await tryAuthViaProxy();
+          // No token - try SSO cookie auth
+          await tryAuthViaCookie();
         }
       } catch (err) {
         console.error('Auth error:', err);
@@ -89,10 +89,10 @@ export function AuthProvider({ children }) {
     }
 
     /**
-     * Try authentication via CloudFront proxy (for SSO cookie-based auth)
+     * Try authentication via SSO cookie (cross-origin with credentials)
      */
-    async function tryAuthViaProxy() {
-      // Force proxy mode to use SSO cookie via Lambda@Edge
+    async function tryAuthViaCookie() {
+      // Use credentials to send SSO cookie to API
       const response = await fetchWithRetry('/api/auth/me', {}, 3, true);
 
       if (response.ok) {
@@ -113,11 +113,11 @@ export function AuthProvider({ children }) {
 
     /**
      * Exchange SSO session (cookie) for Bearer token
-     * This allows direct API calls without going through CloudFront proxy
+     * This allows direct API calls without sending cookies
      */
     async function exchangeSsoForToken() {
       try {
-        // Force proxy mode - must go through CloudFront for Lambda@Edge to add SSO headers
+        // Use credentials to send SSO cookie to API
         const response = await fetchWithRetry('/api/auth/token/issue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -136,7 +136,7 @@ export function AuthProvider({ children }) {
         }
       } catch (err) {
         console.warn('SSO token exchange failed:', err);
-        // Non-fatal - SSO session still works via CloudFront proxy
+        // Non-fatal - can retry with cookie auth later
       }
     }
 

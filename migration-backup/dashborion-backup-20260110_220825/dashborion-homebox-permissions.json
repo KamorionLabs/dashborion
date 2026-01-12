@@ -1,0 +1,19 @@
+{
+  "table_name": "dashborion-homebox-permissions",
+  "item_count": 1,
+  "decrypted_count": 0,
+  "items": [
+    {
+      "environment": "*",
+      "resources": [
+        "*"
+      ],
+      "role": "admin",
+      "grantedAt": "1767966396",
+      "project": "*",
+      "sk": "PERM#*#*",
+      "grantedBy": "sso-bootstrap",
+      "pk": "USER#jean@kamorion.com"
+    }
+  ]
+}

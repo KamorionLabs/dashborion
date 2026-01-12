@@ -3,9 +3,9 @@ Container Orchestrator Provider implementations.
 """
 
 from .ecs import ECSProvider
-from .eks import EKSProvider
+from .eks_dynamo import EKSDynamoProvider
 
 __all__ = [
     'ECSProvider',
-    'EKSProvider'
+    'EKSDynamoProvider',
 ]

@@ -1,0 +1,61 @@
+{
+  "table_name": "dashborion-homebox-audit",
+  "item_count": 3,
+  "decrypted_count": 0,
+  "items": [
+    {
+      "action": "create_user",
+      "gsi1sk": "TS#1767964516",
+      "target": {
+        "email": "jean@kamorion.com"
+      },
+      "timestamp": "1767964516",
+      "ttl": "1775740516",
+      "sk": "TS#1767964516#create_user",
+      "result": "success",
+      "details": {
+        "groups": null,
+        "role": "viewer"
+      },
+      "pk": "USER#sso-auto",
+      "actor": "sso-auto",
+      "gsi1pk": "ACTION#create_user"
+    },
+    {
+      "action": "create_user",
+      "gsi1sk": "TS#1767965109",
+      "target": {
+        "email": "jean@kamorion.com"
+      },
+      "timestamp": "1767965109",
+      "ttl": "1775741109",
+      "sk": "TS#1767965109#create_user",
+      "result": "success",
+      "details": {
+        "groups": null,
+        "role": "admin"
+      },
+      "pk": "USER#sso-bootstrap",
+      "actor": "sso-bootstrap",
+      "gsi1pk": "ACTION#create_user"
+    },
+    {
+      "action": "create_user",
+      "gsi1sk": "TS#1767966396",
+      "target": {
+        "email": "jean@kamorion.com"
+      },
+      "timestamp": "1767966396",
+      "ttl": "1775742396",
+      "sk": "TS#1767966396#create_user",
+      "result": "success",
+      "details": {
+        "groups": null,
+        "role": "admin"
+      },
+      "pk": "USER#sso-bootstrap",
+      "actor": "sso-bootstrap",
+      "gsi1pk": "ACTION#create_user"
+    }
+  ]
+}

@@ -66,6 +66,7 @@ export default $config({
       createTags,
       createDynamoDBTables,
       createKmsKey,
+      createSsmParameters,
       createLambdaFunctions,
       getApiDomain,
       createApiCertificate,
@@ -109,22 +110,25 @@ export default $config({
     // 2. KMS key for auth encryption
     const kmsKey = config.auth?.enabled !== false ? createKmsKey(config, naming, tags) : undefined;
 
-    // 3. API Certificate (if custom domain with cross-account DNS)
+    // 3. SSM parameters for large config (avoids Lambda 4KB env var limit)
+    const ssmParams = createSsmParameters(config, naming, tags);
+
+    // 4. API Certificate (if custom domain with cross-account DNS)
     const apiCertificateArn = apiDomain && dnsProvider
       ? createApiCertificate(config, tags, apiDomain, dnsProvider)
       : undefined;
 
-    // 4. API Gateway
+    // 5. API Gateway
     const api = createApiGateway(config, naming, tags, frontendDomain, apiDomain, apiCertificateArn);
 
-    // 5. Lambda functions (with KMS key for auth encryption)
-    const lambdas = createLambdaFunctions(config, naming, tags, tables, frontendDomain, kmsKey);
+    // 6. Lambda functions (with SSM config and KMS key)
+    const lambdas = createLambdaFunctions(config, naming, tags, tables, frontendDomain, ssmParams, kmsKey);
 
-    // 6. Setup API Gateway authorizer and routes
+    // 7. Setup API Gateway authorizer and routes
     const authorizer = setupAuthorizer(api, lambdas.authorizer);
     setupRoutes(api, lambdas, authorizer);
 
-    // 7. Create DNS record for API (if cross-account)
+    // 8. Create DNS record for API (if cross-account)
     if (apiDomain && dnsProvider && apiCertificateArn) {
       createApiDnsRecord(config, api, apiDomain, dnsProvider);
     }

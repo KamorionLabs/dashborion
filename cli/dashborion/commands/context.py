@@ -77,6 +77,87 @@ def get_current_context() -> Optional[Dict[str, Any]]:
     return context
 
 
+def get_current_project() -> Optional[str]:
+    """Get the current project from the active context"""
+    ctx = get_current_context()
+    if ctx:
+        return ctx.get('current_project')
+    return None
+
+
+def get_current_environment() -> Optional[str]:
+    """Get the current environment from the active context"""
+    ctx = get_current_context()
+    if ctx:
+        return ctx.get('current_environment')
+    return None
+
+
+def set_current_project(project: str) -> None:
+    """Set the current project in the active context"""
+    data = load_contexts()
+    current_name = data.get('current')
+
+    if not current_name:
+        raise ValueError("No current context set")
+
+    if current_name not in data.get('contexts', {}):
+        raise ValueError(f"Context '{current_name}' not found")
+
+    data['contexts'][current_name]['current_project'] = project
+    save_contexts(data)
+
+
+def set_current_environment(environment: str) -> None:
+    """Set the current environment in the active context"""
+    data = load_contexts()
+    current_name = data.get('current')
+
+    if not current_name:
+        raise ValueError("No current context set")
+
+    if current_name not in data.get('contexts', {}):
+        raise ValueError(f"Context '{current_name}' not found")
+
+    data['contexts'][current_name]['current_environment'] = environment
+    save_contexts(data)
+
+
+def get_current_orchestrator() -> Optional[str]:
+    """Get the orchestrator type for the current project (ecs, eks, etc.)"""
+    ctx = get_current_context()
+    if ctx:
+        return ctx.get('orchestrator')
+    return None
+
+
+def set_current_orchestrator(orchestrator: str) -> None:
+    """Set the orchestrator type for the current project"""
+    data = load_contexts()
+    current_name = data.get('current')
+
+    if not current_name:
+        raise ValueError("No current context set")
+
+    if current_name not in data.get('contexts', {}):
+        raise ValueError(f"Context '{current_name}' not found")
+
+    data['contexts'][current_name]['orchestrator'] = orchestrator
+    save_contexts(data)
+
+
+def is_eks_project() -> bool:
+    """Check if current project uses EKS/Kubernetes"""
+    orch = get_current_orchestrator()
+    return orch in ('eks', 'kubernetes', 'k8s')
+
+
+def is_ecs_project() -> bool:
+    """Check if current project uses ECS"""
+    orch = get_current_orchestrator()
+    return orch in ('ecs', 'fargate')
+
+
 def get_context(name: str) -> Optional[Dict[str, Any]]:
     """Get a specific context by name"""
     data = load_contexts()
@@ -193,7 +274,8 @@ def current_context():
     """
     Show the current context
 
-    Displays information about the currently active Dashborion context.
+    Displays information about the currently active Dashborion context,
+    including the selected project and environment.
     """
     ctx = get_current_context()
 
@@ -209,6 +291,23 @@ def current_context():
 
     if ctx.get('description'):
         click.echo(f"Description: {ctx['description']}")
+
+    # Show current project, orchestrator, and environment
+    current_proj = ctx.get('current_project')
+    current_env = ctx.get('current_environment')
+    orchestrator = ctx.get('orchestrator')
+
+    if current_proj:
+        click.echo(f"Project: {click.style(current_proj, fg='cyan')}")
+        if orchestrator:
+            click.echo(f"Orchestrator: {click.style(orchestrator, fg='cyan')}")
+    else:
+        click.echo(f"Project: {click.style('not set', fg='yellow')} (use 'dashborion project use <name>')")
+
+    if current_env:
+        click.echo(f"Environment: {click.style(current_env, fg='cyan')}")
+    else:
+        click.echo(f"Environment: {click.style('not set', fg='yellow')} (use 'dashborion env use <name>')")
 
     # Check credentials
     creds = get_context_credentials(ctx['name'])
