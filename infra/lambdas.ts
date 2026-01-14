@@ -25,6 +25,7 @@ export interface LambdaFunctions {
   admin: sst.aws.Function;
   comparison: sst.aws.Function;
   configRegistry: sst.aws.Function;
+  discovery: sst.aws.Function;
 }
 
 /**
@@ -46,6 +47,7 @@ export interface LambdaEnvVars {
   PERMISSIONS_TABLE_NAME: $util.Output<string> | string;
   AUDIT_TABLE_NAME: $util.Output<string> | string;
   CONFIG_TABLE_NAME: $util.Output<string> | string;
+  CACHE_TABLE_NAME: $util.Output<string> | string;
   PYTHONPATH: string;
   // Ops Dashboard integration (Step Functions)
   OPS_DASHBOARD_TABLE?: string;
@@ -111,6 +113,7 @@ export function buildLambdaEnv(
     PERMISSIONS_TABLE_NAME: tables.permissions.name,
     AUDIT_TABLE_NAME: tables.audit.name,
     CONFIG_TABLE_NAME: tables.config.name,
+    CACHE_TABLE_NAME: tables.cache.name,
     PYTHONPATH: "/var/task/backend:/var/task",
   };
 
@@ -550,6 +553,28 @@ export function createLambdaFunctions(
     },
   });
 
+  // --------------------------------------------------------------------------
+  // Discovery Lambda (AWS resource discovery for Admin UI)
+  // --------------------------------------------------------------------------
+  const discovery = new sst.aws.Function("DiscoveryHandler", {
+    ...baseFunctionConfig,
+    handler: "backend/discovery/handler.handler",
+    memory: "512 MB",
+    timeout: "60 seconds",
+    environment: env as any,
+    ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
+    permissions: [
+      ...dynamoReadPermissions,
+      ...assumeRolePermission,
+    ],
+    transform: {
+      function: {
+        name: naming.lambda("discovery"),
+        tags: tags.component("lambda"),
+      },
+    },
+  });
+
   return {
     authorizer,
     health,
@@ -562,5 +587,6 @@ export function createLambdaFunctions(
     admin,
     comparison,
     configRegistry,
+    discovery,
   };
 }

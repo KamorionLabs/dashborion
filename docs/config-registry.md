@@ -279,12 +279,16 @@ Creee par SST dans dashborion (packages/api ou infra/).
     ]
   },
 
-  "discoveryTags": {
-    "rubix_Environment": "stg",
-    "rubix_Application": "webshop-mi2"
+  "infrastructure": {
+    "defaultTags": {
+      "rubix_Environment": "stg",
+      "rubix_Application": "webshop-mi2"
+    },
+    "resources": {
+      "rds": { "ids": ["rds-dig-stg-mro-mi2"], "tags": {} },
+      "efs": { "ids": ["fs-xxx"], "tags": {} }
+    }
   },
-
-  "databases": ["aurora-mysql"],
 
   "updatedAt": "2026-01-12T10:00:00Z",
   "updatedBy": "admin@example.com",

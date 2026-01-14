@@ -2,6 +2,57 @@
 
 Configuration is loaded from **SSM Parameter Store** (recommended) or environment variables.
 
+---
+
+## Configuration Locations (Important)
+
+When modifying configuration schema or adding new fields, changes must be synchronized across **3 locations**:
+
+| Location | Files | Description |
+|----------|-------|-------------|
+| **Feature Code** | `backend/{feature}/handler.py`, `packages/frontend/src/pages/*.jsx` | Backend handlers and frontend pages that use the config |
+| **Admin UI** | `packages/frontend/src/pages/admin/EnvironmentForm.jsx`, etc. | Admin forms for editing configuration |
+| **CLI** | `cli/dashborion/commands/config_registry.py` | CLI migration and import/export commands |
+
+### Environment Configuration Format (v2.2)
+
+The current flat format for environments:
+
+```json
+{
+  "projectId": "my-project",
+  "envId": "staging",
+  "displayName": "Staging",
+  "accountId": "123456789012",
+  "region": "eu-central-1",
+  "clusterName": "my-cluster",
+  "namespace": "my-namespace",
+  "services": ["service1", "service2"],
+  "readRoleArn": "arn:aws:iam::...",
+  "actionRoleArn": "arn:aws:iam::...",
+  "status": "active",
+  "enabled": true,
+  "infrastructure": {
+    "defaultTags": {"Environment": "staging"},
+    "domainConfig": {"domains": {"frontend": "fr", "backend": "back"}},
+    "resources": {
+      "rds": { "ids": ["my-db"], "tags": {} },
+      "redis": { "ids": ["my-cache"], "tags": {} },
+      "alb": { "ids": ["arn:aws:elasticloadbalancing:..."], "tags": {} }
+    }
+  },
+  "checkers": {}
+}
+```
+
+**Key fields:**
+- `clusterName`, `namespace`: Flat fields for EKS orchestrator
+- `services`: Array for ECS orchestrator services
+- `infrastructure.defaultTags`: Fallback tags for AWS resource discovery
+- `infrastructure.resources.<resource>.ids`: Explicit AWS resource IDs (take precedence)
+- `infrastructure.resources.<resource>.tags`: Tags for resource discovery when no IDs are set
+- `infrastructure.domainConfig`: Optional domain mapping for frontend links and CloudFront filtering
+
 ## Configuration Storage
 
 ### SSM Parameter Store (Recommended)

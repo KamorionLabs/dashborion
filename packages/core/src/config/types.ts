@@ -57,8 +57,28 @@ export interface EnvironmentConfig {
   namespace?: string;
   /** Services to monitor (optional filter) */
   services?: string[];
-  /** Additional tags for resource discovery */
-  discoveryTags?: Record<string, string>;
+  /** Infrastructure discovery config (ids/tags) */
+  infrastructure?: InfrastructureConfig;
+}
+
+/**
+ * Infrastructure resource configuration
+ */
+export interface InfrastructureResourceConfig {
+  ids?: string[];
+  tags?: Record<string, string>;
+}
+
+/**
+ * Infrastructure discovery configuration
+ */
+export interface InfrastructureConfig {
+  defaultTags?: Record<string, string>;
+  domainConfig?: {
+    domains?: Record<string, string>;
+    pattern?: string;
+  };
+  resources?: Record<string, InfrastructureResourceConfig>;
 }
 
 /**
@@ -69,6 +89,11 @@ export interface ProjectConfig {
   displayName: string;
   /** Description */
   description?: string;
+  /** Service naming (prefix template) */
+  serviceNaming?: {
+    prefix?: string;
+    suffix?: string;
+  };
   /** Environments */
   environments: Record<string, EnvironmentConfig>;
   /** IDP group mapping for access control */

@@ -48,22 +48,11 @@
         "prefix": "myapp"
       },
       "infrastructure": {
-        "discoveryTags": {
-          "Project": "myapp"
-        },
         "serviceColors": {
           "backend": "#3b82f6",
           "frontend": "#8b5cf6",
           "api": "#06b6d4"
-        },
-        "domainPattern": "{service}.{env}.example.com",
-        "domains": {
-          "frontend": "app",
-          "backend": "api",
-          "api": "gateway"
-        },
-        "databases": ["postgres"],
-        "caches": ["redis"]
+        }
       },
       "envColors": {
         "staging": { "bg": "bg-yellow-500", "text": "text-yellow-400", "border": "border-yellow-500" },

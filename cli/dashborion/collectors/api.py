@@ -296,36 +296,38 @@ class APICollector:
     # INFRASTRUCTURE OPERATIONS
     # =========================================================================
 
-    def get_infrastructure(self, env: str, discovery_tags: Optional[dict] = None,
-                          services: Optional[List[str]] = None,
-                          databases: Optional[List[str]] = None,
-                          caches: Optional[List[str]] = None) -> dict:
+    def _build_infra_params(self, force_refresh: bool = False) -> dict:
+        params: Dict[str, str] = {}
+        if force_refresh:
+            params['force'] = 'true'
+        return params
+
+    def _get_infra_resource(self, env: str, resource: str, params: Optional[dict] = None) -> dict:
+        response = self.client.get(
+            f'/api/{self.project}/infrastructure/{env}/{resource}',
+            params=params or {}
+        )
+        return self._handle_response(response, f"get infrastructure {resource} for {env}")
+
+    def get_infrastructure(self, env: str, force_refresh: bool = False) -> dict:
         """
         Get infrastructure overview for an environment.
 
         Args:
             env: Environment name
-            discovery_tags: Optional tags for resource discovery
-            services: Optional list of service names to filter
-            databases: Optional list of database identifiers
-            caches: Optional list of cache cluster IDs
+            force_refresh: Bypass API cache
 
         Returns:
             Infrastructure overview dict
         """
-        import json
-        params = {}
-        if discovery_tags:
-            params['discoveryTags'] = json.dumps(discovery_tags)
-        if services:
-            params['services'] = ','.join(services)
-        if databases:
-            params['databases'] = ','.join(databases)
-        if caches:
-            params['caches'] = ','.join(caches)
+        params = self._build_infra_params(force_refresh=force_refresh)
 
-        response = self.client.get(f'/api/{self.project}/infrastructure/{env}', params=params)
-        return self._handle_response(response, f"get infrastructure for {env}")
+        infra = {}
+        infra.update(self._get_infra_resource(env, 'meta', params=params))
+        for resource in ['cloudfront', 'alb', 'rds', 'redis', 's3', 'workloads', 'efs', 'network']:
+            infra.update(self._get_infra_resource(env, resource, params=params))
+
+        return infra
 
     def get_load_balancers(self, env: str, name_filter: Optional[str] = None) -> List[dict]:
         """
@@ -338,8 +340,9 @@ class APICollector:
         Returns:
             List of ALB dicts
         """
-        infra = self.get_infrastructure(env)
-        albs = infra.get('loadBalancers', [])
+        data = self._get_infra_resource(env, 'alb')
+        alb = data.get('alb')
+        albs = [alb] if isinstance(alb, dict) else []
         if name_filter:
             albs = [alb for alb in albs if name_filter in alb.get('name', '')]
         return albs
@@ -355,11 +358,18 @@ class APICollector:
         Returns:
             List of database dicts
         """
-        infra = self.get_infrastructure(env)
-        dbs = infra.get('databases', [])
+        data = self._get_infra_resource(env, 'rds')
+        db = data.get('rds')
+        if not isinstance(db, dict):
+            return []
         if identifier_filter:
-            dbs = [db for db in dbs if identifier_filter in db.get('identifier', '')]
-        return dbs
+            identifier = db.get('identifier', '')
+            if identifier_filter not in identifier:
+                instances = db.get('instances') or []
+                matches_instance = any(identifier_filter in inst.get('identifier', '') for inst in instances)
+                if not matches_instance:
+                    return []
+        return [db]
 
     def get_caches(self, env: str) -> List[dict]:
         """
@@ -371,8 +381,11 @@ class APICollector:
         Returns:
             List of cache dicts
         """
-        infra = self.get_infrastructure(env)
-        return infra.get('caches', [])
+        data = self._get_infra_resource(env, 'redis')
+        cache = data.get('redis')
+        if not isinstance(cache, dict):
+            return []
+        return [cache]
 
     def get_cloudfront_distributions(self, env: str,
                                      distribution_id: Optional[str] = None) -> List[dict]:
@@ -386,8 +399,11 @@ class APICollector:
         Returns:
             List of distribution dicts
         """
-        infra = self.get_infrastructure(env)
-        distributions = infra.get('distributions', [])
+        data = self._get_infra_resource(env, 'cloudfront')
+        cloudfront = data.get('cloudfront')
+        if not isinstance(cloudfront, dict):
+            return []
+        distributions = cloudfront.get('distributions') or [cloudfront]
         if distribution_id:
             distributions = [d for d in distributions if d.get('id') == distribution_id]
         return distributions
@@ -402,8 +418,11 @@ class APICollector:
         Returns:
             List of VPC dicts
         """
-        infra = self.get_infrastructure(env)
-        return infra.get('vpcs', [])
+        data = self._get_infra_resource(env, 'network')
+        network = data.get('network')
+        if not isinstance(network, dict):
+            return []
+        return [network]
 
     def get_routing_details(self, env: str,
                            security_groups: Optional[List[str]] = None) -> dict:
@@ -472,6 +491,20 @@ class APICollector:
         )
         data = self._handle_response(response, f"get ENIs for {env}")
         return data.get('enis', [])
+
+    def get_namespaces(self, env: str) -> List[str]:
+        """
+        Get Kubernetes namespaces via infrastructure endpoint.
+
+        Args:
+            env: Environment name
+
+        Returns:
+            List of namespace names
+        """
+        response = self.client.get(f'/api/{self.project}/infrastructure/{env}/namespaces')
+        data = self._handle_response(response, f"get namespaces for {env}")
+        return data.get('namespaces', [])
 
     # =========================================================================
     # PIPELINE OPERATIONS

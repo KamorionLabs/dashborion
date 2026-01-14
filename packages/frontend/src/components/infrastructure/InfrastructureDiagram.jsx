@@ -5,6 +5,7 @@ import {
 import { useConfig, useConfigHelpers } from '../../ConfigContext'
 import { useAuth } from '../../hooks/useAuth'
 import { formatDuration, calculateDuration } from '../../utils'
+import { stripServiceName } from '../../utils/serviceNaming'
 import SimpleView from './SimpleView'
 import NetworkView from './NetworkView'
 import RoutingView from './RoutingView'
@@ -111,24 +112,25 @@ export default function InfrastructureDiagram({ data, env, onComponentSelect, se
 
       {/* Service Cards - Above diagram */}
       {envServices?.services && (
-        <ServiceCards
-          env={env}
-          envServices={envServices}
-          alb={alb}
-          pipelines={pipelines}
-          SERVICES={SERVICES}
-          getServiceName={getServiceName}
-          onComponentSelect={onComponentSelect}
-          onForceReload={onForceReload}
-          onDeployLatest={onDeployLatest}
-          onScaleService={onScaleService}
-          actionLoading={actionLoading}
-          onOpenLogsPanel={onOpenLogsPanel}
-          onTailDeployLogs={onTailDeployLogs}
-          canDeploy={canDeploy}
-          canScale={canScale}
-          currentProjectId={appConfig.currentProjectId}
-        />
+      <ServiceCards
+        env={env}
+        envServices={envServices}
+        alb={alb}
+        pipelines={pipelines}
+        SERVICES={SERVICES}
+        getServiceName={getServiceName}
+        onComponentSelect={onComponentSelect}
+        onForceReload={onForceReload}
+        onDeployLatest={onDeployLatest}
+        onScaleService={onScaleService}
+        actionLoading={actionLoading}
+        onOpenLogsPanel={onOpenLogsPanel}
+        onTailDeployLogs={onTailDeployLogs}
+        canDeploy={canDeploy}
+        canScale={canScale}
+        currentProjectId={appConfig.currentProjectId}
+        appConfig={appConfig}
+      />
       )}
 
       {/* View Content */}
@@ -197,14 +199,30 @@ function ServiceCards({
   onTailDeployLogs,
   canDeploy,
   canScale,
-  currentProjectId
+  currentProjectId,
+  appConfig
 }) {
+  const findServiceEntry = (shortName) => {
+    const servicesMap = envServices?.services || {}
+    if (servicesMap[shortName]) {
+      return { key: shortName, service: servicesMap[shortName] }
+    }
+    const matchKey = Object.keys(servicesMap).find((key) =>
+      stripServiceName(key, appConfig?.serviceNaming, appConfig?.currentProjectId, env) === shortName
+    )
+    if (matchKey) {
+      return { key: matchKey, service: servicesMap[matchKey] }
+    }
+    return null
+  }
+
   return (
     <div className="px-4 pt-4 pb-2">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {SERVICES.map(svc => {
-          const service = envServices.services[svc]
-          if (!service) return null
+          const entry = findServiceEntry(svc)
+          if (!entry) return null
+          const service = entry.service
           const tg = alb?.targetGroups?.find(t => t.service === svc)
           const health = tg?.health?.status || service?.health || 'UNKNOWN'
           const isDeploying = service.deployPipeline?.lastExecution?.status === 'InProgress'

@@ -32,6 +32,7 @@ export interface DynamoDBTables {
   permissions: TableRef;
   audit: TableRef;
   config: TableRef;
+  cache: TableRef;
 }
 
 /**
@@ -171,6 +172,21 @@ export function createDynamoDBTables(
     },
   });
 
+  const cacheTable = new sst.aws.Dynamo("CacheTable", {
+    fields: {
+      pk: "string",
+      sk: "string",
+    },
+    primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+    ttl: "ttl",
+    transform: {
+      table: {
+        name: naming.table("cache"),
+        tags: tags.component("dynamodb"),
+      },
+    },
+  });
+
   return {
     tokens: { name: tokensTable.name, arn: tokensTable.arn, resource: tokensTable },
     deviceCodes: { name: deviceCodesTable.name, arn: deviceCodesTable.arn, resource: deviceCodesTable },
@@ -179,6 +195,7 @@ export function createDynamoDBTables(
     permissions: { name: permissionsTable.name, arn: permissionsTable.arn, resource: permissionsTable },
     audit: { name: auditTable.name, arn: auditTable.arn, resource: auditTable },
     config: { name: configTable.name, arn: configTable.arn, resource: configTable },
+    cache: { name: cacheTable.name, arn: cacheTable.arn, resource: cacheTable },
   };
 }
 

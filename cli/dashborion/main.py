@@ -16,7 +16,7 @@ import yaml
 from typing import Optional
 from pathlib import Path
 
-from dashborion.commands import services, infra, diagram, k8s, pipelines, auth, context, admin, project, env
+from dashborion.commands import services, infra, diagram, k8s, pipelines, auth, context, admin, project, env, config_registry
 from dashborion.config.cli_config import load_config, get_environment_config
 from dashborion.utils.output import OutputFormatter
 
@@ -177,22 +177,7 @@ cli.add_command(infra.infra)
 cli.add_command(diagram.diagram)
 cli.add_command(k8s.k8s)
 cli.add_command(pipelines.pipelines)
-
-
-@cli.command()
-@pass_context
-def config(ctx):
-    """Show current configuration"""
-    formatter = OutputFormatter(ctx.output_format)
-
-    config_info = {
-        'profile': ctx.profile or ctx.config.get('default_profile', 'default'),
-        'region': ctx.region or ctx.config.get('default_region', 'eu-west-3'),
-        'environments': list(ctx.config.get('environments', {}).keys()),
-        'config_file': ctx.config.get('_config_path', 'not loaded'),
-    }
-
-    formatter.output(config_info, title="Configuration")
+cli.add_command(config_registry.config_registry)
 
 
 @cli.command()

@@ -5,6 +5,7 @@ import AwsS3 from 'aws-react-icons/lib/icons/ArchitectureServiceAmazonSimpleStor
 import AwsALB from 'aws-react-icons/lib/icons/ArchitectureServiceElasticLoadBalancing'
 import AwsRDS from 'aws-react-icons/lib/icons/ArchitectureServiceAmazonRDS'
 import AwsElastiCache from 'aws-react-icons/lib/icons/ArchitectureServiceAmazonElastiCache'
+import { formatServicePrefix } from '../../utils/serviceNaming'
 
 /**
  * Detailed network architecture diagram with VPC, subnets, AZs
@@ -63,7 +64,7 @@ export default function NetworkView({
 
   return (
     <div className="p-4 relative overflow-x-auto">
-      <svg viewBox="0 0 1300 750" className="w-full h-auto min-w-[1100px]" style={{ minHeight: '700px' }}>
+      <svg viewBox="0 0 1400 800" className="w-full h-auto min-w-[1200px]" style={{ minHeight: '750px' }}>
         {/* Defs */}
         <defs>
           <linearGradient id={`flow-${env}`} x1="0%" y1="0%" x2="100%" y2="0%">
@@ -97,84 +98,84 @@ export default function NetworkView({
           </linearGradient>
         </defs>
 
-        {/* Internet Zone (outside VPC) */}
+        {/* Internet Zone (outside VPC) - enlarged for better visibility */}
         <g transform="translate(10, 10)">
-          <rect x="0" y="0" width="210" height={hasCloudFront || hasS3 ? 420 : 150} rx="8" fill="#1e293b" stroke="#475569" strokeWidth="1" strokeDasharray="4" />
-          <text x="105" y="28" fill="#94a3b8" fontSize="15" textAnchor="middle" fontWeight="bold">Internet</text>
+          <rect x="0" y="0" width="230" height={hasCloudFront || hasS3 ? 460 : 160} rx="8" fill="#1e293b" stroke="#475569" strokeWidth="1" strokeDasharray="4" />
+          <text x="115" y="30" fill="#94a3b8" fontSize="16" textAnchor="middle" fontWeight="bold">Internet</text>
 
           {/* Users */}
-          <g transform="translate(42, 55)">
-            <circle cx="28" cy="28" r="28" fill="#334155" stroke="#64748b" strokeWidth="2" />
-            <circle cx="28" cy="18" r="9" fill="#94a3b8" />
-            <path d="M 28 30 L 28 46 M 16 38 L 40 38 M 28 46 L 18 60 M 28 46 L 38 60" stroke="#94a3b8" strokeWidth="2.5" fill="none" />
-            <text x="28" y="80" fill="#94a3b8" fontSize="12" textAnchor="middle">Users</text>
+          <g transform="translate(52, 60)">
+            <circle cx="32" cy="32" r="32" fill="#334155" stroke="#64748b" strokeWidth="2" />
+            <circle cx="32" cy="20" r="10" fill="#94a3b8" />
+            <path d="M 32 34 L 32 52 M 18 42 L 46 42 M 32 52 L 20 68 M 32 52 L 44 68" stroke="#94a3b8" strokeWidth="2.5" fill="none" />
+            <text x="32" y="90" fill="#94a3b8" fontSize="13" textAnchor="middle">Users</text>
           </g>
 
           {/* CloudFront - only if exists */}
           {hasCloudFront && (
-            <g transform="translate(25, 155)" className="cursor-pointer" onClick={() => onComponentSelect?.('cloudfront', env, cloudfront)}>
-              <rect x="0" y="0" width="160" height="110" rx="8" fill={isSelected('cloudfront') ? '#334155' : '#1f2937'} stroke={isSelected('cloudfront') ? '#f97316' : '#f97316'} strokeWidth={isSelected('cloudfront') ? 3 : 2} />
-              <rect x="0" y="0" width="160" height="28" rx="8" fill="#f97316" />
-              <text x="80" y="19" fill="white" fontSize="14" textAnchor="middle" fontWeight="bold">CloudFront</text>
-              <foreignObject x="60" y="34" width="40" height="40">
-                <AwsCloudFront style={{ width: 40, height: 40 }} />
+            <g transform="translate(25, 170)" className="cursor-pointer" onClick={() => onComponentSelect?.('cloudfront', env, cloudfront)}>
+              <rect x="0" y="0" width="180" height="120" rx="8" fill={isSelected('cloudfront') ? '#334155' : '#1f2937'} stroke={isSelected('cloudfront') ? '#f97316' : '#f97316'} strokeWidth={isSelected('cloudfront') ? 3 : 2} />
+              <rect x="0" y="0" width="180" height="32" rx="8" fill="#f97316" />
+              <text x="90" y="22" fill="white" fontSize="15" textAnchor="middle" fontWeight="bold">CloudFront</text>
+              <foreignObject x="70" y="38" width="44" height="44">
+                <AwsCloudFront style={{ width: 44, height: 44 }} />
               </foreignObject>
-              <text x="80" y="88" fill="#9ca3af" fontSize="11" textAnchor="middle">{cloudfront?.id}</text>
-              <text x="80" y="103" fill={cloudfront?.status === 'Deployed' ? '#4ade80' : '#fbbf24'} fontSize="12" textAnchor="middle" fontWeight="500">{cloudfront?.status || 'Loading...'}</text>
+              <text x="90" y="96" fill="#9ca3af" fontSize="12" textAnchor="middle">{cloudfront?.id}</text>
+              <text x="90" y="112" fill={cloudfront?.status === 'Deployed' ? '#4ade80' : '#fbbf24'} fontSize="13" textAnchor="middle" fontWeight="500">{cloudfront?.status || 'Loading...'}</text>
             </g>
           )}
 
           {/* S3 - only if exists */}
           {hasS3 && (
-            <g transform="translate(25, 285)" className="cursor-pointer" onClick={() => onComponentSelect?.('s3', env, s3Buckets)}>
-              <rect x="0" y="0" width="160" height="115" rx="8" fill={isSelected('s3') ? '#334155' : '#1f2937'} stroke="#a855f7" strokeWidth={isSelected('s3') ? 3 : 2} />
-              <rect x="0" y="0" width="160" height="28" rx="8" fill="#a855f7" />
-              <text x="80" y="19" fill="white" fontSize="14" textAnchor="middle" fontWeight="bold">S3 Buckets</text>
-              <foreignObject x="60" y="34" width="40" height="40">
-                <AwsS3 style={{ width: 40, height: 40 }} />
+            <g transform="translate(25, 310)" className="cursor-pointer" onClick={() => onComponentSelect?.('s3', env, s3Buckets)}>
+              <rect x="0" y="0" width="180" height="125" rx="8" fill={isSelected('s3') ? '#334155' : '#1f2937'} stroke="#a855f7" strokeWidth={isSelected('s3') ? 3 : 2} />
+              <rect x="0" y="0" width="180" height="32" rx="8" fill="#a855f7" />
+              <text x="90" y="22" fill="white" fontSize="15" textAnchor="middle" fontWeight="bold">S3 Buckets</text>
+              <foreignObject x="70" y="38" width="44" height="44">
+                <AwsS3 style={{ width: 44, height: 44 }} />
               </foreignObject>
-              <text x="80" y="90" fill="#9ca3af" fontSize="11" textAnchor="middle">{frontendBucket?.name?.split('-').slice(-3).join('-') || 'frontend'}</text>
-              <text x="80" y="106" fill="#9ca3af" fontSize="11" textAnchor="middle">{assetsBucket?.name?.split('-').slice(-3).join('-') || 'assets'}</text>
+              <text x="90" y="98" fill="#9ca3af" fontSize="12" textAnchor="middle">{frontendBucket?.name?.split('-').slice(-3).join('-') || 'frontend'}</text>
+              <text x="90" y="116" fill="#9ca3af" fontSize="12" textAnchor="middle">{assetsBucket?.name?.split('-').slice(-3).join('-') || 'assets'}</text>
             </g>
           )}
         </g>
 
-        {/* VPC Container */}
-        <g transform="translate(230, 10)">
-          <rect x="0" y="0" width="1060" height="730" rx="10" fill="none" stroke="#3b82f6" strokeWidth="2" />
-          <rect x="0" y="0" width="1060" height="32" rx="10" fill="#1e3a5f" />
-          <text x="20" y="22" fill="#60a5fa" fontSize="15" fontWeight="bold">VPC: {network?.vpcName || (appConfig?.serviceNaming?.prefix || 'app') + '-' + env}</text>
-          <text x="1050" y="22" fill="#93c5fd" fontSize="13" textAnchor="end">{network?.cidr || '10.x.0.0/16'}</text>
+        {/* VPC Container - enlarged for better visibility */}
+        <g transform="translate(250, 10)">
+          <rect x="0" y="0" width="1130" height="780" rx="10" fill="none" stroke="#3b82f6" strokeWidth="2" />
+          <rect x="0" y="0" width="1130" height="36" rx="10" fill="#1e3a5f" />
+          <text x="20" y="25" fill="#60a5fa" fontSize="16" fontWeight="bold">VPC: {network?.vpcName || (formatServicePrefix(appConfig?.serviceNaming, appConfig?.currentProjectId, env).replace(/-$/, '') || env || '')}</text>
+          <text x="1115" y="25" fill="#93c5fd" fontSize="14" textAnchor="end">{network?.cidr || '10.x.0.0/16'}</text>
 
-          {/* AZ Columns */}
+          {/* AZ Columns - enlarged for better visibility */}
           {(() => {
             const azs = network?.availabilityZones || getDefaultAzs()
-            const azWidth = 515
-            const azGap = 20
+            const azWidth = 550
+            const azGap = 22
 
             return azs.map((az, azIndex) => {
               const azX = 10 + azIndex * (azWidth + azGap)
               const nodesInAz = nodesByAz[az] || []
 
               return (
-                <g key={az} transform={`translate(${azX}, 42)`}>
+                <g key={az} transform={`translate(${azX}, 46)`}>
                   {/* AZ Container */}
-                  <rect x="0" y="0" width={azWidth} height="680" rx="8" fill="#0f172a" stroke="#334155" strokeWidth="1" />
-                  <rect x="0" y="0" width={azWidth} height="28" rx="8" fill="#1e293b" />
-                  <text x={azWidth/2} y="19" fill="#94a3b8" fontSize="13" textAnchor="middle" fontWeight="bold">{az}</text>
+                  <rect x="0" y="0" width={azWidth} height="725" rx="8" fill="#0f172a" stroke="#334155" strokeWidth="1" />
+                  <rect x="0" y="0" width={azWidth} height="32" rx="8" fill="#1e293b" />
+                  <text x={azWidth/2} y="22" fill="#94a3b8" fontSize="14" textAnchor="middle" fontWeight="bold">{az}</text>
 
                   {/* Public Subnet Layer - for ALB/Ingress */}
-                  <g transform="translate(5, 35)">
-                    <rect x="0" y="0" width={azWidth - 10} height="80" rx="6" fill="#052e16" stroke="#22c55e" strokeWidth="1" strokeOpacity="0.5" />
-                    <text x="10" y="18" fill="#4ade80" fontSize="12" fontWeight="bold">Public Subnet</text>
-                    <text x={azWidth - 20} y="18" fill="#4ade80" fontSize="11" textAnchor="end">{network?.subnetsByAz?.[az]?.find(s => s.type === 'public')?.cidr || ''}</text>
+                  <g transform="translate(5, 40)">
+                    <rect x="0" y="0" width={azWidth - 10} height="90" rx="6" fill="#052e16" stroke="#22c55e" strokeWidth="1" strokeOpacity="0.5" />
+                    <text x="10" y="20" fill="#4ade80" fontSize="13" fontWeight="bold">Public Subnet</text>
+                    <text x={azWidth - 20} y="20" fill="#4ade80" fontSize="12" textAnchor="end">{network?.subnetsByAz?.[az]?.find(s => s.type === 'public')?.cidr || ''}</text>
                   </g>
 
                   {/* Private Subnet Layer - ECS Tasks or EKS Nodes */}
-                  <g transform="translate(5, 125)">
-                    <rect x="0" y="0" width={azWidth - 10} height="320" rx="6" fill="#172554" stroke="#3b82f6" strokeWidth="1" strokeOpacity="0.5" />
-                    <text x="10" y="18" fill="#60a5fa" fontSize="12" fontWeight="bold">Private Subnet ({isEKS ? 'EKS' : 'ECS'})</text>
-                    <text x={azWidth - 20} y="18" fill="#60a5fa" fontSize="11" textAnchor="end">{network?.subnetsByAz?.[az]?.find(s => s.type === 'private')?.cidr || ''}</text>
+                  <g transform="translate(5, 140)">
+                    <rect x="0" y="0" width={azWidth - 10} height="350" rx="6" fill="#172554" stroke="#3b82f6" strokeWidth="1" strokeOpacity="0.5" />
+                    <text x="10" y="20" fill="#60a5fa" fontSize="13" fontWeight="bold">Private Subnet ({isEKS ? 'EKS' : 'ECS'})</text>
+                    <text x={azWidth - 20} y="20" fill="#60a5fa" fontSize="12" textAnchor="end">{network?.subnetsByAz?.[az]?.find(s => s.type === 'private')?.cidr || ''}</text>
 
                     {/* EKS: Nodes with Pods */}
                     {isEKS && (
@@ -366,10 +367,10 @@ export default function NetworkView({
                   </g>
 
                   {/* Database Subnet Layer */}
-                  <g transform="translate(5, 455)">
-                    <rect x="0" y="0" width={azWidth - 10} height="130" rx="6" fill="#3b0764" stroke="#a855f7" strokeWidth="1" strokeOpacity="0.5" />
-                    <text x="10" y="18" fill="#c084fc" fontSize="12" fontWeight="bold">Database Subnet</text>
-                    <text x={azWidth - 20} y="18" fill="#c084fc" fontSize="11" textAnchor="end">{network?.subnetsByAz?.[az]?.find(s => s.type === 'database')?.cidr || ''}</text>
+                  <g transform="translate(5, 500)">
+                    <rect x="0" y="0" width={azWidth - 10} height="140" rx="6" fill="#3b0764" stroke="#a855f7" strokeWidth="1" strokeOpacity="0.5" />
+                    <text x="10" y="20" fill="#c084fc" fontSize="13" fontWeight="bold">Database Subnet</text>
+                    <text x={azWidth - 20} y="20" fill="#c084fc" fontSize="12" textAnchor="end">{network?.subnetsByAz?.[az]?.find(s => s.type === 'database')?.cidr || ''}</text>
 
                     {/* RDS - show only in its actual AZ, or both if Multi-AZ */}
                     {rds && !rds.error && (rds.multiAz || rds.availabilityZone === az) && (
@@ -404,32 +405,32 @@ export default function NetworkView({
             })
           })()}
 
-          {/* ALB - Spanning both Public Subnets */}
+          {/* ALB - Spanning both Public Subnets - enlarged for better visibility */}
           {alb && (
-            <g transform="translate(20, 100)">
-              <rect x="0" y="0" width="1020" height="40" rx="6" fill={isSelected('alb') ? '#1e3a5f' : '#1e293b'} stroke={alb.state === 'active' ? '#3b82f6' : '#fbbf24'} strokeWidth={isSelected('alb') ? 3 : 2} className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)} />
-              <foreignObject x="8" y="6" width="28" height="28" className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)}>
-                <AwsALB style={{ width: 28, height: 28 }} />
+            <g transform="translate(20, 108)">
+              <rect x="0" y="0" width="1090" height="48" rx="6" fill={isSelected('alb') ? '#1e3a5f' : '#1e293b'} stroke={alb.state === 'active' ? '#3b82f6' : '#fbbf24'} strokeWidth={isSelected('alb') ? 3 : 2} className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)} />
+              <foreignObject x="10" y="8" width="32" height="32" className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)}>
+                <AwsALB style={{ width: 32, height: 32 }} />
               </foreignObject>
-              <text x="510" y="18" fill="white" fontSize="12" textAnchor="middle" fontWeight="bold" className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)}>Application Load Balancer (Multi-AZ)</text>
-              <text x="510" y="33" fill={alb.state === 'active' ? '#4ade80' : '#fbbf24'} fontSize="11" textAnchor="middle" className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)}>{alb.name} • {alb.state}</text>
+              <text x="545" y="22" fill="white" fontSize="14" textAnchor="middle" fontWeight="bold" className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)}>Application Load Balancer (Multi-AZ)</text>
+              <text x="545" y="40" fill={alb.state === 'active' ? '#4ade80' : '#fbbf24'} fontSize="12" textAnchor="middle" className="cursor-pointer" onClick={() => onComponentSelect?.('alb', env, alb)}>{alb.name} • {alb.state}</text>
 
               {/* Target Group Badges */}
               {alb.targetGroups?.map((tg, idx) => {
                 const health = tg?.health?.status
                 const healthColor = health === 'healthy' ? '#22c55e' : health === 'unhealthy' ? '#ef4444' : '#fbbf24'
                 const svcColor = serviceColors[tg.service] || '#6b7280'
-                const xPos = 750 + idx * 90
+                const xPos = 800 + idx * 95
 
                 return (
-                  <g key={idx} transform={`translate(${xPos}, 8)`}>
-                    <rect x="0" y="0" width="85" height="24" rx="4" fill="#0f172a" stroke={svcColor} strokeWidth="1.5" />
-                    <circle cx="14" cy="12" r="5" fill={healthColor}>
+                  <g key={idx} transform={`translate(${xPos}, 10)`}>
+                    <rect x="0" y="0" width="90" height="28" rx="4" fill="#0f172a" stroke={svcColor} strokeWidth="1.5" />
+                    <circle cx="16" cy="14" r="6" fill={healthColor}>
                       {health !== 'healthy' && (
                         <animate attributeName="opacity" values="1;0.5;1" dur="1s" repeatCount="indefinite" />
                       )}
                     </circle>
-                    <text x="50" y="16" fill={svcColor} fontSize="10" textAnchor="middle" fontWeight="bold">{tg.service}</text>
+                    <text x="54" y="18" fill={svcColor} fontSize="11" textAnchor="middle" fontWeight="bold">{tg.service}</text>
                   </g>
                 )
               })}
@@ -492,54 +493,54 @@ export default function NetworkView({
         {/* Traffic Flow Arrows */}
         {hasCloudFront ? (
           <>
-            <path d="M 80 100 L 100 180" fill="none" stroke="#6b7280" strokeWidth="1" strokeDasharray="4" markerEnd="url(#arrowhead)" />
-            <path d="M 170 185 L 220 185 L 245 130" fill="none" stroke={`url(#flow-${env})`} strokeWidth="2" />
-            <path d="M 170 185 L 220 185 L 245 130" fill="none" stroke="#6b7280" strokeWidth="1" strokeDasharray="4" markerEnd="url(#arrowhead)" />
-            {hasS3 && <path d="M 100 230 L 100 285" fill="none" stroke="#a855f7" strokeWidth="1" strokeDasharray="4" markerEnd="url(#arrowhead)" />}
+            <path d="M 90 115 L 115 195" fill="none" stroke="#6b7280" strokeWidth="1.5" strokeDasharray="4" markerEnd="url(#arrowhead)" />
+            <path d="M 190 200 L 240 200 L 265 145" fill="none" stroke={`url(#flow-${env})`} strokeWidth="2" />
+            <path d="M 190 200 L 240 200 L 265 145" fill="none" stroke="#6b7280" strokeWidth="1.5" strokeDasharray="4" markerEnd="url(#arrowhead)" />
+            {hasS3 && <path d="M 115 260 L 115 310" fill="none" stroke="#a855f7" strokeWidth="1.5" strokeDasharray="4" markerEnd="url(#arrowhead)" />}
           </>
         ) : (
-          <path d="M 80 100 L 245 130" fill="none" stroke="#6b7280" strokeWidth="1" strokeDasharray="4" markerEnd="url(#arrowhead)" />
+          <path d="M 90 115 L 265 145" fill="none" stroke="#6b7280" strokeWidth="1.5" strokeDasharray="4" markerEnd="url(#arrowhead)" />
         )}
 
       </svg>
 
-      {/* Legend and Controls */}
-      <div className="flex items-start gap-4 mt-3 px-2">
+      {/* Legend and Controls - enlarged for better visibility */}
+      <div className="flex items-start gap-5 mt-4 px-3">
         {/* Legend */}
-        <div className="bg-gray-800 rounded-lg border border-gray-700 p-3">
-          <div className="text-gray-400 text-xs font-bold mb-2 text-center">{isEKS ? 'Pod' : 'Task'} Legend</div>
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-4 rounded bg-gradient-to-br from-green-500 to-green-600"></div>
-              <span className="text-gray-400 text-xs">{isEKS ? 'Running & Ready' : 'New (latest revision)'}</span>
+        <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+          <div className="text-gray-400 text-sm font-bold mb-3 text-center">{isEKS ? 'Pod' : 'Task'} Legend</div>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-5 rounded bg-gradient-to-br from-green-500 to-green-600"></div>
+              <span className="text-gray-400 text-sm">{isEKS ? 'Running & Ready' : 'New (latest revision)'}</span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-4 rounded bg-gradient-to-br from-orange-500 to-orange-600"></div>
-              <span className="text-gray-400 text-xs">{isEKS ? 'Running (not ready)' : 'Old (draining)'}</span>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-5 rounded bg-gradient-to-br from-orange-500 to-orange-600"></div>
+              <span className="text-gray-400 text-sm">{isEKS ? 'Running (not ready)' : 'Old (draining)'}</span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-4 rounded bg-gradient-to-br from-yellow-500 to-yellow-600 animate-pulse"></div>
-              <span className="text-gray-400 text-xs">{isEKS ? 'Pending' : 'Starting'}</span>
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-5 rounded bg-gradient-to-br from-yellow-500 to-yellow-600 animate-pulse"></div>
+              <span className="text-gray-400 text-sm">{isEKS ? 'Pending' : 'Starting'}</span>
             </div>
           </div>
         </div>
 
         {/* EKS: Node utilization legend */}
         {isEKS && (
-          <div className="bg-gray-800 rounded-lg border border-gray-700 p-3">
-            <div className="text-gray-400 text-xs font-bold mb-2 text-center">Utilization</div>
-            <div className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-3 rounded bg-green-500"></div>
-                <span className="text-gray-400 text-xs">&lt; 75%</span>
+          <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+            <div className="text-gray-400 text-sm font-bold mb-3 text-center">Utilization</div>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-4 rounded bg-green-500"></div>
+                <span className="text-gray-400 text-sm">&lt; 75%</span>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-3 rounded bg-yellow-500"></div>
-                <span className="text-gray-400 text-xs">75-90%</span>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-4 rounded bg-yellow-500"></div>
+                <span className="text-gray-400 text-sm">75-90%</span>
               </div>
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-3 rounded bg-red-500"></div>
-                <span className="text-gray-400 text-xs">&gt; 90%</span>
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-4 rounded bg-red-500"></div>
+                <span className="text-gray-400 text-sm">&gt; 90%</span>
               </div>
             </div>
           </div>
@@ -549,12 +550,12 @@ export default function NetworkView({
         {!isEKS && (
           <button
             onClick={() => setShowAlbFlows(!showAlbFlows)}
-            className={`bg-gray-800 rounded-lg border px-3 py-2 flex items-center gap-2 transition-colors ${showAlbFlows ? 'border-blue-500' : 'border-gray-700'}`}
+            className={`bg-gray-800 rounded-lg border px-4 py-2.5 flex items-center gap-3 transition-colors ${showAlbFlows ? 'border-blue-500' : 'border-gray-700'}`}
           >
-            <div className={`w-8 h-4 rounded-full relative ${showAlbFlows ? 'bg-blue-500' : 'bg-gray-600'}`}>
-              <div className={`absolute w-3 h-3 rounded-full bg-white top-0.5 transition-all ${showAlbFlows ? 'left-4' : 'left-0.5'}`}></div>
+            <div className={`w-10 h-5 rounded-full relative ${showAlbFlows ? 'bg-blue-500' : 'bg-gray-600'}`}>
+              <div className={`absolute w-4 h-4 rounded-full bg-white top-0.5 transition-all ${showAlbFlows ? 'left-5' : 'left-0.5'}`}></div>
             </div>
-            <span className={`text-xs ${showAlbFlows ? 'text-blue-400' : 'text-gray-400'}`}>Show ALB traffic flows</span>
+            <span className={`text-sm ${showAlbFlows ? 'text-blue-400' : 'text-gray-400'}`}>Show ALB traffic flows</span>
           </button>
         )}
       </div>

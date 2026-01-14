@@ -6,6 +6,7 @@ import AwsRDS from 'aws-react-icons/lib/icons/ArchitectureServiceAmazonRDS'
 import AwsElastiCache from 'aws-react-icons/lib/icons/ArchitectureServiceAmazonElastiCache'
 import AwsEFS from 'aws-react-icons/lib/icons/ArchitectureServiceAmazonEFS'
 import { Server, Database } from 'lucide-react'
+import { stripServiceName } from '../../utils/serviceNaming'
 
 // Layer configuration with colors
 const LAYER_CONFIG = {
@@ -37,9 +38,14 @@ export default function SimpleView({
 }) {
   const { cloudfront, alb, s3Buckets, services, rds, redis, efs, orchestrator } = data
   const isEKS = orchestrator === 'eks'
+  const servicesMap = envServices?.services || envServices || {}
 
   // Get topology from appConfig
-  const topology = appConfig?.topology || appConfig?.currentProject?.topology
+  const topology = data?.topology || appConfig?.topology || appConfig?.currentProject?.topology
+
+  const getShortServiceLabel = (value) => {
+    return stripServiceName(value, appConfig?.serviceNaming, appConfig?.currentProjectId, env)
+  }
 
   // Determine which infrastructure components exist
   const hasCloudFront = cloudfront !== null && cloudfront !== undefined
@@ -53,68 +59,111 @@ export default function SimpleView({
 
   // Build service nodes from topology or fallback to services data
   const { nodes, connections, layerColumns } = useMemo(() => {
-    const effectiveServices = SERVICES.length > 0 ? SERVICES : Object.keys(services || {})
+    const availableServices = Object.keys(servicesMap || {})
+    const topologyComponents = topology?.components && typeof topology.components === 'object'
+      ? topology.components
+      : {}
+    const configuredComponentIds = Object.keys(topologyComponents)
     const nodeMap = new Map()
     const conns = []
+    const layoutNodes = topology?.layout?.nodes || {}
+    const layoutPositions = Object.values(layoutNodes)
+    const hasLayout = layoutPositions.length > 0
+    const layoutOrigin = hasLayout
+      ? {
+          minX: Math.min(...layoutPositions.map(pos => pos.x)),
+          minY: Math.min(...layoutPositions.map(pos => pos.y))
+        }
+      : null
 
-    // Define layer order for positioning
-    const layerOrder = ['frontend', 'proxy', 'application', 'search']
+    const layerOrder = Array.isArray(topology?.layers) ? [...topology.layers] : []
     const layerServices = {}
-    layerOrder.forEach(l => layerServices[l] = [])
+
+    const resolveServiceKey = (componentId) => {
+      if (servicesMap?.[componentId]) return componentId
+      const shortComponentId = getShortServiceLabel(componentId)
+      if (shortComponentId && servicesMap?.[shortComponentId]) return shortComponentId
+      return availableServices.find((svc) => {
+        const shortSvc = getShortServiceLabel(svc)
+        return shortSvc === componentId || shortSvc === shortComponentId
+      }) || null
+    }
+
+    const resolvedEntries = configuredComponentIds
+      .map((componentId) => ({
+        componentId,
+        serviceKey: resolveServiceKey(componentId),
+      }))
+      .filter((entry) => entry.serviceKey)
+
+    const fallbackServiceKeys =
+      availableServices.length > 0
+        ? availableServices
+        : SERVICES.length > 0
+          ? SERVICES
+          : []
+
+    const effectiveEntries = resolvedEntries.length > 0
+      ? resolvedEntries
+      : fallbackServiceKeys.map((serviceKey) => ({
+        componentId: serviceKey,
+        serviceKey,
+      }))
 
     // Group services by layer
-    effectiveServices.forEach(svcName => {
-      const svcData = services?.[svcName]
+    effectiveEntries.forEach(({ componentId, serviceKey }) => {
+      const svcData = servicesMap?.[serviceKey]
       if (!svcData) return
 
-      let layer = 'other'
-      if (topology?.components?.[svcName]?.layer) {
-        layer = topology.components[svcName].layer
-      } else {
-        // Fallback layer detection
-        const svcLower = svcName.toLowerCase()
-        if (svcLower.includes('nextjs') || svcLower.includes('frontend')) layer = 'frontend'
-        else if (svcLower.includes('apache') || svcLower.includes('haproxy') || svcLower.includes('nginx')) layer = 'proxy'
-        else if (svcLower.includes('hybris') || svcLower.includes('backend')) layer = 'application'
-        else if (svcLower.includes('solr') || svcLower.includes('elastic')) layer = 'search'
-      }
-
-      // Skip edge/ingress/data layers (handled separately)
-      if (['edge', 'ingress', 'data'].includes(layer)) return
+      const component = topologyComponents[componentId] || {}
+      const layer = component.layer || 'application'
 
       if (!layerServices[layer]) layerServices[layer] = []
+      if (!layerOrder.includes(layer)) layerOrder.push(layer)
       layerServices[layer].push({
-        id: svcName,
-        name: topology?.components?.[svcName]?.label || svcName,
+        id: componentId,
+        serviceKey,
+        name: component.label || getShortServiceLabel(serviceKey) || componentId,
         layer,
         data: svcData
       })
     })
 
-    // Calculate positions for each service
-    const nodeWidth = 100
-    const nodeHeight = 60
-    const layerGap = 130
-    const nodeGap = 70
-    const startX = 20
-    const startY = 30
+    // Calculate positions for each service - enlarged for better visibility
+    const nodeWidth = 145
+    const nodeHeight = 85
+    const layerGap = 170
+    const nodeGap = 92
+    const startX = 15
+    const startY = 10
 
     // Find max services in any layer for height calculation
     const maxServicesInLayer = Math.max(...Object.values(layerServices).map(l => l.length), 1)
 
-    // Position nodes by layer
+    // Position nodes by layer - use compact index (only active layers)
     const columns = {}
-    layerOrder.forEach((layer, layerIdx) => {
+    const activeLayers = layerOrder.length > 0
+      ? layerOrder.filter(l => (layerServices[l] || []).length > 0)
+      : Object.keys(layerServices).filter(l => (layerServices[l] || []).length > 0)
+
+    activeLayers.forEach((layer, compactIdx) => {
       const layerSvcs = layerServices[layer] || []
-      columns[layer] = { x: startX + layerIdx * layerGap, services: layerSvcs }
+      columns[layer] = { x: startX + compactIdx * layerGap, services: layerSvcs }
 
       layerSvcs.forEach((svc, svcIdx) => {
-        const totalInLayer = layerSvcs.length
-        const yOffset = (maxServicesInLayer - totalInLayer) * nodeGap / 2
+        // No vertical centering - align all services to top
+        let x = startX + compactIdx * layerGap
+        let y = startY + svcIdx * nodeGap
+
+        if (hasLayout && layoutNodes[svc.id] && layoutOrigin) {
+          x = startX + (layoutNodes[svc.id].x - layoutOrigin.minX)
+          y = startY + (layoutNodes[svc.id].y - layoutOrigin.minY)
+        }
+
         nodeMap.set(svc.id, {
           ...svc,
-          x: startX + layerIdx * layerGap,
-          y: startY + svcIdx * nodeGap + yOffset,
+          x,
+          y,
           width: nodeWidth,
           height: nodeHeight
         })
@@ -160,32 +209,41 @@ export default function SimpleView({
       connections: conns,
       layerColumns: columns
     }
-  }, [services, topology, SERVICES])
+  }, [servicesMap, topology, SERVICES])
 
   // Calculate SVG dimensions
   const numLayers = Object.values(layerColumns).filter(c => c.services.length > 0).length
   const maxServicesInLayer = Math.max(...Object.values(layerColumns).map(c => c.services.length), 1)
 
-  // Calculate workloads section dimensions - more generous sizing
-  const workloadsWidth = Math.max(numLayers * 130, 400)
-  const workloadsHeight = Math.max(maxServicesInLayer * 75 + 80, 300)
+  // Calculate workloads section dimensions - enlarged for better visibility
+  // Header: 32px, Labels at y=50 (fontSize 13), Transform: 65px, StartY: 10px, NodeGap: 92px, NodeHeight: 85px
+  const workloadsWidth = Math.max(numLayers * 170 + 20, 500)
+  const workloadsHeight = Math.max(65 + 10 + (maxServicesInLayer - 1) * 92 + 85 + 40, 360)
 
-  // SVG layout calculations - ensure minimum height of 400px
-  const svgWidth = 1200
-  const svgHeight = Math.max(workloadsHeight + 60, 400)
-
-  // Position elements with enough space for visible arrows (at least 40px between components)
-  const workloadsX = hasCloudFront ? 540 : 320
+  // SVG layout calculations - ensure minimum height based on workloads
+  const dataStoresWidth = 190
+  const workloadsX = hasCloudFront ? 560 : 340
+  const dataStoresX = workloadsX + workloadsWidth + 50
+  const svgWidth = Math.max(dataStoresX + dataStoresWidth + 30, 1200)  // Ensure Data Stores fits
+  const svgHeight = Math.max(workloadsHeight + 80, 400)
   const workloadsY = 30
-  const dataStoresX = workloadsX + workloadsWidth + 60
-  const dataStoresWidth = 170
 
-  // Helper to render service node
+  // Helper to render service node - enlarged for better visibility
   const renderServiceNode = (node) => {
     const svcData = node.data
     const isHealthy = svcData?.health === 'healthy' || svcData?.runningCount === svcData?.desiredCount
     const layerColor = LAYER_CONFIG[node.layer]?.color || '#6b7280'
-    const serviceWithName = { ...svcData, name: svcData?.name || getServiceName(env, node.id) }
+    const serviceWithName = {
+      ...svcData,
+      name: node.name || svcData?.name || getShortServiceLabel(node.serviceKey || node.id),
+    }
+    const labelLines = serviceWithName.name
+      ? serviceWithName.name
+          .split(/[-_ ]+/)
+          .map((part) => part.trim())
+          .filter(Boolean)
+      : ['']
+    const displayLines = labelLines.length > 2 ? labelLines.slice(0, 2) : labelLines
 
     return (
       <g
@@ -197,44 +255,54 @@ export default function SimpleView({
         <rect
           x="0" y="0"
           width={node.width} height={node.height}
-          rx="6"
+          rx="8"
           fill="#1f2937"
           stroke={isHealthy ? '#22c55e' : '#fbbf24'}
-          strokeWidth="1.5"
+          strokeWidth="2"
         />
         <rect
           x="0" y="0"
-          width={node.width} height="18"
-          rx="6"
+          width={node.width} height="26"
+          rx="8"
           fill={layerColor}
           fillOpacity="0.3"
         />
         <circle
-          cx="10" cy="9"
-          r="4"
+          cx="14" cy="13"
+          r="6"
           fill={isHealthy ? '#22c55e' : '#fbbf24'}
         />
         <text
-          x={node.width / 2} y="12"
+          x={node.width / 2} y="18"
           fill="white"
-          fontSize="9"
+          fontSize="13"
           fontWeight="bold"
           textAnchor="middle"
         >
-          {node.name.length > 12 ? node.name.substring(0, 11) + '…' : node.name}
+          <title>{serviceWithName.name}</title>
+          {displayLines.map((line, idx) => (
+            <tspan
+              key={`label-${node.id}-${idx}`}
+              x={node.width / 2}
+              dy={idx === 0 ? 0 : 14}
+            >
+              {line}
+              {idx === displayLines.length - 1 && labelLines.length > displayLines.length ? '…' : ''}
+            </tspan>
+          ))}
         </text>
         <text
-          x={node.width / 2} y="32"
+          x={node.width / 2} y="46"
           fill="#9ca3af"
-          fontSize="8"
+          fontSize="12"
           textAnchor="middle"
         >
           {svcData?.runningCount ?? '?'}/{svcData?.desiredCount ?? '?'} pods
         </text>
         <text
-          x={node.width / 2} y="45"
+          x={node.width / 2} y="66"
           fill={svcData?.status === 'ACTIVE' ? '#4ade80' : '#fbbf24'}
-          fontSize="8"
+          fontSize="12"
           textAnchor="middle"
         >
           {svcData?.status || 'UNKNOWN'}
@@ -376,41 +444,41 @@ export default function SimpleView({
             strokeWidth="2"
           />
 
-          {/* Header */}
-          <rect x="0" y="0" width={workloadsWidth} height="28" rx="10" fill="#10b981" />
-          <text x={workloadsWidth / 2} y="19" fill="white" fontSize="12" textAnchor="middle" fontWeight="bold">
+          {/* Header - enlarged for better visibility */}
+          <rect x="0" y="0" width={workloadsWidth} height="32" rx="10" fill="#10b981" />
+          <text x={workloadsWidth / 2} y="22" fill="white" fontSize="14" textAnchor="middle" fontWeight="bold">
             {isEKS ? 'EKS Workloads' : 'ECS Services'}
           </text>
-          <text x={workloadsWidth - 10} y="19" fill="#d1fae5" fontSize="9" textAnchor="end">
+          <text x={workloadsWidth - 12} y="22" fill="#d1fae5" fontSize="11" textAnchor="end">
             {nodes.length} services
           </text>
 
-          {/* Layer labels */}
+          {/* Layer labels - enlarged for better visibility */}
           {Object.entries(layerColumns).map(([layer, col]) => {
             if (col.services.length === 0) return null
-            const layerConf = LAYER_CONFIG[layer] || LAYER_CONFIG.other
+            const layerConf = LAYER_CONFIG[layer] || { color: LAYER_CONFIG.other.color }
             return (
               <g key={layer}>
                 <text
-                  x={col.x + 50} y="45"
+                  x={col.x + 72} y="50"
                   fill={layerConf.color}
-                  fontSize="9"
+                  fontSize="13"
                   fontWeight="bold"
                   textAnchor="middle"
                 >
-                  {layerConf.label}
+                  {layerConf.label || layer.charAt(0).toUpperCase() + layer.slice(1)}
                 </text>
               </g>
             )
           })}
 
           {/* Connections between services */}
-          <g transform="translate(0, 25)">
+          <g transform="translate(0, 65)">
             {connections.map((conn, idx) => renderConnection(conn, idx))}
           </g>
 
           {/* Service nodes */}
-          <g transform="translate(0, 25)">
+          <g transform="translate(0, 65)">
             {nodes.map(node => renderServiceNode(node))}
           </g>
 
@@ -431,57 +499,57 @@ export default function SimpleView({
           markerEnd={`url(#arrow-${env})`}
         />
 
-        {/* Data Stores */}
+        {/* Data Stores - enlarged for better visibility */}
         <g transform={`translate(${dataStoresX}, ${workloadsY})`}>
           <rect x="0" y="0" width={dataStoresWidth} height={workloadsHeight} rx="10" fill="#1e293b" stroke="#06b6d4" strokeWidth="2" />
-          <rect x="0" y="0" width={dataStoresWidth} height="28" rx="10" fill="#06b6d4" />
-          <text x={dataStoresWidth / 2} y="19" fill="white" fontSize="12" textAnchor="middle" fontWeight="bold">Data Stores</text>
+          <rect x="0" y="0" width={dataStoresWidth} height="32" rx="10" fill="#06b6d4" />
+          <text x={dataStoresWidth / 2} y="22" fill="white" fontSize="14" textAnchor="middle" fontWeight="bold">Data Stores</text>
 
-          {/* RDS */}
+          {/* RDS - enlarged for better visibility */}
           {hasRds && (
-            <g transform="translate(10, 38)" className="cursor-pointer" onClick={() => onComponentSelect?.('rds', env, rds)}>
-              <rect x="0" y="0" width={dataStoresWidth - 20} height="70" rx="6" fill="#1f2937" stroke="#22d3ee" strokeWidth="1.5" />
-              <foreignObject x="5" y="8" width="30" height="30">
-                <AwsRDS style={{ width: 30, height: 30 }} />
+            <g transform="translate(10, 42)" className="cursor-pointer" onClick={() => onComponentSelect?.('rds', env, rds)}>
+              <rect x="0" y="0" width={dataStoresWidth - 20} height="80" rx="6" fill="#1f2937" stroke="#22d3ee" strokeWidth="1.5" />
+              <foreignObject x="8" y="10" width="34" height="34">
+                <AwsRDS style={{ width: 34, height: 34 }} />
               </foreignObject>
-              <text x="40" y="20" fill="white" fontSize="9" fontWeight="bold">Aurora</text>
-              <text x="40" y="32" fill={rds.status === 'available' ? '#4ade80' : '#fbbf24'} fontSize="8">{rds.status}</text>
-              <text x={dataStoresWidth / 2 - 10} y="55" fill="#9ca3af" fontSize="8" textAnchor="middle">{rds.instanceClass}</text>
-              <text x={dataStoresWidth / 2 - 10} y="65" fill="#6b7280" fontSize="7" textAnchor="middle">{rds.multiAz ? 'Multi-AZ' : 'Single-AZ'}</text>
+              <text x="48" y="24" fill="white" fontSize="11" fontWeight="bold">Aurora</text>
+              <text x="48" y="40" fill={rds.status === 'available' ? '#4ade80' : '#fbbf24'} fontSize="10">{rds.status}</text>
+              <text x={dataStoresWidth / 2 - 10} y="60" fill="#9ca3af" fontSize="10" textAnchor="middle">{rds.instanceClass}</text>
+              <text x={dataStoresWidth / 2 - 10} y="74" fill="#6b7280" fontSize="9" textAnchor="middle">{rds.multiAz ? 'Multi-AZ' : 'Single-AZ'}</text>
             </g>
           )}
 
-          {/* Redis */}
+          {/* Redis - enlarged for better visibility */}
           {hasRedis && (
-            <g transform={`translate(10, ${hasRds ? 118 : 38})`} className="cursor-pointer" onClick={() => onComponentSelect?.('redis', env, redis)}>
-              <rect x="0" y="0" width={dataStoresWidth - 20} height="70" rx="6" fill="#1f2937" stroke="#ef4444" strokeWidth="1.5" />
-              <foreignObject x="5" y="8" width="30" height="30">
-                <AwsElastiCache style={{ width: 30, height: 30 }} />
+            <g transform={`translate(10, ${hasRds ? 130 : 42})`} className="cursor-pointer" onClick={() => onComponentSelect?.('redis', env, redis)}>
+              <rect x="0" y="0" width={dataStoresWidth - 20} height="80" rx="6" fill="#1f2937" stroke="#ef4444" strokeWidth="1.5" />
+              <foreignObject x="8" y="10" width="34" height="34">
+                <AwsElastiCache style={{ width: 34, height: 34 }} />
               </foreignObject>
-              <text x="40" y="20" fill="white" fontSize="9" fontWeight="bold">Redis</text>
-              <text x="40" y="32" fill={redis.status === 'available' ? '#4ade80' : '#fbbf24'} fontSize="8">{redis.status}</text>
-              <text x={dataStoresWidth / 2 - 10} y="55" fill="#9ca3af" fontSize="8" textAnchor="middle">{redis.cacheNodeType}</text>
-              <text x={dataStoresWidth / 2 - 10} y="65" fill="#6b7280" fontSize="7" textAnchor="middle">{redis.numCacheNodes} node(s)</text>
+              <text x="48" y="24" fill="white" fontSize="11" fontWeight="bold">Redis</text>
+              <text x="48" y="40" fill={redis.status === 'available' ? '#4ade80' : '#fbbf24'} fontSize="10">{redis.status}</text>
+              <text x={dataStoresWidth / 2 - 10} y="60" fill="#9ca3af" fontSize="10" textAnchor="middle">{redis.cacheNodeType}</text>
+              <text x={dataStoresWidth / 2 - 10} y="74" fill="#6b7280" fontSize="9" textAnchor="middle">{redis.numCacheNodes} node(s)</text>
             </g>
           )}
 
-          {/* EFS */}
+          {/* EFS - enlarged for better visibility */}
           {hasEfs && (
-            <g transform={`translate(10, ${(hasRds ? 80 : 0) + (hasRedis ? 80 : 0) + 38})`} className="cursor-pointer" onClick={() => onComponentSelect?.('efs', env, efs)}>
-              <rect x="0" y="0" width={dataStoresWidth - 20} height="50" rx="6" fill="#1f2937" stroke="#f59e0b" strokeWidth="1.5" />
-              <foreignObject x="5" y="5" width="30" height="30">
-                <AwsEFS style={{ width: 30, height: 30 }} />
+            <g transform={`translate(10, ${(hasRds ? 88 : 0) + (hasRedis ? 88 : 0) + 42})`} className="cursor-pointer" onClick={() => onComponentSelect?.('efs', env, efs)}>
+              <rect x="0" y="0" width={dataStoresWidth - 20} height="60" rx="6" fill="#1f2937" stroke="#f59e0b" strokeWidth="1.5" />
+              <foreignObject x="8" y="8" width="34" height="34">
+                <AwsEFS style={{ width: 34, height: 34 }} />
               </foreignObject>
-              <text x="40" y="18" fill="white" fontSize="9" fontWeight="bold">EFS</text>
-              <text x="40" y="30" fill={efs.lifeCycleState === 'available' ? '#4ade80' : '#fbbf24'} fontSize="8">{efs.lifeCycleState}</text>
+              <text x="48" y="22" fill="white" fontSize="11" fontWeight="bold">EFS</text>
+              <text x="48" y="38" fill={efs.lifeCycleState === 'available' ? '#4ade80' : '#fbbf24'} fontSize="10">{efs.lifeCycleState}</text>
             </g>
           )}
 
           {/* No data stores */}
           {!hasRds && !hasRedis && !hasEfs && (
             <g transform={`translate(${dataStoresWidth / 2}, ${workloadsHeight / 2})`}>
-              <Database className="w-6 h-6" style={{ transform: 'translate(-12px, -12px)', color: '#6b7280' }} />
-              <text y="20" fill="#6b7280" fontSize="9" textAnchor="middle">No data stores</text>
+              <Database className="w-8 h-8" style={{ transform: 'translate(-16px, -16px)', color: '#6b7280' }} />
+              <text y="24" fill="#6b7280" fontSize="11" textAnchor="middle">No data stores</text>
             </g>
           )}
         </g>

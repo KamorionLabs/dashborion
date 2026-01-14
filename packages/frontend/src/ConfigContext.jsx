@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { RefreshCw, XCircle } from 'lucide-react'
+import { formatServicePrefix } from './utils/serviceNaming'
 
 const ConfigContext = createContext(null)
 
@@ -124,17 +125,26 @@ export function ConfigProvider({ children }) {
       defaultRegion: rawConfig.global.defaultRegion,
       accounts: currentProject.aws?.accounts || {}
     },
-    // Services: use explicit list, or extract from topology components for EKS projects
+    // Services: use explicit list, or extract from topology components
     services: currentProject.services || (() => {
-      // For EKS projects with topology, extract k8s-deployment/statefulset components as services
+      // Extract workload-like components as services
       if (currentProject.topology?.components) {
         return Object.entries(currentProject.topology.components)
-          .filter(([_, comp]) => comp.type === 'k8s-deployment' || comp.type === 'k8s-statefulset')
+          .filter(([_, comp]) =>
+            comp.type === 'k8s-deployment'
+            || comp.type === 'k8s-statefulset'
+            || comp.type === 'ecs-service'
+            || comp.type === 'service'
+          )
           .map(([name, _]) => name)
       }
       return []
     })(),
-    environments: currentProject.environments || [],
+    // environments can be an object (new format) or array (legacy format)
+    // Extract array of names for backward compatibility
+    environments: Array.isArray(currentProject.environments)
+      ? currentProject.environments
+      : Object.keys(currentProject.environments || {}),
     serviceNaming: currentProject.serviceNaming || { prefix: currentProjectId },
     envColors: currentProject.envColors || {},
     infrastructure: currentProject.infrastructure || {},
@@ -210,8 +220,8 @@ export function useConfigHelpers() {
   }
 
   const getServiceName = (env, service) => {
-    const prefix = config.serviceNaming?.prefix || 'app'
-    return `${prefix}-${env}-${service}`
+    const prefix = formatServicePrefix(config.serviceNaming, config.currentProjectId, env)
+    return `${prefix}${service}`
   }
 
   const getDefaultAzs = (region = config.aws?.defaultRegion || 'eu-west-3') => {

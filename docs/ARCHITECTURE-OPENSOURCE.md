@@ -49,9 +49,10 @@ Le frontend utilise une architecture modulaire avec :
 /:project/:env/pipelines                    # Liste pipelines
 /:project/:env/pipelines/:pipeline          # Detail pipeline
 /:project/:env/infrastructure               # Vue infrastructure
-/:project/:env/infrastructure/load-balancers
-/:project/:env/infrastructure/databases
-/:project/:env/infrastructure/cache
+/:project/:env/infrastructure/alb
+/:project/:env/infrastructure/rds
+/:project/:env/infrastructure/redis
+/:project/:env/infrastructure/cloudfront
 ```
 
 ## Architecture Cible
@@ -191,7 +192,18 @@ export interface EnvironmentConfig {
   eksClusterName?: string; // EKS cluster name
   namespace?: string;      // K8s namespace
   services?: string[];     // Service filter (optional)
-  discoveryTags?: Record<string, string>;
+  infrastructure?: InfrastructureConfig;
+}
+
+export interface InfrastructureResourceConfig {
+  ids?: string[];
+  tags?: Record<string, string>;
+}
+
+export interface InfrastructureConfig {
+  defaultTags?: Record<string, string>;
+  domainConfig?: { domains?: Record<string, string>; pattern?: string };
+  resources?: Record<string, InfrastructureResourceConfig>;
 }
 
 export interface ProjectConfig {

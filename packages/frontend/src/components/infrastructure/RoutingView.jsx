@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { RefreshCw, AlertCircle } from 'lucide-react'
 import { fetchWithRetry } from '../../utils'
+import { formatServicePrefix } from '../../utils/serviceNaming'
 import AwsNAT from 'aws-react-icons/lib/icons/ResourceAmazonVPCNATGateway'
 import AwsIGW from 'aws-react-icons/lib/icons/ResourceAmazonVPCInternetGateway'
 import AwsVPN from 'aws-react-icons/lib/icons/ArchitectureServiceAWSSiteToSiteVPN'
@@ -28,10 +29,10 @@ export default function RoutingView({
   const [hoveredSubnet, setHoveredSubnet] = useState(null)
   const [hoveredRouteTable, setHoveredRouteTable] = useState(null)
 
-  // Layout constants (defined early for useMemo hooks)
-  const azWidth = 380
-  const azGap = 15
-  const leftPanelWidth = 240
+  // Layout constants (defined early for useMemo hooks) - enlarged for better visibility
+  const azWidth = 420
+  const azGap = 18
+  const leftPanelWidth = 270
 
   // Fetch routing data
   const currentProjectId = appConfig?.currentProjectId
@@ -248,11 +249,11 @@ export default function RoutingView({
   }
 
   const azs = network?.availabilityZones || getDefaultAzs()
-  const totalWidth = leftPanelWidth + 20 + azs.length * azWidth + (azs.length - 1) * azGap + 30
+  const totalWidth = leftPanelWidth + 20 + azs.length * azWidth + (azs.length - 1) * azGap + 35
 
   return (
     <div className="p-4 relative overflow-x-auto">
-      <svg viewBox={`0 0 ${totalWidth} 680`} className="w-full h-auto" style={{ minHeight: '650px', minWidth: `${totalWidth}px` }}>
+      <svg viewBox={`0 0 ${totalWidth} 720`} className="w-full h-auto" style={{ minHeight: '700px', minWidth: `${totalWidth}px` }}>
         {/* Defs */}
         <defs>
           <marker id="arrow-gray" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
@@ -286,43 +287,43 @@ export default function RoutingView({
           </filter>
         </defs>
 
-        {/* Left Panel: Internet + Route Tables + Network Egress */}
+        {/* Left Panel: Internet + Route Tables + Network Egress - enlarged for better visibility */}
         <g transform="translate(10, 10)">
           {/* Internet & IGW Section */}
-          <rect x="0" y="0" width={leftPanelWidth} height="130" rx="8" fill="#1e293b" stroke="#475569" strokeWidth="1" strokeDasharray="4" />
-          <text x={leftPanelWidth/2} y="24" fill="#94a3b8" fontSize="14" textAnchor="middle" fontWeight="bold">Internet</text>
+          <rect x="0" y="0" width={leftPanelWidth} height="145" rx="8" fill="#1e293b" stroke="#475569" strokeWidth="1" strokeDasharray="4" />
+          <text x={leftPanelWidth/2} y="26" fill="#94a3b8" fontSize="15" textAnchor="middle" fontWeight="bold">Internet</text>
 
           {/* Internet Gateway */}
           {igw && (
             <g
-              transform="translate(25, 40)"
+              transform="translate(25, 44)"
               className="cursor-pointer"
               onClick={() => onComponentSelect?.('igw', env, igw)}
             >
               <rect
-                x="0" y="0" width={leftPanelWidth - 50} height="75" rx="6"
+                x="0" y="0" width={leftPanelWidth - 50} height="85" rx="6"
                 fill={isSelected('igw', igw.id) ? '#1e3a5f' : '#1f2937'}
                 stroke="#22c55e"
                 strokeWidth={isSelected('igw', igw.id) ? 3 : 2}
               />
-              <rect x="0" y="0" width={leftPanelWidth - 50} height="22" rx="6" fill="#22c55e" />
-              <text x={(leftPanelWidth - 50)/2} y="15" fill="white" fontSize="11" textAnchor="middle" fontWeight="bold">Internet Gateway</text>
-              <foreignObject x={(leftPanelWidth - 50)/2 - 18} y="26" width="36" height="36">
-                <AwsIGW style={{ width: 36, height: 36 }} />
+              <rect x="0" y="0" width={leftPanelWidth - 50} height="26" rx="6" fill="#22c55e" />
+              <text x={(leftPanelWidth - 50)/2} y="18" fill="white" fontSize="13" textAnchor="middle" fontWeight="bold">Internet Gateway</text>
+              <foreignObject x={(leftPanelWidth - 50)/2 - 20} y="30" width="40" height="40">
+                <AwsIGW style={{ width: 40, height: 40 }} />
               </foreignObject>
-              <text x={(leftPanelWidth - 50)/2} y="68" fill="#4ade80" fontSize="10" textAnchor="middle">{igw.state || 'attached'}</text>
+              <text x={(leftPanelWidth - 50)/2} y="78" fill="#4ade80" fontSize="11" textAnchor="middle">{igw.state || 'attached'}</text>
             </g>
           )}
 
           {/* Route Tables Section */}
-          <rect x="0" y="145" width={leftPanelWidth} height={Math.max(180, Math.ceil(routeTables.length / 1) * 62 + 40)} rx="8" fill="#0f172a" stroke="#06b6d4" strokeWidth="1" strokeOpacity="0.5" />
-          <text x="15" y="168" fill="#06b6d4" fontSize="13" fontWeight="bold">Route Tables ({routeTables.length})</text>
+          <rect x="0" y="160" width={leftPanelWidth} height={Math.max(200, Math.ceil(routeTables.length / 1) * 68 + 45)} rx="8" fill="#0f172a" stroke="#06b6d4" strokeWidth="1" strokeOpacity="0.5" />
+          <text x="15" y="185" fill="#06b6d4" fontSize="14" fontWeight="bold">Route Tables ({routeTables.length})</text>
 
           {/* Route Table Cards */}
-          <g transform="translate(10, 180)">
+          <g transform="translate(10, 198)">
             {routeTables.map((rt, idx) => {
               const rtWidth = leftPanelWidth - 20
-              const rtY = idx * 58
+              const rtY = idx * 64
               const highlighted = isRouteTableHighlighted(rt.id)
 
               return (
@@ -336,18 +337,18 @@ export default function RoutingView({
                   filter={highlighted ? 'url(#glow-cyan)' : undefined}
                 >
                   <rect
-                    x="0" y="0" width={rtWidth} height="52" rx="6"
+                    x="0" y="0" width={rtWidth} height="58" rx="6"
                     fill={isSelected('routeTable', rt.id) ? '#164e63' : highlighted ? '#0e4d5c' : '#1e293b'}
                     stroke="#06b6d4"
                     strokeWidth={isSelected('routeTable', rt.id) || highlighted ? 3 : 1}
                   />
-                  <foreignObject x="6" y="10" width="28" height="28">
-                    <AwsRouter style={{ width: 28, height: 28 }} />
+                  <foreignObject x="8" y="12" width="32" height="32">
+                    <AwsRouter style={{ width: 32, height: 32 }} />
                   </foreignObject>
-                  <text x="40" y="20" fill="#e2e8f0" fontSize="11" fontWeight="bold">
+                  <text x="48" y="24" fill="#e2e8f0" fontSize="12" fontWeight="bold">
                     {getRouteTableDisplayName(rt)}
                   </text>
-                  <text x="40" y="38" fill="#9ca3af" fontSize="10">
+                  <text x="48" y="44" fill="#9ca3af" fontSize="11">
                     {(rt.subnetAssociations?.length || 0)} subnets • {(rt.routes?.length || 0)} routes
                   </text>
                 </g>
@@ -355,17 +356,17 @@ export default function RoutingView({
             })}
           </g>
 
-          {/* VPC Endpoints Section */}
+          {/* VPC Endpoints Section - enlarged for better visibility */}
           {vpcEndpoints.length > 0 && (
-            <g transform={`translate(0, ${155 + Math.max(180, Math.ceil(routeTables.length / 1) * 62 + 40) + 15})`}>
-              <rect x="0" y="0" width={leftPanelWidth} height={Math.max(100, Math.ceil(vpcEndpoints.length / 1) * 52 + 40)} rx="8" fill="#0f172a" stroke="#14b8a6" strokeWidth="1" strokeOpacity="0.5" />
-              <text x="15" y="22" fill="#14b8a6" fontSize="13" fontWeight="bold">VPC Endpoints ({vpcEndpoints.length})</text>
+            <g transform={`translate(0, ${170 + Math.max(200, Math.ceil(routeTables.length / 1) * 68 + 45) + 18})`}>
+              <rect x="0" y="0" width={leftPanelWidth} height={Math.max(110, Math.ceil(vpcEndpoints.length / 1) * 58 + 45)} rx="8" fill="#0f172a" stroke="#14b8a6" strokeWidth="1" strokeOpacity="0.5" />
+              <text x="15" y="26" fill="#14b8a6" fontSize="14" fontWeight="bold">VPC Endpoints ({vpcEndpoints.length})</text>
 
               {/* Endpoint Cards */}
-              <g transform="translate(10, 32)">
+              <g transform="translate(10, 38)">
                 {vpcEndpoints.map((ep, idx) => {
                   const epWidth = leftPanelWidth - 20
-                  const epY = idx * 48
+                  const epY = idx * 54
 
                   // Color based on type
                   const isGateway = ep.type === 'Gateway'
@@ -381,22 +382,22 @@ export default function RoutingView({
                       onClick={() => onComponentSelect?.('endpoint', env, ep)}
                     >
                       <rect
-                        x="0" y="0" width={epWidth} height="44" rx="5"
+                        x="0" y="0" width={epWidth} height="50" rx="5"
                         fill={isSelected('endpoint', ep.id) ? (isGateway ? '#422006' : '#134e4a') : '#1e293b'}
                         stroke={borderColor}
                         strokeWidth={isSelected('endpoint', ep.id) ? 2 : 1}
                       />
-                      <foreignObject x="6" y="8" width="24" height="24">
-                        <AwsEndpoint style={{ width: 24, height: 24 }} />
+                      <foreignObject x="8" y="10" width="28" height="28">
+                        <AwsEndpoint style={{ width: 28, height: 28 }} />
                       </foreignObject>
-                      <text x="36" y="18" fill={textColor} fontSize="11" fontWeight="bold">
+                      <text x="42" y="22" fill={textColor} fontSize="12" fontWeight="bold">
                         {ep.friendlyServiceName || ep.serviceName?.split('.').pop() || 'Endpoint'}
                       </text>
-                      <rect x={epWidth - 58} y="6" width="50" height="14" rx="3" fill={bgColor} stroke={borderColor} strokeWidth="0.5" />
-                      <text x={epWidth - 33} y="16" fill={textColor} fontSize="8" textAnchor="middle">
+                      <rect x={epWidth - 62} y="8" width="54" height="16" rx="3" fill={bgColor} stroke={borderColor} strokeWidth="0.5" />
+                      <text x={epWidth - 35} y="20" fill={textColor} fontSize="9" textAnchor="middle">
                         {ep.type || 'Interface'}
                       </text>
-                      <text x="36" y="34" fill="#9ca3af" fontSize="9">
+                      <text x="42" y="40" fill="#9ca3af" fontSize="10">
                         {ep.state === 'available' ? '● Available' : ep.state || 'pending'}
                       </text>
                     </g>
@@ -406,82 +407,82 @@ export default function RoutingView({
             </g>
           )}
 
-          {/* Network Egress Section (VPN, TGW, Peering) */}
+          {/* Network Egress Section (VPN, TGW, Peering) - enlarged for better visibility */}
           {(vpnConnections.length > 0 || tgwAttachments.length > 0 || vpcPeerings.length > 0) && (
-            <g transform={`translate(0, ${155 + Math.max(180, Math.ceil(routeTables.length / 1) * 62 + 40) + 15 + (vpcEndpoints.length > 0 ? Math.max(100, Math.ceil(vpcEndpoints.length / 1) * 52 + 40) + 15 : 0)})`}>
-              <rect x="0" y="0" width={leftPanelWidth} height="180" rx="8" fill="#1e293b" stroke="#475569" strokeWidth="1" strokeDasharray="4" />
-              <text x={leftPanelWidth/2} y="22" fill="#94a3b8" fontSize="13" textAnchor="middle" fontWeight="bold">External Connectivity</text>
+            <g transform={`translate(0, ${170 + Math.max(200, Math.ceil(routeTables.length / 1) * 68 + 45) + 18 + (vpcEndpoints.length > 0 ? Math.max(110, Math.ceil(vpcEndpoints.length / 1) * 58 + 45) + 18 : 0)})`}>
+              <rect x="0" y="0" width={leftPanelWidth} height="200" rx="8" fill="#1e293b" stroke="#475569" strokeWidth="1" strokeDasharray="4" />
+              <text x={leftPanelWidth/2} y="26" fill="#94a3b8" fontSize="14" textAnchor="middle" fontWeight="bold">External Connectivity</text>
 
               {/* VPN Connections */}
               {vpnConnections.length > 0 && (
-                <g transform="translate(20, 35)">
-                  <rect x="0" y="0" width={leftPanelWidth - 40} height="42" rx="5" fill="#1f2937" stroke="#f97316" strokeWidth="1.5" />
-                  <foreignObject x="8" y="8" width="26" height="26">
-                    <AwsVPN style={{ width: 26, height: 26 }} />
+                <g transform="translate(20, 40)">
+                  <rect x="0" y="0" width={leftPanelWidth - 40} height="48" rx="5" fill="#1f2937" stroke="#f97316" strokeWidth="1.5" />
+                  <foreignObject x="10" y="10" width="30" height="30">
+                    <AwsVPN style={{ width: 30, height: 30 }} />
                   </foreignObject>
-                  <text x="42" y="18" fill="#fb923c" fontSize="11" fontWeight="bold">VPN</text>
-                  <text x="42" y="32" fill="#9ca3af" fontSize="10">{vpnConnections.length} connection(s)</text>
+                  <text x="48" y="22" fill="#fb923c" fontSize="12" fontWeight="bold">VPN</text>
+                  <text x="48" y="38" fill="#9ca3af" fontSize="11">{vpnConnections.length} connection(s)</text>
                 </g>
               )}
 
               {/* Transit Gateway */}
               {tgwAttachments.length > 0 && (
-                <g transform={`translate(20, ${vpnConnections.length > 0 ? 85 : 35})`}>
-                  <rect x="0" y="0" width={leftPanelWidth - 40} height="42" rx="5" fill="#1f2937" stroke="#8b5cf6" strokeWidth="1.5" />
-                  <foreignObject x="8" y="8" width="26" height="26">
-                    <AwsTGW style={{ width: 26, height: 26 }} />
+                <g transform={`translate(20, ${vpnConnections.length > 0 ? 96 : 40})`}>
+                  <rect x="0" y="0" width={leftPanelWidth - 40} height="48" rx="5" fill="#1f2937" stroke="#8b5cf6" strokeWidth="1.5" />
+                  <foreignObject x="10" y="10" width="30" height="30">
+                    <AwsTGW style={{ width: 30, height: 30 }} />
                   </foreignObject>
-                  <text x="42" y="18" fill="#a78bfa" fontSize="11" fontWeight="bold">Transit Gateway</text>
-                  <text x="42" y="32" fill="#9ca3af" fontSize="10">{tgwAttachments.length} attachment(s)</text>
+                  <text x="48" y="22" fill="#a78bfa" fontSize="12" fontWeight="bold">Transit Gateway</text>
+                  <text x="48" y="38" fill="#9ca3af" fontSize="11">{tgwAttachments.length} attachment(s)</text>
                 </g>
               )}
 
               {/* VPC Peering */}
               {vpcPeerings.length > 0 && (
-                <g transform={`translate(20, ${(vpnConnections.length > 0 ? 50 : 0) + (tgwAttachments.length > 0 ? 50 : 0) + 35})`}>
-                  <rect x="0" y="0" width={leftPanelWidth - 40} height="42" rx="5" fill="#1f2937" stroke="#ec4899" strokeWidth="1.5" />
-                  <foreignObject x="8" y="8" width="26" height="26">
-                    <AwsVPCPeering style={{ width: 26, height: 26 }} />
+                <g transform={`translate(20, ${(vpnConnections.length > 0 ? 56 : 0) + (tgwAttachments.length > 0 ? 56 : 0) + 40})`}>
+                  <rect x="0" y="0" width={leftPanelWidth - 40} height="48" rx="5" fill="#1f2937" stroke="#ec4899" strokeWidth="1.5" />
+                  <foreignObject x="10" y="10" width="30" height="30">
+                    <AwsVPCPeering style={{ width: 30, height: 30 }} />
                   </foreignObject>
-                  <text x="42" y="18" fill="#f472b6" fontSize="11" fontWeight="bold">VPC Peering</text>
-                  <text x="42" y="32" fill="#9ca3af" fontSize="10">{vpcPeerings.length} connection(s)</text>
+                  <text x="48" y="22" fill="#f472b6" fontSize="12" fontWeight="bold">VPC Peering</text>
+                  <text x="48" y="38" fill="#9ca3af" fontSize="11">{vpcPeerings.length} connection(s)</text>
                 </g>
               )}
             </g>
           )}
         </g>
 
-        {/* VPC Container */}
-        <g transform={`translate(${leftPanelWidth + 30}, 10)`}>
-          <rect x="0" y="0" width={azs.length * azWidth + (azs.length - 1) * azGap + 20} height="610" rx="10" fill="none" stroke="#3b82f6" strokeWidth="2" />
+        {/* VPC Container - enlarged for better visibility */}
+        <g transform={`translate(${leftPanelWidth + 35}, 10)`}>
+          <rect x="0" y="0" width={azs.length * azWidth + (azs.length - 1) * azGap + 24} height="660" rx="10" fill="none" stroke="#3b82f6" strokeWidth="2" />
           {/* VPC Header - Clickable */}
           <g
             className="cursor-pointer"
             onClick={() => onComponentSelect?.('vpc', env, {
               id: network?.vpcId,
-              name: network?.vpcName || (appConfig?.serviceNaming?.prefix || 'app') + '-' + env,
+              name: network?.vpcName || (formatServicePrefix(appConfig?.serviceNaming, appConfig?.currentProjectId, env).replace(/-$/, '') || env || ''),
               cidr: network?.cidr,
               consoleUrl: network?.consoleUrl
             })}
           >
             <rect
               x="0" y="0"
-              width={azs.length * azWidth + (azs.length - 1) * azGap + 20}
-              height="32" rx="10"
+              width={azs.length * azWidth + (azs.length - 1) * azGap + 24}
+              height="36" rx="10"
               fill={isSelected('vpc', network?.vpcId) ? '#1e40af' : '#1e3a5f'}
               className="hover:fill-[#234876] transition-colors"
             />
-            <text x="20" y="22" fill="#60a5fa" fontSize="15" fontWeight="bold">
-              VPC: {network?.vpcName || (appConfig?.serviceNaming?.prefix || 'app') + '-' + env}
+            <text x="20" y="25" fill="#60a5fa" fontSize="16" fontWeight="bold">
+              VPC: {network?.vpcName || (formatServicePrefix(appConfig?.serviceNaming, appConfig?.currentProjectId, env).replace(/-$/, '') || env || '')}
             </text>
-            <text x={azs.length * azWidth + (azs.length - 1) * azGap} y="22" fill="#93c5fd" fontSize="13" textAnchor="end">
+            <text x={azs.length * azWidth + (azs.length - 1) * azGap + 4} y="25" fill="#93c5fd" fontSize="14" textAnchor="end">
               {network?.cidr || '10.x.0.0/16'}
             </text>
           </g>
 
-          {/* AZ Columns with Subnets */}
+          {/* AZ Columns with Subnets - enlarged for better visibility */}
           {azs.map((az, azIndex) => {
-            const azX = 10 + azIndex * (azWidth + azGap)
+            const azX = 12 + azIndex * (azWidth + azGap)
             const azSubnets = network?.subnetsByAz?.[az] || []
 
             // Find NAT in this AZ
@@ -489,11 +490,11 @@ export default function RoutingView({
                            (azIndex === 0 && network?.egressIps?.[0] ? { ip: network.egressIps[0] } : null)
 
             return (
-              <g key={az} transform={`translate(${azX}, 42)`}>
+              <g key={az} transform={`translate(${azX}, 46)`}>
                 {/* AZ Container */}
-                <rect x="0" y="0" width={azWidth} height="560" rx="8" fill="#0f172a" stroke="#334155" strokeWidth="1" />
-                <rect x="0" y="0" width={azWidth} height="28" rx="8" fill="#1e293b" />
-                <text x={azWidth/2} y="19" fill="#94a3b8" fontSize="13" textAnchor="middle" fontWeight="bold">{az}</text>
+                <rect x="0" y="0" width={azWidth} height="605" rx="8" fill="#0f172a" stroke="#334155" strokeWidth="1" />
+                <rect x="0" y="0" width={azWidth} height="32" rx="8" fill="#1e293b" />
+                <text x={azWidth/2} y="22" fill="#94a3b8" fontSize="14" textAnchor="middle" fontWeight="bold">{az}</text>
 
                 {/* Public Subnet */}
                 {(() => {
@@ -504,35 +505,35 @@ export default function RoutingView({
 
                   return (
                     <g
-                      transform="translate(5, 35)"
+                      transform="translate(5, 40)"
                       className="cursor-pointer"
                       onClick={() => onComponentSelect?.('subnet', env, { ...subnet, subnetType: 'public', az, routeTableId: rtId, vpcId: network?.vpcId })}
                       onMouseEnter={() => setHoveredSubnet(subnet.id)}
                       onMouseLeave={() => setHoveredSubnet(null)}
                     >
                       <rect
-                        x="0" y="0" width={azWidth - 10} height={natInAz ? 150 : 110} rx="6"
+                        x="0" y="0" width={azWidth - 10} height={natInAz ? 165 : 120} rx="6"
                         fill={isSelected('subnet', subnet.id) ? '#052e16' : highlighted ? '#073d1f' : '#0a2615'}
                         stroke="#22c55e"
                         strokeWidth={isSelected('subnet', subnet.id) || highlighted ? 3 : 1}
                         strokeOpacity="0.8"
                         filter={highlighted ? 'url(#glow-cyan)' : undefined}
                       />
-                      <text x="10" y="22" fill="#4ade80" fontSize="13" fontWeight="bold">Public Subnet</text>
-                      <text x={azWidth - 20} y="22" fill="#4ade80" fontSize="11" textAnchor="end">{subnet.cidr}</text>
-                      <text x="10" y="42" fill="#6b7280" fontSize="10">{subnet.id}</text>
+                      <text x="12" y="26" fill="#4ade80" fontSize="14" fontWeight="bold">Public Subnet</text>
+                      <text x={azWidth - 22} y="26" fill="#4ade80" fontSize="12" textAnchor="end">{subnet.cidr}</text>
+                      <text x="12" y="48" fill="#6b7280" fontSize="11">{subnet.id}</text>
 
                       {/* NAT Gateway inside Public Subnet */}
                       {natInAz && (
-                        <g transform="translate(10, 78)">
-                          <rect x="0" y="0" width={azWidth - 30} height="60" rx="5" fill="#1f2937" stroke="#eab308" strokeWidth="1.5" />
-                          <foreignObject x="10" y="10" width="36" height="36">
-                            <AwsNAT style={{ width: 36, height: 36 }} />
+                        <g transform="translate(12, 88)">
+                          <rect x="0" y="0" width={azWidth - 34} height="68" rx="5" fill="#1f2937" stroke="#eab308" strokeWidth="1.5" />
+                          <foreignObject x="12" y="12" width="40" height="40">
+                            <AwsNAT style={{ width: 40, height: 40 }} />
                           </foreignObject>
-                          <text x="55" y="22" fill="#fef08a" fontSize="11" fontWeight="bold">NAT Gateway</text>
-                          <text x="55" y="40" fill="#fcd34d" fontSize="10">{natInAz.ip || natInAz.publicIp || 'Elastic IP'}</text>
+                          <text x="62" y="26" fill="#fef08a" fontSize="12" fontWeight="bold">NAT Gateway</text>
+                          <text x="62" y="46" fill="#fcd34d" fontSize="11">{natInAz.ip || natInAz.publicIp || 'Elastic IP'}</text>
                           {natInAz.state && (
-                            <text x={azWidth - 50} y="35" fill={natInAz.state === 'available' ? '#4ade80' : '#fbbf24'} fontSize="10" textAnchor="end">
+                            <text x={azWidth - 56} y="40" fill={natInAz.state === 'available' ? '#4ade80' : '#fbbf24'} fontSize="11" textAnchor="end">
                               {natInAz.state}
                             </text>
                           )}
@@ -549,7 +550,7 @@ export default function RoutingView({
                   const highlighted = isSubnetHighlighted(subnet.id)
                   const rtId = subnetRouteTableMap[subnet.id]
                   const publicSubnet = azSubnets.find(s => s.type === 'public')
-                  const yOffset = publicSubnet ? (natGateways.find(nat => nat.az === az) || (azIndex === 0 && network?.egressIps?.[0]) ? 195 : 155) : 35
+                  const yOffset = publicSubnet ? (natGateways.find(nat => nat.az === az) || (azIndex === 0 && network?.egressIps?.[0]) ? 215 : 170) : 40
 
                   return (
                     <g
@@ -560,17 +561,17 @@ export default function RoutingView({
                       onMouseLeave={() => setHoveredSubnet(null)}
                     >
                       <rect
-                        x="0" y="0" width={azWidth - 10} height="130" rx="6"
+                        x="0" y="0" width={azWidth - 10} height="145" rx="6"
                         fill={isSelected('subnet', subnet.id) ? '#172554' : highlighted ? '#1e3a5f' : '#0c1a3d'}
                         stroke="#3b82f6"
                         strokeWidth={isSelected('subnet', subnet.id) || highlighted ? 3 : 1}
                         strokeOpacity="0.8"
                         filter={highlighted ? 'url(#glow-cyan)' : undefined}
                       />
-                      <text x="10" y="22" fill="#60a5fa" fontSize="13" fontWeight="bold">Private Subnet</text>
-                      <text x={azWidth - 20} y="22" fill="#60a5fa" fontSize="11" textAnchor="end">{subnet.cidr}</text>
-                      <text x="10" y="42" fill="#6b7280" fontSize="10">{subnet.id}</text>
-                      <text x="10" y="62" fill="#9ca3af" fontSize="10">ECS Tasks, Lambda, Internal services</text>
+                      <text x="12" y="26" fill="#60a5fa" fontSize="14" fontWeight="bold">Private Subnet</text>
+                      <text x={azWidth - 22} y="26" fill="#60a5fa" fontSize="12" textAnchor="end">{subnet.cidr}</text>
+                      <text x="12" y="48" fill="#6b7280" fontSize="11">{subnet.id}</text>
+                      <text x="12" y="72" fill="#9ca3af" fontSize="11">ECS Tasks, Lambda, Internal services</text>
                     </g>
                   )
                 })()}
@@ -584,9 +585,9 @@ export default function RoutingView({
                   const publicSubnet = azSubnets.find(s => s.type === 'public')
                   const privateSubnet = azSubnets.find(s => s.type === 'private')
                   const hasNatInAz = natGateways.find(nat => nat.az === az) || (azIndex === 0 && network?.egressIps?.[0])
-                  let yOffset = 35
-                  if (publicSubnet) yOffset += hasNatInAz ? 160 : 120
-                  if (privateSubnet) yOffset += 140
+                  let yOffset = 40
+                  if (publicSubnet) yOffset += hasNatInAz ? 175 : 130
+                  if (privateSubnet) yOffset += 155
 
                   return (
                     <g
@@ -597,17 +598,17 @@ export default function RoutingView({
                       onMouseLeave={() => setHoveredSubnet(null)}
                     >
                       <rect
-                        x="0" y="0" width={azWidth - 10} height="110" rx="6"
+                        x="0" y="0" width={azWidth - 10} height="125" rx="6"
                         fill={isSelected('subnet', subnet.id) ? '#3b0764' : highlighted ? '#4c0d7a' : '#1a0533'}
                         stroke="#a855f7"
                         strokeWidth={isSelected('subnet', subnet.id) || highlighted ? 3 : 1}
                         strokeOpacity="0.8"
                         filter={highlighted ? 'url(#glow-cyan)' : undefined}
                       />
-                      <text x="10" y="22" fill="#c084fc" fontSize="13" fontWeight="bold">Database Subnet</text>
-                      <text x={azWidth - 20} y="22" fill="#c084fc" fontSize="11" textAnchor="end">{subnet.cidr}</text>
-                      <text x="10" y="42" fill="#6b7280" fontSize="10">{subnet.id}</text>
-                      <text x="10" y="62" fill="#9ca3af" fontSize="10">RDS, ElastiCache, isolated resources</text>
+                      <text x="12" y="26" fill="#c084fc" fontSize="14" fontWeight="bold">Database Subnet</text>
+                      <text x={azWidth - 22} y="26" fill="#c084fc" fontSize="12" textAnchor="end">{subnet.cidr}</text>
+                      <text x="12" y="48" fill="#6b7280" fontSize="11">{subnet.id}</text>
+                      <text x="12" y="72" fill="#9ca3af" fontSize="11">RDS, ElastiCache, isolated resources</text>
                     </g>
                   )
                 })()}
@@ -712,43 +713,43 @@ export default function RoutingView({
         )}
       </svg>
 
-      {/* Legend and Refresh */}
-      <div className="flex items-center justify-between mt-3 px-2">
-        <div className="flex items-center gap-4 flex-wrap">
+      {/* Legend and Refresh - enlarged for better visibility */}
+      <div className="flex items-center justify-between mt-4 px-3">
+        <div className="flex items-center gap-5 flex-wrap">
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded border-2 border-green-500 bg-green-900/30"></div>
-            <span className="text-gray-400 text-xs">Public Subnet</span>
+            <div className="w-5 h-5 rounded border-2 border-green-500 bg-green-900/30"></div>
+            <span className="text-gray-400 text-sm">Public Subnet</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded border-2 border-blue-500 bg-blue-900/30"></div>
-            <span className="text-gray-400 text-xs">Private Subnet</span>
+            <div className="w-5 h-5 rounded border-2 border-blue-500 bg-blue-900/30"></div>
+            <span className="text-gray-400 text-sm">Private Subnet</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded border-2 border-purple-500 bg-purple-900/30"></div>
-            <span className="text-gray-400 text-xs">Database Subnet</span>
+            <div className="w-5 h-5 rounded border-2 border-purple-500 bg-purple-900/30"></div>
+            <span className="text-gray-400 text-sm">Database Subnet</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded border-2 border-cyan-500 bg-cyan-900/30"></div>
-            <span className="text-gray-400 text-xs">Route Table</span>
+            <div className="w-5 h-5 rounded border-2 border-cyan-500 bg-cyan-900/30"></div>
+            <span className="text-gray-400 text-sm">Route Table</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded border-2 border-yellow-500 bg-yellow-900/30"></div>
-            <span className="text-gray-400 text-xs">NAT Gateway</span>
+            <div className="w-5 h-5 rounded border-2 border-yellow-500 bg-yellow-900/30"></div>
+            <span className="text-gray-400 text-sm">NAT Gateway</span>
           </div>
           <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded border-2 border-teal-500 bg-teal-900/30"></div>
-            <span className="text-gray-400 text-xs">VPC Endpoint</span>
+            <div className="w-5 h-5 rounded border-2 border-teal-500 bg-teal-900/30"></div>
+            <span className="text-gray-400 text-sm">VPC Endpoint</span>
           </div>
-          <div className="text-gray-500 text-xs ml-4 border-l border-gray-700 pl-4">
+          <div className="text-gray-500 text-sm ml-4 border-l border-gray-700 pl-4">
             Hover subnets or route tables to see associations
           </div>
         </div>
         <button
           onClick={fetchRoutingData}
           disabled={loading}
-          className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded-lg text-xs text-gray-300 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300 transition-colors"
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
       </div>

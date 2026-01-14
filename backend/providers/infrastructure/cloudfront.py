@@ -2,8 +2,9 @@
 AWS CloudFront CDN Provider implementation.
 
 Supports:
-- Tag-based discovery (EKS/NewHorizon style)
-- Domain-based discovery (legacy style)
+- Explicit distribution IDs
+- Tag-based discovery
+- Domain alias filtering
 """
 
 import time
@@ -20,9 +21,9 @@ class CloudFrontProvider(CDNProvider):
     AWS CloudFront implementation of the CDN provider.
 
     Discovery order:
-    1. If discovery_tags provided, find distribution by tags
-    2. If domain_patterns provided, match aliases
-    3. Fallback to legacy pattern: {env}.{project}
+    1. If distribution_ids provided, use them
+    2. If discovery_tags provided, find distributions by tags
+    3. If domain_patterns provided, match aliases
     """
 
     def __init__(self, config: DashboardConfig, project: str):
@@ -94,13 +95,19 @@ class CloudFrontProvider(CDNProvider):
             print(f"Domain-based CloudFront discovery failed: {e}")
             return None
 
-    def get_distribution(self, env: str, discovery_tags: Dict[str, str] = None,
-                         domain_patterns: List[str] = None) -> dict:
+    def get_distribution(
+        self,
+        env: str,
+        discovery_tags: Dict[str, str] = None,
+        distribution_ids: List[str] = None,
+        domain_patterns: List[str] = None,
+    ) -> dict:
         """Get CloudFront distribution(s) for an environment
 
         Args:
             env: Environment name
             discovery_tags: Dict of tags to find distribution (e.g., {'rubix_Environment': 'stg'})
+            distribution_ids: Explicit CloudFront distribution IDs
             domain_patterns: List of domain patterns to match aliases
 
         Returns:
@@ -116,29 +123,23 @@ class CloudFrontProvider(CDNProvider):
             dist_ids = []
             discovery_method = None
 
-            # 1. Try tag-based discovery first (returns all matching)
-            if discovery_tags:
+            # 1. Use explicit distribution IDs when provided
+            if distribution_ids:
+                dist_ids = list(dict.fromkeys(distribution_ids))
+                discovery_method = 'id'
+
+            # 2. Try tag-based discovery (returns all matching)
+            if not dist_ids and discovery_tags:
                 dist_ids = self._find_distribution_by_tags(env, discovery_tags)
                 if dist_ids:
                     discovery_method = 'tags'
 
-            # 2. Try domain patterns (single distribution)
+            # 3. Try domain patterns (single distribution)
             if not dist_ids and domain_patterns:
                 dist = self._find_distribution_by_domain(env, cloudfront, domain_patterns)
                 if dist:
                     dist_ids = [dist['Id']]
                     discovery_method = 'domain'
-
-            # 3. Fallback to legacy pattern (single distribution)
-            if not dist_ids:
-                domain_suffix = f"{env}.{self.project}"
-                distributions = cloudfront.list_distributions()
-                for d in distributions.get('DistributionList', {}).get('Items', []):
-                    aliases = d.get('Aliases', {}).get('Items', [])
-                    if any(domain_suffix in alias for alias in aliases):
-                        dist_ids = [d['Id']]
-                        discovery_method = 'naming'
-                        break
 
             if not dist_ids:
                 return None

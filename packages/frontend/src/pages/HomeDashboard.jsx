@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   RefreshCw, ExternalLink, Package,
   CheckCircle, XCircle, Network, X,
-  ChevronDown
+  ChevronDown, Globe, Server, Layers, Tag, Edit
 } from 'lucide-react'
 // Configuration context
 import { useConfig, useConfigHelpers } from '../ConfigContext'
@@ -185,7 +185,7 @@ export default function HomeDashboard() {
   } = useDashboardUrl()
 
   // Auth state
-  const { user, logout } = useAuth()
+  const { user, logout, canAdmin, isLoading: authLoading } = useAuth()
   // Dashboard context for shell integration
   const { autoRefresh, setAutoRefresh, registerRefreshCallback, setRefreshing, setLastUpdated } = useDashboard()
   // Get configuration from context (loaded by ConfigProvider)
@@ -225,6 +225,9 @@ export default function HomeDashboard() {
   // Session expiration state
   const [sessionExpired, setSessionExpired] = useState(false)
 
+  const [envSummary, setEnvSummary] = useState(null)
+  const [envSummaryLoading, setEnvSummaryLoading] = useState(false)
+
   // Listen for session expiration events
   useEffect(() => {
     const handleSessionExpired = () => setSessionExpired(true)
@@ -262,6 +265,50 @@ export default function HomeDashboard() {
     if (urlEnv && ENVIRONMENTS.includes(urlEnv)) return urlEnv
     return ENVIRONMENTS[0] || 'staging'
   })
+
+  const isAdmin = useMemo(() => {
+    if (authLoading) return false
+    return canAdmin(appConfig.currentProjectId, selectedInfraEnv)
+  }, [authLoading, canAdmin, appConfig.currentProjectId, selectedInfraEnv])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchEnvSummary() {
+      if (!appConfig.currentProjectId || !selectedInfraEnv || !isAdmin) {
+        setEnvSummary(null)
+        return
+      }
+
+      setEnvSummaryLoading(true)
+      try {
+        const response = await fetchWithRetry(
+          `/api/config/projects/${appConfig.currentProjectId}/environments/${selectedInfraEnv}`
+        )
+
+        if (!response.ok) {
+          throw new Error(`Failed to load env config: ${response.status}`)
+        }
+
+        const data = await response.json()
+        if (!cancelled) {
+          setEnvSummary(data)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('Env summary load failed:', err)
+          setEnvSummary(null)
+        }
+      } finally {
+        if (!cancelled) {
+          setEnvSummaryLoading(false)
+        }
+      }
+    }
+
+    fetchEnvSummary()
+    return () => { cancelled = true }
+  }, [appConfig.currentProjectId, selectedInfraEnv, isAdmin])
 
   // Derive selectedService from URL state (format: serviceName)
   // Internal format is env-service, so we build it from current env + URL service
@@ -327,10 +374,7 @@ export default function HomeDashboard() {
   // Setters that update URL
   const setSelectedService = useCallback((value, skipClear = false) => {
     if (value) {
-      // value is in format env-service, extract just service name
-      const parts = value.split('-')
-      const serviceName = parts[parts.length - 1]
-      urlSelectService(serviceName)
+      urlSelectService(value)
     } else if (!skipClear) {
       urlClearSelection()
     }
@@ -570,42 +614,58 @@ export default function HomeDashboard() {
     return () => clearTimeout(timer)
   }, [appConfig.currentProjectId, fetchPipelines, fetchImages])
 
-  // Fetch infrastructure for selected env only
-  // Uses discovery tags and other config from appConfig.infrastructure
-  const fetchInfrastructure = useCallback(async (env, infraConfig) => {
+  const buildInfraQuery = useCallback((force) => {
+    const params = new URLSearchParams()
+    if (force) {
+      params.set('force', 'true')
+    }
+    return params.toString()
+  }, [])
+
+  // Fetch infrastructure for selected env only (granular endpoints)
+  // Config is resolved server-side from the config registry
+  const fetchInfrastructure = useCallback(async (env, options = {}) => {
     const projectId = appConfig.currentProjectId || 'homebox'
+    const { force = false } = options
     setLoadingStates(prev => ({ ...prev, infrastructure: true }))
     try {
-      // Build query params from infrastructure config
-      const params = new URLSearchParams()
-      if (infraConfig?.discoveryTags) {
-        params.set('discoveryTags', JSON.stringify(infraConfig.discoveryTags))
+      const queryString = buildInfraQuery(force)
+      const suffix = queryString ? `?${queryString}` : ''
+      const baseUrl = `/api/${projectId}/infrastructure/${env}`
+      const endpoints = {
+        meta: `${baseUrl}/meta${suffix}`,
+        cloudfront: `${baseUrl}/cloudfront${suffix}`,
+        alb: `${baseUrl}/alb${suffix}`,
+        rds: `${baseUrl}/rds${suffix}`,
+        redis: `${baseUrl}/redis${suffix}`,
+        s3: `${baseUrl}/s3${suffix}`,
+        workloads: `${baseUrl}/workloads${suffix}`,
+        efs: `${baseUrl}/efs${suffix}`,
+        network: `${baseUrl}/network${suffix}`,
       }
-      if (infraConfig?.domains) {
-        params.set('domainConfig', JSON.stringify({ domains: infraConfig.domains, pattern: infraConfig.domainPattern }))
-      }
-      if (infraConfig?.databases?.length) {
-        params.set('databases', infraConfig.databases.join(','))
-      }
-      if (infraConfig?.caches?.length) {
-        params.set('caches', infraConfig.caches.join(','))
-      }
-      // Services are also passed for filtering
-      const services = appConfig.services || []
-      if (services.length) {
-        params.set('services', services.join(','))
-      }
-      const queryString = params.toString()
-      const url = `/api/${projectId}/infrastructure/${env}${queryString ? `?${queryString}` : ''}`
-      const res = await fetchWithRetry(url)
-      const data = await res.json()
+
+      const entries = Object.entries(endpoints)
+      const results = await Promise.allSettled(
+        entries.map(([_, url]) => fetchWithRetry(url).then(res => res.json()))
+      )
+
+      const data = {}
+      results.forEach((result, index) => {
+        const key = entries[index][0]
+        if (result.status === 'fulfilled') {
+          Object.assign(data, result.value)
+        } else {
+          console.error(`Error fetching infrastructure ${key}:`, result.reason)
+        }
+      })
+
       setInfrastructure(prev => ({ ...prev, [env]: data }))
     } catch (error) {
       console.error('Error fetching infrastructure:', error)
     } finally {
       setLoadingStates(prev => ({ ...prev, infrastructure: false }))
     }
-  }, [appConfig.services, appConfig.currentProjectId])  // Depend on services for filtering
+  }, [appConfig.currentProjectId, buildInfraQuery])
 
   // Fetch K8s nodes for EKS orchestrator
   const fetchNodes = useCallback(async (env) => {
@@ -620,39 +680,14 @@ export default function HomeDashboard() {
   }, [appConfig.currentProjectId])
 
   // Force refresh infrastructure (bypass cache)
-  const refreshInfrastructure = useCallback(async (env, infraConfig) => {
-    const projectId = appConfig.currentProjectId || 'homebox'
-    setLoadingStates(prev => ({ ...prev, infrastructure: true }))
-    try {
-      // Build query params from infrastructure config
-      const params = new URLSearchParams()
-      if (infraConfig?.discoveryTags) {
-        params.set('discoveryTags', JSON.stringify(infraConfig.discoveryTags))
-      }
-      if (infraConfig?.domains) {
-        params.set('domainConfig', JSON.stringify({ domains: infraConfig.domains, pattern: infraConfig.domainPattern }))
-      }
-      if (infraConfig?.databases?.length) {
-        params.set('databases', infraConfig.databases.join(','))
-      }
-      if (infraConfig?.caches?.length) {
-        params.set('caches', infraConfig.caches.join(','))
-      }
-      const services = appConfig.services || []
-      if (services.length) {
-        params.set('services', services.join(','))
-      }
-      const queryString = params.toString()
-      const url = `/api/${projectId}/infrastructure/${env}${queryString ? `?${queryString}` : ''}`
-      const res = await fetchWithRetry(url)
-      const data = await res.json()
-      setInfrastructure(prev => ({ ...prev, [env]: data }))
-    } catch (error) {
-      console.error('Error fetching infrastructure:', error)
-    } finally {
-      setLoadingStates(prev => ({ ...prev, infrastructure: false }))
-    }
-  }, [appConfig.services, appConfig.currentProjectId])
+  const refreshInfrastructure = useCallback(async (env) => {
+    await fetchInfrastructure(env, { force: true })
+  }, [fetchInfrastructure])
+
+  const handleInfraRefresh = useCallback(async () => {
+    await refreshInfrastructure(selectedInfraEnv)
+    setLastUpdated()
+  }, [refreshInfrastructure, selectedInfraEnv, setLastUpdated])
 
   // Fetch events timeline (fast) then enrich with CloudTrail (async)
   const fetchEvents = useCallback(async (env, hours) => {
@@ -799,9 +834,9 @@ export default function HomeDashboard() {
       fetchServices(selectedInfraEnv),
       fetchPipelines(),
       fetchImages(),
-      refreshInfrastructure(selectedInfraEnv, appConfig.infrastructure)
+      refreshInfrastructure(selectedInfraEnv)
     ])
-  }, [selectedInfraEnv, fetchServices, fetchPipelines, fetchImages, refreshInfrastructure, appConfig.infrastructure, setLastUpdated])
+  }, [selectedInfraEnv, fetchServices, fetchPipelines, fetchImages, refreshInfrastructure, setLastUpdated])
 
   // Register fetchData as the refresh callback for Shell
   useEffect(() => {
@@ -971,14 +1006,14 @@ export default function HomeDashboard() {
         setActionResult({ type: 'error', message: data.error })
       } else {
         setActionResult({ type: 'success', message: `RDS ${actionLabel} triggered (${env})` })
-        setTimeout(() => fetchInfrastructure(env, appConfig.infrastructure), 10000)
+        setTimeout(() => fetchInfrastructure(env), 10000)
       }
     } catch (error) {
       setActionResult({ type: 'error', message: error.message })
     }
     setActionLoading(prev => ({ ...prev, [`rds-${env}`]: false }))
     setTimeout(() => setActionResult(null), 5000)
-  }, [fetchInfrastructure, appConfig.infrastructure, appConfig.currentProjectId])
+  }, [fetchInfrastructure, appConfig.currentProjectId])
 
   const handleInvalidateCloudfront = useCallback(async (env, distributionId) => {
     const projectId = appConfig.currentProjectId || 'homebox'
@@ -1097,10 +1132,10 @@ export default function HomeDashboard() {
     // Reset events immediately when env changes to avoid showing stale data
     setEvents([])
     fetchServices(selectedInfraEnv)
-    fetchInfrastructure(selectedInfraEnv, appConfig.infrastructure)
+    fetchInfrastructure(selectedInfraEnv)
     fetchEvents(selectedInfraEnv)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedInfraEnv, appConfig.infrastructure])  // Re-run when env or project changes
+  }, [selectedInfraEnv])  // Re-run when env or project changes
 
   // Fetch K8s nodes when infrastructure is loaded and orchestrator is EKS
   useEffect(() => {
@@ -1127,13 +1162,13 @@ export default function HomeDashboard() {
     if (!autoRefresh) return
     const interval = setInterval(() => {
       fetchServices(selectedInfraEnv)
-      refreshInfrastructure(selectedInfraEnv, appConfig.infrastructure)
+      refreshInfrastructure(selectedInfraEnv)
       fetchPipelines()
       fetchEvents(selectedInfraEnv)
     }, 30000)
     return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRefresh, selectedInfraEnv, appConfig.infrastructure])  // Re-run when autoRefresh, env, or project changes
+  }, [autoRefresh, selectedInfraEnv])  // Re-run when autoRefresh, env, or project changes
 
   // Fetch details when service selection changes
   useEffect(() => {
@@ -1149,10 +1184,31 @@ export default function HomeDashboard() {
 
   // Handle infra component selection - for services, load the service details
   const handleInfraComponentSelect = useCallback((type, env, data) => {
-    if (type === 'service' && data?.name) {
-      // Extract service name from full name (prefix-env-service -> service)
-      const serviceName = data.name.split('-').pop()
-      setSelectedService(`${env}-${serviceName}`)
+    if (type === 'service') {
+      const servicesMap = services?.[env]?.services || {}
+      const candidates = [
+        data?.service,
+        data?.serviceKey,
+        data?.id,
+        data?.name
+      ].filter(Boolean)
+
+      const resolveServiceName = () => {
+        for (const candidate of candidates) {
+          if (servicesMap[candidate]) return candidate
+          const lower = candidate.toLowerCase()
+          if (servicesMap[lower]) return lower
+          const lastSegment = candidate.split('-').pop()
+          if (servicesMap[lastSegment]) return lastSegment
+          const lowerLast = lastSegment.toLowerCase()
+          if (servicesMap[lowerLast]) return lowerLast
+        }
+        return candidates[0] || ''
+      }
+
+      const serviceName = resolveServiceName()
+      if (!serviceName) return
+      setSelectedService(serviceName)
       // Pass skipClear=true to avoid clearing the URL params we just set
       setSelectedInfraComponent(null, true)
     } else {
@@ -1160,7 +1216,7 @@ export default function HomeDashboard() {
       // Pass skipClear=true to avoid clearing the URL params we just set
       setSelectedService(null, true)
     }
-  }, [setSelectedService, setSelectedInfraComponent])
+  }, [services, setSelectedService, setSelectedInfraComponent])
 
   // Handle click on timeline event - open relevant panel
   const handleEventClick = useCallback((event) => {
@@ -1178,7 +1234,7 @@ export default function HomeDashboard() {
     } else if (['deploy', 'rollback', 'scale', 'ecs_event'].includes(eventType)) {
       // Open service detail panel for deploy/scale events
       if (eventService) {
-        setSelectedService(`${eventEnv}-${eventService}`)
+        setSelectedService(eventService)
         setSelectedInfraComponent(null, true)
       }
     } else if (['rds_stop', 'rds_start'].includes(eventType)) {
@@ -1200,6 +1256,22 @@ export default function HomeDashboard() {
   const LoadingSkeleton = ({ className = '' }) => (
     <div className={`animate-pulse bg-gray-700 rounded ${className}`}></div>
   )
+
+  const STATUS_STYLES = {
+    active: 'bg-green-600/20 text-green-400 border-green-500/30',
+    planned: 'bg-yellow-600/20 text-yellow-400 border-yellow-500/30',
+    deprecated: 'bg-red-600/20 text-red-400 border-red-500/30',
+  }
+
+  const summaryAccount = envSummary?.accountId || AWS_ACCOUNTS[selectedInfraEnv]?.id || null
+  const summaryRegion = envSummary?.region || AWS_ACCOUNTS[selectedInfraEnv]?.region || appConfig.aws?.defaultRegion || null
+  const summaryCluster = envSummary?.clusterName || null
+  const summaryNamespace = envSummary?.namespace || null
+  const summaryStatus = envSummary?.status || null
+  const summaryStatusStyle = summaryStatus ? (STATUS_STYLES[summaryStatus] || STATUS_STYLES.planned) : null
+  const summaryServicesCount = envSummary?.services?.length ?? Object.keys(services[selectedInfraEnv]?.services || {}).length
+  const summaryResourcesCount = envSummary ? Object.keys(envSummary.infrastructure?.resources || {}).length : null
+  const summaryTagsCount = envSummary ? Object.keys(envSummary.infrastructure?.defaultTags || {}).length : null
 
   return (
     <>
@@ -1245,16 +1317,16 @@ export default function HomeDashboard() {
 
         {/* Main Content - adjusts for left panel */}
         <main
-          className="flex-1 px-4 py-6 space-y-6 transition-all duration-200"
+          className="flex-1 px-6 py-8 space-y-8 transition-all duration-200 text-base"
           style={{ marginLeft: eventsPanelVisible ? `${eventsPanelWidth}px` : '32px' }}
         >
-          <div className="max-w-7xl mx-auto">
+          <div className="max-w-[1600px] mx-auto">
           {/* Build Pipelines - At the top (only if pipelines enabled and has services) */}
           {pipelinesEnabled && PIPELINE_SERVICES.length > 0 && (
           <section>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold flex items-center gap-2">
-                <Package className="w-5 h-5 text-brand-400" />
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-xl font-semibold flex items-center gap-3">
+                <Package className="w-6 h-6 text-brand-400" />
                 Build Pipelines
                 {loadingStates.pipelines && (
                   <RefreshCw className="w-4 h-4 text-brand-500 animate-spin" />
@@ -1296,11 +1368,11 @@ export default function HomeDashboard() {
           )}
 
           {/* Infrastructure Diagram */}
-          <section className="mt-8">
-            <div className="flex items-center justify-between mb-4">
+          <section className="mt-10">
+            <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-4">
-                <h2 className="text-lg font-semibold flex items-center gap-2">
-                  <Network className="w-5 h-5 text-brand-400" />
+                <h2 className="text-xl font-semibold flex items-center gap-3">
+                  <Network className="w-6 h-6 text-brand-400" />
                   Infrastructure
                 </h2>
                 {AWS_ACCOUNTS[selectedInfraEnv] && (
@@ -1342,6 +1414,74 @@ export default function HomeDashboard() {
                   ))}
                 </div>
               )}
+            </div>
+
+            <div className="flex items-center justify-between gap-3 mb-4 rounded-lg border border-gray-800 bg-gray-900/70 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-4 text-sm text-gray-400">
+                <span className="flex items-center gap-2 text-gray-200">
+                  <Layers size={14} className="text-green-400" />
+                  Config
+                </span>
+                {summaryStatusStyle && (
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${summaryStatusStyle}`}>
+                    {summaryStatus}
+                  </span>
+                )}
+                {summaryAccount && (
+                  <span className="flex items-center gap-1">
+                    <Globe size={14} />
+                    {summaryAccount}{summaryRegion ? ` / ${summaryRegion}` : ''}
+                  </span>
+                )}
+                {summaryCluster && (
+                  <span className="flex items-center gap-1">
+                    <Server size={14} />
+                    {summaryCluster}{summaryNamespace ? ` / ${summaryNamespace}` : ''}
+                  </span>
+                )}
+                {summaryServicesCount > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Server size={14} />
+                    {summaryServicesCount} services
+                  </span>
+                )}
+                {summaryResourcesCount !== null && summaryResourcesCount > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Layers size={14} />
+                    {summaryResourcesCount} resources
+                  </span>
+                )}
+                {summaryTagsCount !== null && summaryTagsCount > 0 && (
+                  <span className="flex items-center gap-1">
+                    <Tag size={14} />
+                    {summaryTagsCount} tags
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {envSummaryLoading && (
+                  <LoadingSkeleton className="h-3 w-24" />
+                )}
+                <button
+                  type="button"
+                  onClick={handleInfraRefresh}
+                  disabled={loadingStates.infrastructure}
+                  className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Force refresh infrastructure data"
+                >
+                  <RefreshCw size={12} className={loadingStates.infrastructure ? 'animate-spin' : ''} />
+                  Refresh
+                </button>
+                {isAdmin && (
+                  <Link
+                    to={`/admin/config/projects/${appConfig.currentProjectId}/environments/${selectedInfraEnv}`}
+                    className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-md"
+                  >
+                    <Edit size={12} />
+                    Edit
+                  </Link>
+                )}
+              </div>
             </div>
 
             {/* Loading overlay for infrastructure */}

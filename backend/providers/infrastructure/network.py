@@ -30,8 +30,98 @@ class VPCProvider(NetworkProvider):
             project=self.project, env=env
         )
 
-    def get_network_info(self, env: str) -> dict:
-        """Get VPC and basic network info (subnets, NAT gateways, connectivity summary)"""
+    def _find_vpc_by_tags(self, ec2, discovery_tags: dict) -> Optional[dict]:
+        """Find VPC by tags using tag filters
+
+        Args:
+            ec2: EC2 client
+            discovery_tags: Dict of {tag_key: tag_value} to filter VPCs
+
+        Returns:
+            VPC dict if found, None otherwise
+
+        Note: VPCs are typically shared across applications in an environment,
+        so we only use environment-level tags (rubix_Environment) for VPC discovery,
+        not application-specific tags (rubix_Application).
+        """
+        if not discovery_tags:
+            return None
+
+        try:
+            # For VPC discovery, use only environment-level tags
+            # VPCs are shared across applications, so rubix_Application won't match
+            env_tag_keys = ['rubix_Environment', 'Environment', 'env']
+            filters = []
+
+            for key, value in discovery_tags.items():
+                # Only use environment-level tags for VPC discovery
+                if any(env_key.lower() in key.lower() for env_key in env_tag_keys):
+                    filters.append({'Name': f'tag:{key}', 'Values': [value]})
+
+            if not filters:
+                # Fallback: try all tags if no environment tag found
+                for key, value in discovery_tags.items():
+                    filters.append({'Name': f'tag:{key}', 'Values': [value]})
+
+            vpcs = ec2.describe_vpcs(Filters=filters)
+            if vpcs.get('Vpcs'):
+                # If multiple VPCs match, prefer one with more specific name
+                return vpcs['Vpcs'][0]
+            return None
+        except Exception as e:
+            print(f"Tag-based VPC discovery failed: {e}")
+            return None
+
+    def _resolve_vpc(self, ec2, env: str, vpc_id: str = None, discovery_tags: dict = None) -> tuple:
+        """Resolve VPC using multiple strategies
+
+        Priority:
+        1. Direct vpc_id (from EKS cluster)
+        2. Tag-based discovery (discovery_tags)
+
+        Returns:
+            Tuple of (vpc_dict, vpc_id, vpc_name) or (None, None, None) if not found
+        """
+        vpc = None
+        vpc_name = None
+
+        # Strategy 1: Direct VPC ID (typically from EKS cluster)
+        if vpc_id:
+            try:
+                vpcs = ec2.describe_vpcs(VpcIds=[vpc_id])
+                if vpcs.get('Vpcs'):
+                    vpc = vpcs['Vpcs'][0]
+                    vpc_name = vpc_id  # Default to ID
+                    for tag in vpc.get('Tags', []):
+                        if tag['Key'] == 'Name':
+                            vpc_name = tag['Value']
+                            break
+                    return vpc, vpc_id, vpc_name
+            except Exception as e:
+                print(f"VPC lookup by ID failed: {e}")
+
+        # Strategy 2: Tag-based discovery
+        if discovery_tags:
+            vpc = self._find_vpc_by_tags(ec2, discovery_tags)
+            if vpc:
+                vpc_id = vpc['VpcId']
+                vpc_name = vpc_id
+                for tag in vpc.get('Tags', []):
+                    if tag['Key'] == 'Name':
+                        vpc_name = tag['Value']
+                        break
+                return vpc, vpc_id, vpc_name
+
+        return None, None, None
+
+    def get_network_info(self, env: str, vpc_id: str = None, discovery_tags: dict = None) -> dict:
+        """Get VPC and basic network info (subnets, NAT gateways, connectivity summary)
+
+        Args:
+            env: Environment name
+            vpc_id: Optional direct VPC ID (from EKS cluster)
+            discovery_tags: Optional tags for VPC discovery (e.g., {'rubix_Environment': 'stg'})
+        """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
@@ -39,17 +129,11 @@ class VPCProvider(NetworkProvider):
         account_id = env_config.account_id
         ec2 = self._get_ec2_client(env)
 
-        vpc_name = f"{self.project}-{env}"
+        # Resolve VPC using multi-strategy approach
+        vpc, vpc_id, vpc_name = self._resolve_vpc(ec2, env, vpc_id, discovery_tags)
 
-        vpcs = ec2.describe_vpcs(
-            Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}]
-        )
-
-        if not vpcs.get('Vpcs'):
+        if not vpc:
             return None
-
-        vpc = vpcs['Vpcs'][0]
-        vpc_id = vpc['VpcId']
 
         # Get subnets
         subnets_response = ec2.describe_subnets(
@@ -367,8 +451,16 @@ class VPCProvider(NetworkProvider):
 
         return result
 
-    def get_routing_details(self, env: str, service_security_groups: List[str] = None) -> dict:
-        """Get detailed routing and security information (called on demand via toggle)"""
+    def get_routing_details(self, env: str, service_security_groups: List[str] = None,
+                            vpc_id: str = None, discovery_tags: dict = None) -> dict:
+        """Get detailed routing and security information (called on demand via toggle)
+
+        Args:
+            env: Environment name
+            service_security_groups: Optional list of SG IDs to filter
+            vpc_id: Optional direct VPC ID (from EKS cluster)
+            discovery_tags: Optional tags for VPC discovery
+        """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
@@ -376,13 +468,10 @@ class VPCProvider(NetworkProvider):
         account_id = env_config.account_id
         ec2 = self._get_ec2_client(env)
 
-        # Get VPC ID
-        vpc_name = f"{self.project}-{env}"
-        vpcs = ec2.describe_vpcs(Filters=[{'Name': 'tag:Name', 'Values': [vpc_name]}])
-        if not vpcs.get('Vpcs'):
-            return {'error': f'VPC {vpc_name} not found'}
-
-        vpc_id = vpcs['Vpcs'][0]['VpcId']
+        # Resolve VPC using multi-strategy approach
+        vpc, vpc_id, vpc_name = self._resolve_vpc(ec2, env, vpc_id, discovery_tags)
+        if not vpc:
+            return {'error': f'VPC not found for {self.project}-{env}'}
 
         result = {
             'vpcId': vpc_id,

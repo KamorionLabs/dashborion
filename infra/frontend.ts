@@ -37,11 +37,8 @@ export function generateFrontendConfig(config: InfraConfig, stage: string): Reco
   for (const [projectId, projectConfig] of Object.entries(config.projects || {})) {
     if (projectId.startsWith("_")) continue; // Skip comments
 
-    // Filter out disabled environments (enabled: false)
-    const environments = Object.keys(projectConfig.environments || {}).filter(envName => {
-      const envConfig = (projectConfig.environments || {})[envName];
-      return envConfig.enabled !== false; // Include if enabled is true or undefined
-    });
+    // Build environments object preserving full config
+    const environments: Record<string, unknown> = {};
     const services = new Set<string>();
     const accounts: Record<string, unknown> = {};
     const envColors: Record<string, unknown> = {};
@@ -62,6 +59,16 @@ export function generateFrontendConfig(config: InfraConfig, stage: string): Reco
 
       // Assign env colors
       envColors[envName] = ENV_COLORS[envName] || ENV_COLORS.staging;
+
+      // Preserve full environment config
+      environments[envName] = {
+        accountId: envConfig.accountId,
+        region: envConfig.region || config.aws?.region || "eu-central-1",
+        namespace: envConfig.namespace,
+        clusterName: envConfig.clusterName,
+        status: envConfig.status,
+        infrastructure: envConfig.infrastructure || {},
+      };
     }
 
     // Build pipelines config for frontend
@@ -115,16 +122,12 @@ export function generateFrontendConfig(config: InfraConfig, stage: string): Reco
       environments,
       serviceNaming: { prefix: projectId },
       infrastructure: {
-        discoveryTags: { Project: projectId },
         serviceColors: {},
-        domainPattern: "{service}.{env}.example.com",
-        domains: {},
-        databases: [],
-        caches: [],
       },
       envColors,
       pipelines: pipelinesConfig,
       features: projectConfig.features || {},
+      topology: projectConfig.topology || null,
     };
   }
 

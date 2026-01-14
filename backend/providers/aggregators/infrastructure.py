@@ -4,7 +4,7 @@ Infrastructure Aggregator - combines all infrastructure providers for the topolo
 
 from typing import Dict, List, Optional
 
-from app_config import DashboardConfig
+from app_config import DashboardConfig, InfrastructureConfig
 from utils.aws import get_cross_account_client, build_sso_console_url
 from providers.base import ProviderFactory
 
@@ -27,29 +27,72 @@ class InfrastructureAggregator:
         self.database_provider = ProviderFactory.get_database_provider(config, project)
         self.cache_provider = ProviderFactory.get_cache_provider(config, project)
 
-    def get_infrastructure(self, env: str, discovery_tags: dict = None, services: list = None,
-                           domain_config: dict = None, databases: list = None, caches: list = None) -> dict:
+    def _resolve_resource_filters(self, infra_config: Optional[InfrastructureConfig], resource: str) -> Dict[str, Optional[object]]:
+        if not infra_config:
+            return {"ids": None, "tags": None}
+        resource_cfg = (infra_config.resources or {}).get(resource)
+        ids = resource_cfg.ids if resource_cfg and resource_cfg.ids else None
+        tags = resource_cfg.tags if resource_cfg and resource_cfg.tags else infra_config.default_tags or None
+        return {"ids": ids, "tags": tags}
+
+    def _discover_services(self, env: str, env_config, orchestrator_type: str) -> List[str]:
+        """Discover services/workloads when env.services is empty."""
+        try:
+            orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
+            names = []
+
+            if orchestrator_type == 'eks':
+                deployments = orchestrator.get_deployments(env, namespace=env_config.namespace)
+                names = [deploy.name for deploy in deployments if deploy and deploy.name]
+            else:
+                ecs = orchestrator._get_ecs_client(env)
+                cluster_name = self.config.get_cluster_name(self.project, env)
+                paginator = ecs.get_paginator('list_services')
+                service_arns = []
+                for page in paginator.paginate(cluster=cluster_name):
+                    service_arns.extend(page.get('serviceArns', []))
+                names = [arn.split('/')[-1] for arn in service_arns if arn]
+
+            if not names:
+                return []
+
+            normalized = []
+            for name in names:
+                short = self.config.strip_service_name(self.project, env, name, strict=True)
+                if short:
+                    normalized.append(short)
+
+            if normalized:
+                return sorted(set(normalized))
+
+            fallback = [
+                self.config.strip_service_name(self.project, env, name, strict=False)
+                for name in names
+            ]
+            return sorted(set([name for name in fallback if name]))
+        except Exception as e:
+            print(f"Failed to discover services for {self.project}/{env}: {e}")
+            return []
+
+    def get_infrastructure(self, env: str, services: list = None,
+                           infra_config: Optional[InfrastructureConfig] = None,
+                           resources: Optional[List[str]] = None) -> dict:
         """Get infrastructure topology for an environment (CloudFront, ALB, S3, ECS services, RDS, Redis, Network)
 
         Args:
             env: Environment name (staging, preprod, production)
-            discovery_tags: Dict of {tag_key: tag_value} to filter resources
             services: List of service names to look for
-            domain_config: Dict with domain patterns
-            databases: List of database types to look for (e.g., ["postgres", "mysql"])
-            caches: List of cache types to look for (e.g., ["redis"])
+            infra_config: InfrastructureConfig with resource filters
         """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
-        # Default values for backwards compatibility
-        services = services or ['backend', 'frontend', 'cms']
-        databases = databases if databases is not None else ['postgres']
-        caches = caches if caches is not None else ['redis']
+        services = services or env_config.services or []
 
         account_id = env_config.account_id
         domain_suffix = f"{env}.{self.project}.kamorion.cloud"
+        domain_config = infra_config.domain_config if infra_config else None
 
         # Domain patterns - use domain_config or fallback to defaults
         if domain_config and domain_config.get('domains'):
@@ -66,6 +109,25 @@ class InfrastructureAggregator:
 
         # Determine orchestrator type
         orchestrator_type = getattr(self.config.orchestrator, 'type', 'ecs') if self.config.orchestrator else 'ecs'
+
+        resource_set = set(resources) if resources else None
+
+        def should_fetch(name: str) -> bool:
+            return resource_set is None or name in resource_set
+
+        needs_services = resource_set is None or any(
+            name in resource_set for name in ('workloads', 'alb')
+        )
+        if needs_services and not services:
+            services = self._discover_services(env, env_config, orchestrator_type)
+
+        cloudfront_filters = self._resolve_resource_filters(infra_config, 'cloudfront')
+        alb_filters = self._resolve_resource_filters(infra_config, 'alb')
+        rds_filters = self._resolve_resource_filters(infra_config, 'rds')
+        redis_filters = self._resolve_resource_filters(infra_config, 'redis')
+        efs_filters = self._resolve_resource_filters(infra_config, 'efs')
+        network_filters = self._resolve_resource_filters(infra_config, 'network')
+        s3_filters = self._resolve_resource_filters(infra_config, 's3')
 
         result = {
             'environment': env,
@@ -106,100 +168,131 @@ class InfrastructureAggregator:
                 print(f"Failed to get ingresses for ALB discovery: {e}")
 
         # CloudFront (using dedicated provider with tag-based discovery)
-        try:
-            if self.cdn_provider:
-                cf_data = self.cdn_provider.get_distribution(
-                    env,
-                    discovery_tags=discovery_tags,
-                    domain_patterns=domain_prefixes
-                )
-                result['cloudfront'] = cf_data
-                if cf_data and 'origins' in cf_data:
-                    for origin in cf_data.get('origins', []):
-                        if origin.get('type') == 's3':
-                            bucket_name = origin['domainName'].split('.s3.')[0]
-                            cloudfront_s3_origins.add(bucket_name)
-        except Exception as e:
-            result['cloudfront'] = {'error': str(e)}
+        if should_fetch('cloudfront') or should_fetch('s3'):
+            try:
+                if self.cdn_provider and (cloudfront_filters["ids"] or cloudfront_filters["tags"] or domain_prefixes):
+                    cf_data = self.cdn_provider.get_distribution(
+                        env,
+                        discovery_tags=cloudfront_filters["tags"],
+                        distribution_ids=cloudfront_filters["ids"],
+                        domain_patterns=domain_prefixes
+                    )
+                    result['cloudfront'] = cf_data
+                    if cf_data and 'origins' in cf_data:
+                        for origin in cf_data.get('origins', []):
+                            if origin.get('type') == 's3':
+                                bucket_name = origin['domainName'].split('.s3.')[0]
+                                cloudfront_s3_origins.add(bucket_name)
+            except Exception as e:
+                result['cloudfront'] = {'error': str(e)}
 
         # ALB (using dedicated provider with tag-based and ingress-based discovery)
-        try:
-            if self.loadbalancer_provider:
-                result['alb'] = self.loadbalancer_provider.get_load_balancer(
-                    env,
-                    services=services,
-                    discovery_tags=discovery_tags,
-                    ingress_hostname=ingress_hostname
-                )
-                # Enrich ALB with ingress info for EKS
-                if result['alb'] and ingresses and orchestrator_type == 'eks':
-                    result['alb']['ingresses'] = [
-                        {
-                            'name': ing.name,
-                            'namespace': ing.namespace,
-                            'hosts': [r.host for r in ing.rules if r.host],
-                            'paths': [r.path for r in ing.rules if r.path]
-                        }
-                        for ing in ingresses
-                    ]
-        except Exception as e:
-            result['alb'] = {'error': str(e)}
+        if should_fetch('alb'):
+            try:
+                if self.loadbalancer_provider and (alb_filters["ids"] or alb_filters["tags"] or ingress_hostname):
+                    result['alb'] = self.loadbalancer_provider.get_load_balancer(
+                        env,
+                        services=services,
+                        discovery_tags=alb_filters["tags"],
+                        alb_arns=alb_filters["ids"],
+                        ingress_hostname=ingress_hostname
+                    )
+                    # Enrich ALB with ingress info for EKS
+                    if result['alb'] and ingresses and orchestrator_type == 'eks':
+                        result['alb']['ingresses'] = [
+                            {
+                                'name': ing.name,
+                                'namespace': ing.namespace,
+                                'hosts': [r.host for r in ing.rules if r.host],
+                                'paths': [r.path for r in ing.rules if r.path]
+                            }
+                            for ing in ingresses
+                        ]
+            except Exception as e:
+                result['alb'] = {'error': str(e)}
 
         # S3 Buckets (CloudFront origins only) - no dedicated provider needed, simple list
-        try:
-            s3 = get_cross_account_client('s3', account_id, env_config.region, project=self.project, env=env)
-            buckets = s3.list_buckets()
-            for bucket in buckets.get('Buckets', []):
-                bucket_name = bucket['Name']
-                if bucket_name in cloudfront_s3_origins:
-                    bucket_type = 'frontend' if 'frontend' in bucket_name else 'cms-public' if 'cms-public' in bucket_name else 'assets' if 'assets' in bucket_name else 'other'
-                    result['s3Buckets'].append({
-                        'name': bucket_name,
-                        'type': bucket_type,
-                        'createdAt': bucket['CreationDate'].isoformat() if bucket.get('CreationDate') else None,
-                        'consoleUrl': build_sso_console_url(
-                            self.config.sso_portal_url, account_id,
-                            f"https://s3.console.aws.amazon.com/s3/buckets/{bucket_name}?region={self.region}"
-                        )
-                    })
-        except Exception as e:
-            result['s3Buckets'] = [{'error': str(e)}]
+        if should_fetch('s3'):
+            try:
+                s3 = get_cross_account_client('s3', account_id, env_config.region, project=self.project, env=env)
+                buckets = s3.list_buckets()
+                from providers.infrastructure.elasticache import matches_discovery_tags
+
+                s3_ids = set(s3_filters["ids"] or [])
+                use_tag_filter = bool(s3_filters["tags"]) and not s3_ids
+
+                for bucket in buckets.get('Buckets', []):
+                    bucket_name = bucket['Name']
+                    include_bucket = False
+
+                    if s3_ids:
+                        include_bucket = bucket_name in s3_ids
+                    elif use_tag_filter:
+                        try:
+                            tag_response = s3.get_bucket_tagging(Bucket=bucket_name)
+                            bucket_tags = tag_response.get('TagSet', [])
+                        except Exception:
+                            bucket_tags = []
+                        include_bucket = matches_discovery_tags(bucket_tags, s3_filters["tags"])
+                    else:
+                        include_bucket = bucket_name in cloudfront_s3_origins
+
+                    if include_bucket:
+                        bucket_type = 'frontend' if 'frontend' in bucket_name else 'cms-public' if 'cms-public' in bucket_name else 'assets' if 'assets' in bucket_name else 'other'
+                        result['s3Buckets'].append({
+                            'name': bucket_name,
+                            'type': bucket_type,
+                            'createdAt': bucket['CreationDate'].isoformat() if bucket.get('CreationDate') else None,
+                            'consoleUrl': build_sso_console_url(
+                                self.config.sso_portal_url, account_id,
+                                f"https://s3.console.aws.amazon.com/s3/buckets/{bucket_name}?region={self.region}"
+                            )
+                        })
+            except Exception as e:
+                result['s3Buckets'] = [{'error': str(e)}]
 
         # Workloads (ECS Services or K8s Deployments)
-        try:
-            orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
+        if should_fetch('workloads'):
+            try:
+                orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
 
-            if orchestrator_type == 'eks':
-                # EKS: Use get_services which returns Service dataclass objects
-                services_data = orchestrator.get_services(env)
-                result['workloads'] = self._normalize_workloads_from_services(services_data, account_id)
-            else:
-                # ECS: Use original method
-                result['workloads'] = orchestrator._get_services_for_infrastructure(
-                    orchestrator._get_ecs_client(env),
-                    env,
-                    self.config.get_cluster_name(self.project, env),
-                    account_id,
-                    services
-                )
-        except Exception as e:
-            result['workloads'] = {'error': str(e)}
+                if orchestrator_type == 'eks':
+                    # EKS: Use get_services which returns Service dataclass objects
+                    services_data = orchestrator.get_services(env)
+                    result['workloads'] = self._normalize_workloads_from_services(services_data, account_id)
+                else:
+                    # ECS: Use original method
+                    result['workloads'] = orchestrator._get_services_for_infrastructure(
+                        orchestrator._get_ecs_client(env),
+                        env,
+                        self.config.get_cluster_name(self.project, env),
+                        account_id,
+                        services
+                    )
+            except Exception as e:
+                result['workloads'] = {'error': str(e)}
 
         # RDS (using dedicated provider with tag-based discovery)
-        try:
-            if self.database_provider:
-                result['rds'] = self.database_provider.get_database_status(
-                    env,
-                    discovery_tags=discovery_tags,
-                    database_types=databases
-                )
-        except Exception as e:
-            result['rds'] = {'error': str(e)}
+        if should_fetch('rds') and (rds_filters["ids"] or rds_filters["tags"]):
+            try:
+                if self.database_provider:
+                    result['rds'] = self.database_provider.get_database_status(
+                        env,
+                        discovery_tags=rds_filters["tags"],
+                        identifiers=rds_filters["ids"]
+                    )
+            except Exception as e:
+                result['rds'] = {'error': str(e)}
 
         # EFS (for EKS clusters) - enriched with PVC data
-        if orchestrator_type == 'eks':
+        if should_fetch('efs') and orchestrator_type == 'eks' and (efs_filters["ids"] or efs_filters["tags"]):
             try:
-                result['efs'] = self._get_efs_for_infrastructure(env, account_id, discovery_tags)
+                result['efs'] = self._get_efs_for_infrastructure(
+                    env,
+                    account_id,
+                    ids=efs_filters["ids"],
+                    discovery_tags=efs_filters["tags"]
+                )
 
                 # Enrich with PVC data if EFS was found
                 if result['efs'] and not result['efs'].get('error'):
@@ -231,23 +324,46 @@ class InfrastructureAggregator:
                 result['efs'] = {'error': str(e)}
 
         # ElastiCache Redis (using dedicated provider)
-        if caches:
+        if should_fetch('redis') and (redis_filters["ids"] or redis_filters["tags"]):
             try:
                 if self.cache_provider:
-                    result['redis'] = self.cache_provider.get_cache_cluster(env, discovery_tags, caches)
+                    result['redis'] = self.cache_provider.get_cache_cluster(
+                        env,
+                        discovery_tags=redis_filters["tags"],
+                        cluster_ids=redis_filters["ids"]
+                    )
             except Exception as e:
                 result['redis'] = {'error': str(e)}
 
-        # Network (using dedicated provider)
-        try:
-            if self.network_provider:
-                result['network'] = self.network_provider.get_network_info(env)
-        except Exception as e:
-            result['network'] = {'error': str(e)}
+        # Network (using dedicated provider with tag-based discovery)
+        # For EKS, also get VPC ID from cluster for more reliable discovery
+        if should_fetch('network') and (network_filters["ids"] or network_filters["tags"]):
+            eks_vpc_id = None
+            if orchestrator_type == 'eks':
+                try:
+                    orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
+                    if hasattr(orchestrator, 'get_infrastructure'):
+                        eks_infra = orchestrator.get_infrastructure(env)
+                        if eks_infra and 'network' in eks_infra:
+                            eks_vpc_id = eks_infra['network'].get('vpcId')
+                except Exception as e:
+                    print(f"Failed to get VPC ID from EKS cluster: {e}")
+
+            try:
+                if self.network_provider:
+                    vpc_id = network_filters["ids"][0] if network_filters["ids"] else eks_vpc_id
+                    result['network'] = self.network_provider.get_network_info(
+                        env,
+                        vpc_id=vpc_id,
+                        discovery_tags=network_filters["tags"]
+                    )
+            except Exception as e:
+                result['network'] = {'error': str(e)}
 
         # Add 'services' alias for backward compatibility with frontend
         # Frontend components use data.services, unified backend uses workloads
-        result['services'] = result['workloads']
+        if should_fetch('workloads'):
+            result['services'] = result['workloads']
 
         return result
 
@@ -339,150 +455,6 @@ class InfrastructureAggregator:
 
         return result
 
-    def _get_cloudfront_for_infrastructure(self, env: str, domain_suffix: str, account_id: str, domain_prefixes: list = None) -> dict:
-        """Get CloudFront distribution info with precise filtering
-
-        Args:
-            env: Environment name
-            domain_suffix: e.g., 'staging.example.com'
-            account_id: AWS account ID
-            domain_prefixes: List of domain prefixes to match (e.g., ['fr', 'back', 'cms'])
-        """
-        env_config = self.config.get_environment(self.project, env)
-        cloudfront = get_cross_account_client('cloudfront', account_id, project=self.project, env=env)
-
-        distributions = cloudfront.list_distributions()
-        for dist in distributions.get('DistributionList', {}).get('Items', []):
-            aliases = dist.get('Aliases', {}).get('Items', [])
-
-            # If domain_prefixes provided, match precisely; otherwise use broad matching
-            if domain_prefixes:
-                expected_aliases = [f"{prefix}.{domain_suffix}" for prefix in domain_prefixes]
-                if not any(alias in expected_aliases for alias in aliases):
-                    continue
-            elif not any(domain_suffix in alias for alias in aliases):
-                continue
-
-            dist_id = dist['Id']
-            cf_info = {
-                'id': dist_id,
-                'domainName': dist['DomainName'],
-                'aliases': aliases,
-                'status': dist['Status'],
-                'enabled': dist['Enabled'],
-                'origins': [],
-                'cacheBehaviors': [],
-                'webAclId': None,
-                'consoleUrl': build_sso_console_url(
-                    self.config.sso_portal_url, account_id,
-                    f"https://console.aws.amazon.com/cloudfront/v4/home#/distributions/{dist_id}"
-                )
-            }
-
-            for origin in dist.get('Origins', {}).get('Items', []):
-                origin_domain = origin['DomainName']
-                origin_type = 'alb' if 'elb.amazonaws.com' in origin_domain else 's3' if 's3.' in origin_domain else 'custom'
-                cf_info['origins'].append({
-                    'id': origin['Id'],
-                    'domainName': origin_domain,
-                    'type': origin_type,
-                    'path': origin.get('OriginPath', '')
-                })
-
-            try:
-                dist_config = cloudfront.get_distribution(Id=dist_id)
-                dist_detail = dist_config.get('Distribution', {}).get('DistributionConfig', {})
-                cf_info['webAclId'] = dist_detail.get('WebACLId', '') or None
-
-                default_behavior = dist_detail.get('DefaultCacheBehavior', {})
-                if default_behavior:
-                    cf_info['cacheBehaviors'].append({
-                        'pathPattern': 'Default (*)',
-                        'targetOriginId': default_behavior.get('TargetOriginId'),
-                        'viewerProtocolPolicy': default_behavior.get('ViewerProtocolPolicy'),
-                        'defaultTTL': default_behavior.get('DefaultTTL', 0),
-                        'compress': default_behavior.get('Compress', False),
-                        'lambdaEdge': len(default_behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
-                    })
-
-                for behavior in dist_detail.get('CacheBehaviors', {}).get('Items', []):
-                    cf_info['cacheBehaviors'].append({
-                        'pathPattern': behavior.get('PathPattern'),
-                        'targetOriginId': behavior.get('TargetOriginId'),
-                        'viewerProtocolPolicy': behavior.get('ViewerProtocolPolicy'),
-                        'defaultTTL': behavior.get('DefaultTTL', 0),
-                        'compress': behavior.get('Compress', False),
-                        'lambdaEdge': len(behavior.get('LambdaFunctionAssociations', {}).get('Items', [])) > 0
-                    })
-            except:
-                pass
-            return cf_info
-        return None
-
-    def _get_rds_for_infrastructure(self, env: str, account_id: str, discovery_tags: dict = None, databases: list = None) -> dict:
-        """Get RDS database info (filtered by discovery_tags and database type)"""
-        env_config = self.config.get_environment(self.project, env)
-        rds = get_cross_account_client('rds', account_id, env_config.region, project=self.project, env=env)
-        databases = databases or ['postgres']
-
-        db_instances = rds.describe_db_instances()
-        for db in db_instances.get('DBInstances', []):
-            db_id = db['DBInstanceIdentifier']
-            db_engine = db['Engine'].lower()
-
-            # Check if this database type is in our requested list
-            engine_matches = False
-            for db_type in databases:
-                if db_type.lower() in db_engine or db_engine in db_type.lower():
-                    engine_matches = True
-                    break
-            if not engine_matches:
-                continue
-
-            # Get RDS tags and check if they match discovery_tags
-            try:
-                db_arn = db['DBInstanceArn']
-                tag_response = rds.list_tags_for_resource(ResourceName=db_arn)
-                db_tags = tag_response.get('TagList', [])
-            except Exception:
-                db_tags = []
-
-            # Check if discovery_tags match (or fallback to name-based matching)
-            from providers.infrastructure.elasticache import matches_discovery_tags
-            tags_match = matches_discovery_tags(db_tags, discovery_tags) if discovery_tags else (self.project in db_id and env in db_id)
-
-            if tags_match:
-                return {
-                    'identifier': db_id,
-                    'engine': db['Engine'],
-                    'engineVersion': db['EngineVersion'],
-                    'instanceClass': db['DBInstanceClass'],
-                    'status': db['DBInstanceStatus'],
-                    'endpoint': db.get('Endpoint', {}).get('Address'),
-                    'port': db.get('Endpoint', {}).get('Port'),
-                    'storage': {
-                        'allocated': db.get('AllocatedStorage'),
-                        'type': db.get('StorageType'),
-                        'iops': db.get('Iops'),
-                        'encrypted': db.get('StorageEncrypted', False)
-                    },
-                    'multiAz': db.get('MultiAZ', False),
-                    'availabilityZone': db.get('AvailabilityZone'),
-                    'dbName': db.get('DBName'),
-                    'masterUsername': db.get('MasterUsername'),
-                    'backupRetention': db.get('BackupRetentionPeriod'),
-                    'preferredBackupWindow': db.get('PreferredBackupWindow'),
-                    'preferredMaintenanceWindow': db.get('PreferredMaintenanceWindow'),
-                    'publiclyAccessible': db.get('PubliclyAccessible', False),
-                    'securityGroups': [sg['VpcSecurityGroupId'] for sg in db.get('VpcSecurityGroups', [])],
-                    'parameterGroup': db.get('DBParameterGroups', [{}])[0].get('DBParameterGroupName') if db.get('DBParameterGroups') else None,
-                    'consoleUrl': build_sso_console_url(
-                        self.config.sso_portal_url, account_id,
-                        f"https://{self.region}.console.aws.amazon.com/rds/home?region={self.region}#database:id={db_id};is-cluster=false"
-                    )
-                }
-        return None
-
     def _format_capacity(self, bytes_value: int) -> str:
         """Format bytes to human-readable capacity."""
         if bytes_value >= 1024**4:
@@ -495,22 +467,30 @@ class InfrastructureAggregator:
             return f"{bytes_value / 1024:.0f}Ki"
         return f"{bytes_value}"
 
-    def _get_efs_for_infrastructure(self, env: str, account_id: str, discovery_tags: dict = None) -> dict:
-        """Get EFS filesystem info (filtered by discovery_tags)
+    def _get_efs_for_infrastructure(self, env: str, account_id: str,
+                                    ids: Optional[List[str]] = None,
+                                    discovery_tags: dict = None) -> dict:
+        """Get EFS filesystem info (filtered by IDs or tags)
 
         Args:
             env: Environment name
             account_id: AWS account ID
+            ids: Optional list of EFS fileSystemIds to match
             discovery_tags: Dict of tags to filter EFS filesystems
         """
         env_config = self.config.get_environment(self.project, env)
         efs = get_cross_account_client('efs', account_id, env_config.region, project=self.project, env=env)
+        if not ids and not discovery_tags:
+            return None
 
         try:
             filesystems = efs.describe_file_systems()
             for fs in filesystems.get('FileSystems', []):
                 fs_id = fs['FileSystemId']
                 fs_name = fs.get('Name', fs_id)
+
+                if ids and fs_id not in ids:
+                    continue
 
                 # Get EFS tags
                 try:
@@ -519,9 +499,9 @@ class InfrastructureAggregator:
                 except Exception:
                     fs_tags = []
 
-                # Check if discovery_tags match (or fallback to name-based matching)
+                # Check if discovery_tags match
                 from providers.infrastructure.elasticache import matches_discovery_tags
-                tags_match = matches_discovery_tags(fs_tags, discovery_tags) if discovery_tags else (self.project.replace('-', '') in fs_name.lower().replace('-', ''))
+                tags_match = matches_discovery_tags(fs_tags, discovery_tags) if discovery_tags else True
 
                 if tags_match:
                     return {
@@ -542,15 +522,36 @@ class InfrastructureAggregator:
         except Exception as e:
             return {'error': str(e)}
 
-    def get_routing_details(self, env: str, service_security_groups: list = None) -> dict:
+    def get_routing_details(self, env: str, service_security_groups: list = None,
+                            vpc_id: str = None, discovery_tags: dict = None) -> dict:
         """Get detailed routing and security information (called on demand via toggle)
 
         Args:
             env: Environment name
             service_security_groups: List of security group IDs to filter (only show SGs associated with services)
+            vpc_id: Optional VPC ID (from previous get_infrastructure call or EKS cluster)
+            discovery_tags: Optional tags for VPC discovery
         """
+        # For EKS, try to get VPC ID from cluster if not provided
+        if not vpc_id:
+            orchestrator_type = getattr(self.config.orchestrator, 'type', 'ecs') if self.config.orchestrator else 'ecs'
+            if orchestrator_type == 'eks':
+                try:
+                    orchestrator = ProviderFactory.get_orchestrator_provider(self.config, self.project)
+                    if hasattr(orchestrator, 'get_infrastructure'):
+                        eks_infra = orchestrator.get_infrastructure(env)
+                        if eks_infra and 'network' in eks_infra:
+                            vpc_id = eks_infra['network'].get('vpcId')
+                except Exception as e:
+                    print(f"Failed to get VPC ID from EKS cluster for routing: {e}")
+
         if self.network_provider:
-            return self.network_provider.get_routing_details(env, service_security_groups)
+            return self.network_provider.get_routing_details(
+                env,
+                service_security_groups,
+                vpc_id=vpc_id,
+                discovery_tags=discovery_tags
+            )
         return {'error': 'Network provider not available'}
 
     def get_enis(self, env: str, vpc_id: str = None, subnet_id: str = None, search_ip: str = None) -> dict:

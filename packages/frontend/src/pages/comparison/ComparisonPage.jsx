@@ -18,9 +18,9 @@ import ReadinessView from '../../components/comparison/ReadinessView';
 
 // View modes
 const VIEW_MODES = {
-  simple: { id: 'simple', label: 'Simple', icon: LayoutGrid, description: 'Vue simplifiée' },
-  technical: { id: 'technical', label: 'Technique', icon: List, description: 'Vue détaillée' },
-  readiness: { id: 'readiness', label: 'Readiness', icon: GitBranch, description: 'Status environnement' },
+  simple: { id: 'simple', label: 'Simple', icon: LayoutGrid, description: 'Simplified view' },
+  technical: { id: 'technical', label: 'Technical', icon: List, description: 'Detailed view' },
+  readiness: { id: 'readiness', label: 'Readiness', icon: GitBranch, description: 'Environment status' },
 };
 
 /**

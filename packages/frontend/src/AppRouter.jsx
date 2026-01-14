@@ -18,6 +18,19 @@ import Login from './pages/Login';
 import HomeDashboard from './pages/HomeDashboard';
 import ComparisonPage from './pages/comparison/ComparisonPage';
 
+// Admin Pages
+import AdminLayout from './pages/admin/AdminLayout';
+import ConfigDashboard from './pages/admin/ConfigDashboard';
+import SettingsPage from './pages/admin/SettingsPage';
+import ProjectsPage from './pages/admin/ProjectsPage';
+import ProjectForm from './pages/admin/ProjectForm';
+import EnvironmentsPage from './pages/admin/EnvironmentsPage';
+import EnvironmentForm from './pages/admin/EnvironmentForm';
+import ClustersPage from './pages/admin/ClustersPage';
+import ClusterForm from './pages/admin/ClusterForm';
+import AccountsPage from './pages/admin/AccountsPage';
+import AccountForm from './pages/admin/AccountForm';
+
 /**
  * Loading screen
  */
@@ -47,6 +60,29 @@ function ProtectedRoute({ children }) {
     const returnUrl = window.location.pathname + window.location.search;
     window.location.href = '/login?returnUrl=' + encodeURIComponent(returnUrl);
     return null;
+  }
+
+  return children;
+}
+
+/**
+ * Admin Route wrapper - requires authentication + global admin role
+ */
+function AdminRoute({ children }) {
+  const { isAuthenticated, isLoading, isGlobalAdmin } = useAuth();
+
+  if (isLoading) {
+    return <LoadingScreen />;
+  }
+
+  if (!isAuthenticated) {
+    const returnUrl = window.location.pathname + window.location.search;
+    window.location.href = '/login?returnUrl=' + encodeURIComponent(returnUrl);
+    return null;
+  }
+
+  if (!isGlobalAdmin()) {
+    return <Navigate to="/403" replace />;
   }
 
   return children;
@@ -117,6 +153,39 @@ export default function AppRouter() {
               <Route path="/auth/device" element={<DeviceAuth />} />
               <Route path="/403" element={<PermissionDenied />} />
               <Route path="/permission-denied" element={<PermissionDenied />} />
+
+              {/* Admin routes - no Shell, uses AdminLayout, requires global admin */}
+              <Route
+                path="/admin"
+                element={
+                  <AdminRoute>
+                    <Navigate to="/admin/config" replace />
+                  </AdminRoute>
+                }
+              />
+              <Route
+                path="/admin/config"
+                element={
+                  <AdminRoute>
+                    <AdminLayout />
+                  </AdminRoute>
+                }
+              >
+                <Route index element={<ConfigDashboard />} />
+                <Route path="settings" element={<SettingsPage />} />
+                <Route path="projects" element={<ProjectsPage />} />
+                <Route path="projects/new" element={<ProjectForm />} />
+                <Route path="projects/:projectId" element={<ProjectForm />} />
+                <Route path="projects/:projectId/environments" element={<EnvironmentsPage />} />
+                <Route path="projects/:projectId/environments/new" element={<EnvironmentForm />} />
+                <Route path="projects/:projectId/environments/:envId" element={<EnvironmentForm />} />
+                <Route path="clusters" element={<ClustersPage />} />
+                <Route path="clusters/new" element={<ClusterForm />} />
+                <Route path="clusters/:clusterId" element={<ClusterForm />} />
+                <Route path="accounts" element={<AccountsPage />} />
+                <Route path="accounts/new" element={<AccountForm />} />
+                <Route path="accounts/:accountId" element={<AccountForm />} />
+              </Route>
 
               {/* Protected routes with Shell */}
               {/* Comparison view */}

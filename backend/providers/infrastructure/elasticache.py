@@ -2,7 +2,7 @@
 AWS ElastiCache Provider implementation.
 """
 
-from typing import List, Optional
+from typing import List
 
 from providers.base import CacheProvider, ProviderFactory
 from app_config import DashboardConfig
@@ -57,13 +57,18 @@ class ElastiCacheProvider(CacheProvider):
             project=self.project, env=env
         )
 
-    def get_cache_cluster(self, env: str, discovery_tags: dict = None, cache_types: List[str] = None) -> dict:
-        """Get ElastiCache Redis/Valkey info (filtered by discovery_tags and cache type)
+    def get_cache_cluster(
+        self,
+        env: str,
+        discovery_tags: dict = None,
+        cluster_ids: List[str] = None,
+    ) -> dict:
+        """Get ElastiCache Redis/Valkey info (filtered by ids or tags)
 
         Args:
             env: Environment name
             discovery_tags: Dict of {tag_key: tag_value} to filter resources
-            cache_types: List of cache types to look for (e.g., ["redis", "valkey"])
+            cluster_ids: Explicit cache cluster IDs to match
         """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
@@ -71,22 +76,15 @@ class ElastiCacheProvider(CacheProvider):
 
         account_id = env_config.account_id
         elasticache = self._get_elasticache_client(env)
-        cache_types = cache_types or ['redis']
+
+        if not cluster_ids and not discovery_tags:
+            return None
 
         try:
             clusters = elasticache.describe_cache_clusters(ShowCacheNodeInfo=True)
             for cluster in clusters.get('CacheClusters', []):
                 cluster_id = cluster['CacheClusterId']
-                cache_engine = cluster['Engine'].lower()
-
-                # Check if this cache type is in our requested list
-                engine_matches = False
-                for cache_type in cache_types:
-                    if cache_type.lower() in cache_engine or cache_engine in cache_type.lower() or \
-                       (cache_type.lower() == 'redis' and cache_engine == 'valkey'):
-                        engine_matches = True
-                        break
-                if not engine_matches:
+                if cluster_ids and cluster_id not in cluster_ids:
                     continue
 
                 # Get ElastiCache tags and check if they match discovery_tags
@@ -97,11 +95,12 @@ class ElastiCacheProvider(CacheProvider):
                 except Exception:
                     cache_tags = []
 
-                # Check if discovery_tags match (or fallback to name-based matching)
-                tags_match = matches_discovery_tags(cache_tags, discovery_tags) if discovery_tags else (self.project in cluster_id and env in cluster_id)
-
-                if not tags_match:
-                    continue
+                if cluster_ids:
+                    tags_match = True
+                else:
+                    tags_match = matches_discovery_tags(cache_tags, discovery_tags)
+                    if not tags_match:
+                        continue
 
                 # Get replication group info if available
                 repl_group_id = cluster.get('ReplicationGroupId')

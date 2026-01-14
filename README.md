@@ -222,7 +222,10 @@ SSO users automatically exchange their session for a Bearer token on first load,
     "environments": ["staging", "production"],
     "services": ["backend", "frontend", "api"],
     "infrastructure": {
-      "discoveryTags": { "Project": "my-project" }
+      "defaultTags": { "Project": "my-project" },
+      "resources": {
+        "rds": { "ids": ["my-db"], "tags": {} }
+      }
     }
   }]
 }

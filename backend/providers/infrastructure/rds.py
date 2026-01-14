@@ -2,9 +2,9 @@
 AWS RDS Database Provider implementation.
 
 Supports:
-- Tag-based discovery (EKS/NewHorizon style)
+- Explicit identifiers
+- Tag-based discovery
 - Aurora clusters and DB instances
-- Name-based discovery (legacy style)
 """
 
 from typing import Optional, Dict, List
@@ -19,9 +19,8 @@ class RDSProvider(DatabaseProvider):
     AWS RDS implementation of the database provider.
 
     Discovery order:
-    1. If discovery_tags provided, find DB/cluster by tags
-    2. Pattern-based: {project}-{env} or {project}...{env}
-    3. Aurora clusters first, then DB instances
+    1. Explicit identifiers (clusters, then instances)
+    2. Tag-based discovery (clusters, then instances)
     """
 
     def __init__(self, config: DashboardConfig, project: str):
@@ -77,17 +76,28 @@ class RDSProvider(DatabaseProvider):
         return arn.split(':')[-1]
 
     def get_database_status(self, env: str, discovery_tags: Dict[str, str] = None,
-                           database_types: List[str] = None) -> dict:
+                           identifiers: Optional[List[str]] = None) -> dict:
         """Get RDS database status for an environment
 
         Args:
             env: Environment name
             discovery_tags: Dict of tags to find database (e.g., {'rubix_Environment': 'stg'})
-            database_types: List of database types to look for (e.g., ['aurora-mysql', 'postgres'])
+            identifiers: Optional list of DB instance/cluster identifiers to match
         """
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
+
+        if not identifiers and not discovery_tags:
+            infra = env_config.infrastructure if hasattr(env_config, "infrastructure") else None
+            if infra:
+                rds_cfg = (infra.resources or {}).get("rds")
+                if rds_cfg and rds_cfg.ids:
+                    identifiers = rds_cfg.ids
+                if rds_cfg and rds_cfg.tags:
+                    discovery_tags = rds_cfg.tags
+                elif infra.default_tags:
+                    discovery_tags = infra.default_tags
 
         region = env_config.region
         account_id = env_config.account_id
@@ -96,9 +106,21 @@ class RDSProvider(DatabaseProvider):
             rds = self._get_rds_client(env)
             discovery_method = None
 
-            # 1. Try tag-based discovery for Aurora clusters first
+            # 1. Try explicit identifiers for Aurora clusters first
             cluster = None
-            if discovery_tags:
+            if identifiers:
+                for cluster_id in identifiers:
+                    try:
+                        response = rds.describe_db_clusters(DBClusterIdentifier=cluster_id)
+                        if response.get('DBClusters'):
+                            cluster = response['DBClusters'][0]
+                            discovery_method = 'id'
+                            break
+                    except Exception:
+                        continue
+
+            # 2. Try tag-based discovery for Aurora clusters
+            if not cluster and discovery_tags:
                 cluster_arn = self._find_by_tags(env, discovery_tags, 'cluster')
                 if cluster_arn:
                     cluster_id = self._extract_identifier_from_arn(cluster_arn)
@@ -107,26 +129,8 @@ class RDSProvider(DatabaseProvider):
                         if response.get('DBClusters'):
                             cluster = response['DBClusters'][0]
                             discovery_method = 'tags'
-                    except:
+                    except Exception:
                         pass
-
-            # 2. Try pattern-based discovery for clusters
-            if not cluster:
-                try:
-                    clusters = rds.describe_db_clusters()
-                    db_identifier = self.config.get_db_identifier(self.project, env)
-
-                    for c in clusters.get('DBClusters', []):
-                        cluster_id = c['DBClusterIdentifier']
-                        # Match by exact name or pattern
-                        if cluster_id == db_identifier or \
-                           (self.project.replace('-', '') in cluster_id.replace('-', '') and
-                            env.replace('-', '') in cluster_id.replace('-', '')):
-                            cluster = c
-                            discovery_method = 'naming'
-                            break
-                except:
-                    pass
 
             # If we found a cluster, return cluster info
             if cluster:
@@ -182,9 +186,21 @@ class RDSProvider(DatabaseProvider):
                     'accountId': account_id
                 }
 
-            # 3. Try tag-based discovery for standalone DB instances
+            # 3. Try explicit identifiers for standalone DB instances
             db_instance = None
-            if discovery_tags and not cluster:
+            if identifiers and not cluster:
+                for db_id in identifiers:
+                    try:
+                        response = rds.describe_db_instances(DBInstanceIdentifier=db_id)
+                        if response.get('DBInstances'):
+                            db_instance = response['DBInstances'][0]
+                            discovery_method = 'id'
+                            break
+                    except Exception:
+                        continue
+
+            # 4. Try tag-based discovery for standalone DB instances
+            if not db_instance and discovery_tags and not cluster:
                 db_arn = self._find_by_tags(env, discovery_tags, 'db')
                 if db_arn:
                     db_id = self._extract_identifier_from_arn(db_arn)
@@ -193,26 +209,8 @@ class RDSProvider(DatabaseProvider):
                         if response.get('DBInstances'):
                             db_instance = response['DBInstances'][0]
                             discovery_method = 'tags'
-                    except:
+                    except Exception:
                         pass
-
-            # 4. Pattern-based discovery for standalone instances
-            if not db_instance:
-                db_identifier = self.config.get_db_identifier(self.project, env)
-                db_instances = rds.describe_db_instances()
-
-                for db in db_instances.get('DBInstances', []):
-                    db_id = db['DBInstanceIdentifier']
-                    # Skip instances that belong to a cluster
-                    if db.get('DBClusterIdentifier'):
-                        continue
-                    # Match by pattern or exact name
-                    if db_id == db_identifier or \
-                       (self.project.replace('-', '') in db_id.replace('-', '') and
-                        env.replace('-', '') in db_id.replace('-', '')):
-                        db_instance = db
-                        discovery_method = 'naming'
-                        break
 
             if db_instance:
                 return {

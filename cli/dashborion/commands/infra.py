@@ -41,23 +41,24 @@ def _get_collector(ctx, env: Optional[str] = None):
 @click.option('--env', '-e', help='Environment name (default: from context)')
 @click.option('--resource', '-r', type=click.Choice(['all', 'alb', 'rds', 'redis', 'cloudfront', 'vpc']),
               default='all', help='Resource type to show')
+@click.option('--force', 'force_refresh', is_flag=True, help='Bypass API cache')
 @click.pass_obj
-def show_infra(ctx, env: Optional[str], resource: str):
+def show_infra(ctx, env: Optional[str], resource: str, force_refresh: bool):
     """Show infrastructure overview for an environment"""
     formatter = OutputFormatter(ctx.output_format)
 
     try:
         collector, env_config, effective_env = _get_collector(ctx, env)
-        infra_data = collector.get_infrastructure(effective_env)
+        infra_data = collector.get_infrastructure(effective_env, force_refresh=force_refresh)
 
         # Filter resources if requested
         if resource != 'all':
             resource_map = {
-                'alb': 'loadBalancers',
-                'rds': 'databases',
-                'redis': 'caches',
-                'cloudfront': 'distributions',
-                'vpc': 'vpcs'
+                'alb': 'alb',
+                'rds': 'rds',
+                'redis': 'redis',
+                'cloudfront': 'cloudfront',
+                'vpc': 'network'
             }
             key = resource_map.get(resource)
             if key and key in infra_data:
@@ -123,10 +124,13 @@ def show_rds(ctx, env: Optional[str], identifier: Optional[str]):
         if ctx.output_format == 'table':
             table_data = []
             for db in rds_data:
+                instance_class = db.get('instanceClass')
+                if not instance_class and db.get('instances'):
+                    instance_class = db['instances'][0].get('instanceClass')
                 table_data.append({
                     'identifier': db.get('identifier', '-'),
                     'engine': f"{db.get('engine', '-')} {db.get('engineVersion', '')}",
-                    'instance': db.get('instanceClass', '-'),
+                    'instance': instance_class or '-',
                     'status': format_status(db.get('status', 'unknown')),
                     'az': db.get('availabilityZone', '-'),
                 })
@@ -159,7 +163,7 @@ def show_redis(ctx, env: Optional[str]):
                 table_data.append({
                     'id': cache.get('clusterId', cache.get('cluster_id', '-')),
                     'engine': cache.get('engine', 'redis'),
-                    'node_type': cache.get('nodeType', cache.get('node_type', '-')),
+                    'node_type': cache.get('cacheNodeType', cache.get('nodeType', cache.get('node_type', '-'))),
                     'nodes': cache.get('numCacheNodes', cache.get('num_nodes', '-')),
                     'status': format_status(cache.get('status', 'unknown')),
                 })

@@ -125,9 +125,20 @@ export default $config({
     // 6. Lambda functions (config is loaded from DynamoDB via CONFIG_TABLE_NAME)
     const lambdas = createLambdaFunctions(config, naming, tags, tables, frontendDomain, kmsKey);
 
-    // 7. Setup API Gateway authorizer and routes
-    const authorizer = setupAuthorizer(api, lambdas.authorizer);
-    setupRoutes(api, lambdas, authorizer);
+    // 7. Setup API Gateway authorizers and routes
+    const authorizers = {
+      default: setupAuthorizer(api, lambdas.authorizer, {
+        name: "DashborionAuth",
+        ttl: "300 seconds",
+        identitySources: ["$request.header.authorization"],
+      }),
+      session: setupAuthorizer(api, lambdas.authorizer, {
+        name: "DashborionAuthSession",
+        ttl: "0 seconds",
+        identitySources: [],
+      }),
+    };
+    setupRoutes(api, lambdas, authorizers);
 
     // 8. Create DNS record for API (if cross-account)
     if (apiDomain && dnsProvider && apiCertificateArn) {

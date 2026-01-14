@@ -386,22 +386,7 @@ def list_namespaces(ctx, env: Optional[str], context: Optional[str]):
     try:
         collector, env_config, effective_env = _get_collector(ctx, env)
 
-        # Get namespaces via infrastructure endpoint
-        infra = collector.get_infrastructure(effective_env)
-        namespaces = infra.get('namespaces', [])
-
-        if not namespaces:
-            # Fallback: try k8s endpoint if available
-            try:
-                from dashborion.utils.api_client import get_api_client
-                client = get_api_client()
-                project = ctx.project
-                response = client.get(f'/api/{project}/k8s/{effective_env}/namespaces')
-                if response.status_code == 200:
-                    data = response.json()
-                    namespaces = data.get('namespaces', [])
-            except Exception:
-                pass
+        namespaces = collector.get_namespaces(effective_env)
 
         if ctx.output_format == 'table':
             table_data = [{'name': ns} for ns in namespaces]

@@ -21,6 +21,8 @@ import {
   ArrowLeftRight,
   RotateCcw,
   LayoutDashboard,
+  Shield,
+  Edit,
 } from 'lucide-react';
 import { useConfig } from '../ConfigContext';
 import { useAuth } from '../hooks/useAuth';
@@ -150,7 +152,10 @@ function Header({
 }) {
   const auth = useAuth();
   const config = useConfig();
+  const location = useLocation();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const canEditProject = config.currentProjectId && auth.canAdmin(config.currentProjectId);
+  const isAdminRoute = location.pathname.startsWith('/admin');
 
   return (
     <header className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex items-center justify-between sticky top-0 z-50">
@@ -174,6 +179,16 @@ function Header({
         </div>
         <div className="h-6 w-px bg-gray-600"></div>
         <ProjectSelector />
+        {!isAdminRoute && canEditProject && (
+          <Link
+            to={`/admin/config/projects/${config.currentProjectId}`}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-md"
+            title="Edit project settings"
+          >
+            <Edit size={14} />
+            Edit Project
+          </Link>
+        )}
         <div className="h-6 w-px bg-gray-600"></div>
         <ViewNavigation />
       </div>
@@ -277,6 +292,16 @@ function Header({
                   )}
 
                   <div className="py-1">
+                    {auth.isGlobalAdmin() && (
+                      <Link
+                        to="/admin/config"
+                        className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700"
+                        onClick={() => setUserMenuOpen(false)}
+                      >
+                        <Shield size={16} />
+                        Admin
+                      </Link>
+                    )}
                     <Link
                       to="/settings"
                       className="flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700"

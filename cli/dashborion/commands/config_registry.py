@@ -241,6 +241,9 @@ def _migrate_infra_config(old_config: dict) -> dict:
         'awsAccounts': [],
     }
 
+    # Get global orchestrator type (eks/ecs) if defined
+    global_orchestrator_type = old_config.get('orchestrator', {}).get('type', '')
+
     # Migrate crossAccountRoles -> AWS accounts
     for account_id, role_config in old_config.get('crossAccountRoles', {}).items():
         if account_id.startswith('_'):
@@ -273,16 +276,32 @@ def _migrate_infra_config(old_config: dict) -> dict:
         if not isinstance(project_config, dict):
             continue
 
+        # Determine orchestrator type: project-level > global-level
+        project_orchestrator_type = (
+            project_config.get('orchestratorType') or
+            project_config.get('orchestrator', {}).get('type') or
+            global_orchestrator_type
+        )
+
+        # Extract services from topology components (k8s-deployment and k8s-statefulset types)
+        topology = project_config.get('topology', {})
+        topology_services = []
+        for comp_id, comp_config in topology.get('components', {}).items():
+            if isinstance(comp_config, dict) and comp_config.get('type') in ('k8s-deployment', 'k8s-statefulset'):
+                topology_services.append(comp_id)
+
         # Create project
         new_config['projects'].append({
             'projectId': project_id,
             'displayName': project_config.get('displayName', project_id),
             'description': project_config.get('description', ''),
+            'orchestratorType': project_orchestrator_type,  # eks, ecs, or empty
             'status': 'active',
             'idpGroupMapping': project_config.get('idpGroupMapping', {}),
             'features': project_config.get('features', {}),
             'pipelines': project_config.get('pipelines', {}),
-            'topology': project_config.get('topology', {}),
+            'topology': topology,
+            'serviceNaming': project_config.get('serviceNaming', {}),
         })
 
         # Migrate environments
@@ -290,24 +309,40 @@ def _migrate_infra_config(old_config: dict) -> dict:
             if not isinstance(env_config, dict):
                 continue
 
+            # New flat format
+            # - clusterName, namespace (flat)
+            # - services (EKS deployments/statefulsets or ECS services)
+            # - infrastructure.defaultTags/resources (nested)
+            old_infra = env_config.get('infrastructure', {})
+
+            # Services: use env-specific if defined, otherwise inherit from topology
+            env_services = env_config.get('services', [])
+            if not env_services and topology_services:
+                env_services = topology_services.copy()
+
             new_config['environments'].append({
                 'projectId': project_id,
                 'envId': env_id,
                 'displayName': env_config.get('displayName', env_id),
                 'accountId': env_config.get('accountId', ''),
                 'region': env_config.get('region', 'eu-central-1'),
-                'kubernetes': {
-                    'clusterId': env_config.get('clusterId', ''),
-                    'clusterName': env_config.get('clusterName', ''),
-                    'namespace': env_config.get('namespace', ''),
-                },
+                # Flat orchestrator fields
+                'clusterName': env_config.get('clusterName', ''),
+                'namespace': env_config.get('namespace', ''),  # EKS only
+                'services': env_services,                      # EKS deployments or ECS services
+                # Roles
                 'readRoleArn': env_config.get('readRoleArn'),
                 'actionRoleArn': env_config.get('actionRoleArn'),
+                # Status
                 'status': env_config.get('status', 'active'),
                 'enabled': env_config.get('enabled', True),
                 'checkers': env_config.get('checkers', {}),
-                'discoveryTags': env_config.get('discoveryTags', {}),
-                'databases': env_config.get('databases', []),
+                # Infrastructure (nested)
+                'infrastructure': {
+                    'defaultTags': old_infra.get('discoveryTags', env_config.get('discoveryTags', {})),
+                    'domainConfig': old_infra.get('domainConfig', env_config.get('domainConfig', {})),
+                    'resources': {},
+                },
             })
 
     return new_config

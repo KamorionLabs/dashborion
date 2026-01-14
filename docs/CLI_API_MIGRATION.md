@@ -68,10 +68,10 @@ This document provides a complete inventory of CLI commands, their current data 
 | CLI Command | Current Collector | API Endpoint | Status |
 |-------------|------------------|--------------|--------|
 | `infra show -e ENV` | `InfrastructureCollector.get_*()` | `GET /api/{project}/infrastructure/{env}` | **Exists** |
-| `infra alb -e ENV` | `InfrastructureCollector.get_load_balancers()` | `GET /api/{project}/infrastructure/{env}?resources=alb` | Partial |
-| `infra rds -e ENV` | `InfrastructureCollector.get_databases()` | `GET /api/{project}/infrastructure/{env}?resources=rds` | Partial |
-| `infra redis -e ENV` | `InfrastructureCollector.get_caches()` | `GET /api/{project}/infrastructure/{env}?resources=redis` | Partial |
-| `infra cloudfront -e ENV` | `InfrastructureCollector.get_cloudfront_distributions()` | `GET /api/{project}/infrastructure/{env}?resources=cloudfront` | Partial |
+| `infra alb -e ENV` | `InfrastructureCollector.get_load_balancers()` | `GET /api/{project}/infrastructure/{env}/alb` | Partial |
+| `infra rds -e ENV` | `InfrastructureCollector.get_databases()` | `GET /api/{project}/infrastructure/{env}/rds` | Partial |
+| `infra redis -e ENV` | `InfrastructureCollector.get_caches()` | `GET /api/{project}/infrastructure/{env}/redis` | Partial |
+| `infra cloudfront -e ENV` | `InfrastructureCollector.get_cloudfront_distributions()` | `GET /api/{project}/infrastructure/{env}/cloudfront` | Partial |
 | `infra network -e ENV` | `InfrastructureCollector.get_network_topology()` | `GET /api/{project}/infrastructure/{env}/routing` | **Exists** |
 | `infra security-groups -e ENV` | `InfrastructureCollector.get_security_groups()` | `GET /api/{project}/infrastructure/{env}/security-group/{sg_id}` | **Exists** |
 

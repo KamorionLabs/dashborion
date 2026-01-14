@@ -251,13 +251,32 @@ def update_settings(body: Dict, actor: str) -> Dict:
 # =============================================================================
 
 def list_projects() -> Dict:
-    """List all projects."""
+    """List all projects with environment counts."""
     table = _get_table()
     response = table.query(
         KeyConditionExpression=Key('pk').eq('PROJECT')
     )
-    items = [_decimal_to_native(item) for item in response.get('Items', [])]
-    return json_response(200, {'projects': items})
+    projects = [_decimal_to_native(item) for item in response.get('Items', [])]
+
+    # Count environments for each project
+    env_response = table.query(
+        KeyConditionExpression=Key('pk').eq('ENV')
+    )
+    env_items = env_response.get('Items', [])
+
+    # Build count map: projectId -> count
+    env_counts = {}
+    for env in env_items:
+        project_id = env.get('projectId')
+        if project_id:
+            env_counts[project_id] = env_counts.get(project_id, 0) + 1
+
+    # Add environmentCount to each project
+    for project in projects:
+        project_id = project.get('projectId')
+        project['environmentCount'] = env_counts.get(project_id, 0)
+
+    return json_response(200, {'projects': projects})
 
 
 def get_project(project_id: str) -> Dict:
@@ -291,10 +310,12 @@ def create_project(body: Dict, actor: str) -> Dict:
         'displayName': body.get('displayName', project_id),
         'description': body.get('description', ''),
         'status': body.get('status', 'active'),
+        'orchestratorType': body.get('orchestratorType', ''),  # eks, ecs, or empty
         'idpGroupMapping': body.get('idpGroupMapping', {}),
         'features': body.get('features', {}),
         'pipelines': body.get('pipelines', {}),
         'topology': body.get('topology', {}),
+        'serviceNaming': body.get('serviceNaming', {}),
         'updatedAt': now,
         'updatedBy': actor,
         'version': 1,
@@ -322,10 +343,12 @@ def update_project(project_id: str, body: Dict, actor: str) -> Dict:
         'displayName': body.get('displayName', existing.get('displayName')),
         'description': body.get('description', existing.get('description', '')),
         'status': body.get('status', existing.get('status')),
+        'orchestratorType': body.get('orchestratorType', existing.get('orchestratorType', '')),
         'idpGroupMapping': body.get('idpGroupMapping', existing.get('idpGroupMapping', {})),
         'features': body.get('features', existing.get('features', {})),
         'pipelines': body.get('pipelines', existing.get('pipelines', {})),
         'topology': body.get('topology', existing.get('topology', {})),
+        'serviceNaming': body.get('serviceNaming', existing.get('serviceNaming', {})),
         'updatedAt': now,
         'updatedBy': actor,
         'version': version,
@@ -404,14 +427,16 @@ def create_environment(project_id: str, body: Dict, actor: str) -> Dict:
         'displayName': body.get('displayName', env_id),
         'accountId': body.get('accountId', ''),
         'region': body.get('region', 'eu-central-1'),
-        'kubernetes': body.get('kubernetes', {}),
+        'clusterName': body.get('clusterName', ''),
+        'namespace': body.get('namespace', ''),
+        'services': body.get('services', []),
         'readRoleArn': body.get('readRoleArn'),
         'actionRoleArn': body.get('actionRoleArn'),
         'status': body.get('status', 'planned'),
         'enabled': body.get('enabled', True),
         'checkers': body.get('checkers', {}),
-        'discoveryTags': body.get('discoveryTags', {}),
-        'databases': body.get('databases', []),
+        'infrastructure': body.get('infrastructure', {}),
+        'topology': body.get('topology', {}),
         'updatedAt': now,
         'updatedBy': actor,
         'version': 1,
@@ -441,14 +466,16 @@ def update_environment(project_id: str, env_id: str, body: Dict, actor: str) -> 
         'displayName': body.get('displayName', existing.get('displayName')),
         'accountId': body.get('accountId', existing.get('accountId', '')),
         'region': body.get('region', existing.get('region', 'eu-central-1')),
-        'kubernetes': body.get('kubernetes', existing.get('kubernetes', {})),
+        'clusterName': body.get('clusterName', existing.get('clusterName', '')),
+        'namespace': body.get('namespace', existing.get('namespace', '')),
+        'services': body.get('services', existing.get('services', [])),
         'readRoleArn': body.get('readRoleArn', existing.get('readRoleArn')),
         'actionRoleArn': body.get('actionRoleArn', existing.get('actionRoleArn')),
         'status': body.get('status', existing.get('status')),
         'enabled': body.get('enabled', existing.get('enabled', True)),
         'checkers': body.get('checkers', existing.get('checkers', {})),
-        'discoveryTags': body.get('discoveryTags', existing.get('discoveryTags', {})),
-        'databases': body.get('databases', existing.get('databases', [])),
+        'infrastructure': body.get('infrastructure', existing.get('infrastructure', {})),
+        'topology': body.get('topology', existing.get('topology', {})),
         'updatedAt': now,
         'updatedBy': actor,
         'version': version,
@@ -536,6 +563,9 @@ def create_cluster(body: Dict, actor: str) -> Dict:
     now = _now_iso()
     sk = f'cluster:{cluster_id}'
 
+    account_id = body.get('awsAccountId') or body.get('accountId', '')
+    cluster_name = body.get('clusterName') or body.get('name', cluster_id)
+
     # Check if exists
     existing = table.get_item(Key={'pk': 'GLOBAL', 'sk': sk}).get('Item')
     if existing:
@@ -545,10 +575,13 @@ def create_cluster(body: Dict, actor: str) -> Dict:
         'pk': 'GLOBAL',
         'sk': sk,
         'clusterId': cluster_id,
-        'name': body.get('name', cluster_id),
+        'name': cluster_name,
+        'clusterName': cluster_name,
         'displayName': body.get('displayName', cluster_id),
         'region': body.get('region', 'eu-central-1'),
-        'accountId': body.get('accountId', ''),
+        'accountId': account_id,
+        'awsAccountId': account_id,
+        'type': body.get('type', ''),
         'version': body.get('version', ''),
         'updatedAt': now,
         'updatedBy': actor,
@@ -568,14 +601,20 @@ def update_cluster(cluster_id: str, body: Dict, actor: str) -> Dict:
     if not existing:
         return error_response('not_found', f'Cluster {cluster_id} not found', 404)
 
+    account_id = body.get('awsAccountId') or body.get('accountId', existing.get('accountId', ''))
+    cluster_name = body.get('clusterName') or body.get('name', existing.get('name', cluster_id))
+
     item = {
         'pk': 'GLOBAL',
         'sk': sk,
         'clusterId': cluster_id,
-        'name': body.get('name', existing.get('name')),
+        'name': cluster_name,
+        'clusterName': cluster_name,
         'displayName': body.get('displayName', existing.get('displayName')),
         'region': body.get('region', existing.get('region', 'eu-central-1')),
-        'accountId': body.get('accountId', existing.get('accountId', '')),
+        'accountId': account_id,
+        'awsAccountId': account_id,
+        'type': body.get('type', existing.get('type', '')),
         'version': body.get('version', existing.get('version', '')),
         'updatedAt': now,
         'updatedBy': actor,
@@ -912,6 +951,7 @@ def migrate_from_json(body: Dict, actor: str) -> Dict:
             'features': project_config.get('features', {}),
             'pipelines': project_config.get('pipelines', {}),
             'topology': project_config.get('topology', {}),
+            'serviceNaming': project_config.get('serviceNaming', {}),
             'updatedAt': now,
             'updatedBy': actor,
             'version': 1,
@@ -924,6 +964,11 @@ def migrate_from_json(body: Dict, actor: str) -> Dict:
             if not isinstance(env_config, dict):
                 continue
 
+            # Handle infrastructure nested or flat format (legacy migration)
+            infra = env_config.get('infrastructure', {})
+            discovery_tags = infra.get('discoveryTags', env_config.get('discoveryTags', {}))
+            domain_config = infra.get('domainConfig', env_config.get('domainConfig'))
+
             env = {
                 'pk': 'ENV',
                 'sk': f'{project_id}#{env_id}',
@@ -932,18 +977,19 @@ def migrate_from_json(body: Dict, actor: str) -> Dict:
                 'displayName': env_config.get('displayName', env_id),
                 'accountId': env_config.get('accountId', ''),
                 'region': env_config.get('region', 'eu-central-1'),
-                'kubernetes': {
-                    'clusterId': env_config.get('clusterId', ''),
-                    'clusterName': env_config.get('clusterName', ''),
-                    'namespace': env_config.get('namespace', ''),
-                },
+                'clusterName': env_config.get('clusterName', ''),
+                'namespace': env_config.get('namespace', ''),
+                'services': env_config.get('services', []),
                 'readRoleArn': env_config.get('readRoleArn'),
                 'actionRoleArn': env_config.get('actionRoleArn'),
                 'status': env_config.get('status', 'active'),
                 'enabled': env_config.get('enabled', True),
                 'checkers': env_config.get('checkers', {}),
-                'discoveryTags': env_config.get('discoveryTags', {}),
-                'databases': env_config.get('databases', []),
+                'infrastructure': {
+                    'defaultTags': discovery_tags,
+                    'domainConfig': domain_config,
+                    'resources': {},
+                },
                 'updatedAt': now,
                 'updatedBy': actor,
                 'version': 1,
@@ -991,7 +1037,9 @@ def resolve_config(project_id: str, env_id: str) -> Dict:
         account_response = table.get_item(Key={'pk': 'GLOBAL', 'sk': f'aws-account:{account_id}'})
         account_item = _decimal_to_native(account_response.get('Item', {}))
 
-    # Get cluster
+    # Get cluster - support flat format (clusterName) or legacy (kubernetes.clusterName)
+    cluster_name = env_item.get('clusterName') or env_item.get('kubernetes', {}).get('clusterName', '')
+    namespace = env_item.get('namespace') or env_item.get('kubernetes', {}).get('namespace', '')
     cluster_id = env_item.get('kubernetes', {}).get('clusterId', '')
     cluster_item = {}
     if cluster_id:
@@ -1005,11 +1053,13 @@ def resolve_config(project_id: str, env_id: str) -> Dict:
         'displayName': env_item.get('displayName', env_id),
         'accountId': account_id,
         'region': env_item.get('region', 'eu-central-1'),
-        'clusterName': env_item.get('kubernetes', {}).get('clusterName', cluster_item.get('name', '')),
-        'namespace': env_item.get('kubernetes', {}).get('namespace', ''),
+        'clusterName': cluster_name or cluster_item.get('name', ''),
+        'namespace': namespace,
+        'services': env_item.get('services', []),
         'crossAccountRoleArn': env_item.get('readRoleArn') or account_item.get('readRoleArn', ''),
         'actionRoleArn': env_item.get('actionRoleArn') or account_item.get('actionRoleArn', ''),
         'checkers': env_item.get('checkers', {}),
+        'infrastructure': env_item.get('infrastructure', {}),
         'status': env_item.get('status', 'active'),
         'enabled': env_item.get('enabled', True),
         # Additional context

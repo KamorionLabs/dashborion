@@ -415,8 +415,13 @@ class DatabaseProvider(ABC):
     """
 
     @abstractmethod
-    def get_database_status(self, env: str) -> dict:
-        """Get database status for an environment"""
+    def get_database_status(
+        self,
+        env: str,
+        discovery_tags: Optional[Dict[str, str]] = None,
+        identifiers: Optional[List[str]] = None,
+    ) -> dict:
+        """Get database status for an environment (filter by ids/tags)"""
         pass
 
     @abstractmethod
@@ -437,8 +442,14 @@ class CDNProvider(ABC):
     """
 
     @abstractmethod
-    def get_distribution(self, env: str) -> dict:
-        """Get CDN distribution information"""
+    def get_distribution(
+        self,
+        env: str,
+        discovery_tags: Optional[Dict[str, str]] = None,
+        distribution_ids: Optional[List[str]] = None,
+        domain_patterns: Optional[List[str]] = None,
+    ) -> dict:
+        """Get CDN distribution information (filter by ids/tags/domains)"""
         pass
 
     @abstractmethod
@@ -454,12 +465,23 @@ class NetworkProvider(ABC):
     """
 
     @abstractmethod
-    def get_network_info(self, env: str) -> dict:
+    def get_network_info(
+        self,
+        env: str,
+        vpc_id: Optional[str] = None,
+        discovery_tags: Optional[Dict[str, str]] = None,
+    ) -> dict:
         """Get VPC and basic network info (subnets, NAT gateways, connectivity summary)"""
         pass
 
     @abstractmethod
-    def get_routing_details(self, env: str, service_security_groups: List[str] = None) -> dict:
+    def get_routing_details(
+        self,
+        env: str,
+        service_security_groups: Optional[List[str]] = None,
+        vpc_id: Optional[str] = None,
+        discovery_tags: Optional[Dict[str, str]] = None,
+    ) -> dict:
         """Get detailed routing and security info (route tables, peerings, VPN, TGW, SGs, NACLs)"""
         pass
 
@@ -471,7 +493,14 @@ class LoadBalancerProvider(ABC):
     """
 
     @abstractmethod
-    def get_load_balancer(self, env: str, services: List[str] = None) -> dict:
+    def get_load_balancer(
+        self,
+        env: str,
+        services: Optional[List[str]] = None,
+        discovery_tags: Optional[Dict[str, str]] = None,
+        alb_arns: Optional[List[str]] = None,
+        ingress_hostname: Optional[str] = None,
+    ) -> dict:
         """Get load balancer info with target groups filtered by services"""
         pass
 
@@ -483,8 +512,13 @@ class CacheProvider(ABC):
     """
 
     @abstractmethod
-    def get_cache_cluster(self, env: str, discovery_tags: dict = None, cache_types: List[str] = None) -> dict:
-        """Get cache cluster info"""
+    def get_cache_cluster(
+        self,
+        env: str,
+        discovery_tags: Optional[Dict[str, str]] = None,
+        cluster_ids: Optional[List[str]] = None,
+    ) -> dict:
+        """Get cache cluster info (filter by ids/tags)"""
         pass
 
 

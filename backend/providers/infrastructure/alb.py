@@ -2,8 +2,8 @@
 AWS Application Load Balancer Provider implementation.
 
 Supports:
-- Tag-based discovery (EKS/NewHorizon style)
-- Name-based discovery (ECS/legacy style)
+- Explicit ALB ARNs
+- Tag-based discovery
 - Ingress-based discovery for EKS (AWS Load Balancer Controller)
 """
 
@@ -20,9 +20,9 @@ class ALBProvider(LoadBalancerProvider):
     AWS Application Load Balancer implementation of the load balancer provider.
 
     Discovery order:
-    1. If discovery_tags provided, find ALB by tags
-    2. If ingress_hostnames provided (EKS), find ALB by DNS name from Ingress
-    3. Fallback to naming convention: {project}-{env}-alb
+    1. If alb_arns provided, use them
+    2. If discovery_tags provided, find ALB by tags
+    3. If ingress_hostname provided (EKS), find ALB by DNS name from Ingress
     """
 
     def __init__(self, config: DashboardConfig, project: str):
@@ -96,31 +96,21 @@ class ALBProvider(LoadBalancerProvider):
             print(f"DNS-based ALB discovery failed: {e}")
             return None
 
-    def _find_alb_by_name(self, env: str, name_pattern: str = None) -> Optional[dict]:
-        """Find ALB by naming convention"""
-        try:
-            elbv2 = self._get_elbv2_client(env)
-            alb_name = name_pattern or f"{self.project}-{env}-alb"
-
-            albs = elbv2.describe_load_balancers()
-            for alb in albs.get('LoadBalancers', []):
-                if alb['LoadBalancerName'] == alb_name:
-                    return alb
-
-            return None
-        except Exception as e:
-            print(f"Name-based ALB discovery failed: {e}")
-            return None
-
-    def get_load_balancer(self, env: str, services: List[str] = None,
-                          discovery_tags: Dict[str, str] = None,
-                          ingress_hostname: str = None) -> dict:
+    def get_load_balancer(
+        self,
+        env: str,
+        services: List[str] = None,
+        discovery_tags: Dict[str, str] = None,
+        alb_arns: List[str] = None,
+        ingress_hostname: str = None,
+    ) -> dict:
         """Get ALB info with target groups filtered by services
 
         Args:
             env: Environment name
             services: List of service names to filter target groups (e.g., ['backend', 'frontend', 'cms'])
             discovery_tags: Dict of tags to find ALB (e.g., {'rubix_Environment': 'stg'})
+            alb_arns: Explicit ALB ARNs to use
             ingress_hostname: DNS hostname from K8s Ingress (for EKS discovery)
         """
         env_config = self.config.get_environment(self.project, env)
@@ -135,8 +125,15 @@ class ALBProvider(LoadBalancerProvider):
             alb = None
             discovery_method = None
 
-            # 1. Try tag-based discovery first
-            if discovery_tags:
+            # 1. Use explicit ALB ARNs when provided
+            if alb_arns:
+                response = elbv2.describe_load_balancers(LoadBalancerArns=alb_arns)
+                if response.get('LoadBalancers'):
+                    alb = response['LoadBalancers'][0]
+                    discovery_method = 'id'
+
+            # 2. Try tag-based discovery
+            if not alb and discovery_tags:
                 alb_arn = self._find_alb_by_tags(env, discovery_tags)
                 if alb_arn:
                     response = elbv2.describe_load_balancers(LoadBalancerArns=[alb_arn])
@@ -144,17 +141,11 @@ class ALBProvider(LoadBalancerProvider):
                         alb = response['LoadBalancers'][0]
                         discovery_method = 'tags'
 
-            # 2. Try Ingress hostname discovery (EKS)
+            # 3. Try Ingress hostname discovery (EKS)
             if not alb and ingress_hostname:
                 alb = self._find_alb_by_dns(env, ingress_hostname)
                 if alb:
                     discovery_method = 'ingress'
-
-            # 3. Fallback to naming convention
-            if not alb:
-                alb = self._find_alb_by_name(env)
-                if alb:
-                    discovery_method = 'naming'
 
             if not alb:
                 return None

@@ -213,8 +213,11 @@ AWS_PROFILE=my-profile dashborion --sigv4 services list
       "environments": ["staging", "production"],
       "services": ["backend", "frontend"],
       "infrastructure": {
-        "discoveryTags": {
+        "defaultTags": {
           "Project": "my-project"
+        },
+        "resources": {
+          "rds": { "ids": ["my-db"], "tags": {} }
         }
       }
     }
@@ -467,6 +470,20 @@ npx sst deploy --stage production
 # Development mode
 npx sst dev
 ```
+
+#### Rubix Deployment (IMPORTANT)
+
+When deploying for the Rubix project, **always** use the `DASHBORION_CONFIG_DIR` environment variable to point to the Rubix-specific configuration:
+
+```bash
+# ALWAYS clean artifacts and use DASHBORION_CONFIG_DIR for Rubix
+rm -rf .sst/artifacts && DASHBORION_CONFIG_DIR=/Users/clark/work/kamorion/rubix/NewHorizon-IaC-AWS-Dashboard/dashborion npx sst deploy --stage rubix
+```
+
+**Critical notes**:
+- The `DASHBORION_CONFIG_DIR` variable is **required** - it points to the Rubix config in `NewHorizon-IaC-AWS-Dashboard/dashborion`
+- **Always** clean `.sst/artifacts` before deploying to avoid state corruption
+- **Never** deploy without `DASHBORION_CONFIG_DIR` for Rubix - it will use the wrong configuration
 
 #### Configuration File (`infra.config.json`)
 

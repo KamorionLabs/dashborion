@@ -21,9 +21,21 @@ declare module "sst" {
       "name": string
       "type": "sst.aws.Function"
     }
+    "CacheTable": {
+      "name": string
+      "type": "sst.aws.Dynamo"
+    }
     "ComparisonHandler": {
       "name": string
       "type": "sst.aws.Function"
+    }
+    "ConfigRegistryHandler": {
+      "name": string
+      "type": "sst.aws.Function"
+    }
+    "ConfigTable": {
+      "name": string
+      "type": "sst.aws.Dynamo"
     }
     "DashborionApi": {
       "type": "sst.aws.ApiGatewayV2"
@@ -32,6 +44,10 @@ declare module "sst" {
     "DeviceCodesTable": {
       "name": string
       "type": "sst.aws.Dynamo"
+    }
+    "DiscoveryHandler": {
+      "name": string
+      "type": "sst.aws.Function"
     }
     "EventsHandler": {
       "name": string

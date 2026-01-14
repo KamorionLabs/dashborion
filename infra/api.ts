@@ -134,19 +134,23 @@ export function createApiDnsRecord(
  * Setup API Gateway authorizer
  * Returns the authorizer for use in route configuration
  */
+export interface AuthorizerOptions {
+  name: string;
+  ttl?: string;
+  identitySources?: string[];
+}
+
 export function setupAuthorizer(
   api: sst.aws.ApiGatewayV2,
-  authorizerLambda: sst.aws.Function
+  authorizerLambda: sst.aws.Function,
+  options: AuthorizerOptions
 ) {
-  // NOTE: identitySources must be empty to support both:
-  // - Bearer token in Authorization header (CLI device flow)
-  // - SSO headers from Lambda@Edge (x-auth-user-email)
   return api.addAuthorizer({
-    name: "DashborionAuth",
+    name: options.name,
     lambda: {
       function: authorizerLambda.arn,
-      ttl: "0 seconds", // Disable cache when using multiple auth methods
-      identitySources: [],
+      ttl: options.ttl ?? "0 seconds",
+      identitySources: options.identitySources ?? [],
     },
   });
 }
@@ -157,11 +161,20 @@ export function setupAuthorizer(
 export function setupRoutes(
   api: sst.aws.ApiGatewayV2,
   lambdas: LambdaFunctions,
-  authorizer: ReturnType<typeof api.addAuthorizer>
+  authorizers: {
+    default: ReturnType<typeof api.addAuthorizer>;
+    session: ReturnType<typeof api.addAuthorizer>;
+  }
 ): void {
   const authOptions = {
     auth: {
-      lambda: authorizer.id,
+      lambda: authorizers.default.id,
+    },
+  };
+
+  const authSessionOptions = {
+    auth: {
+      lambda: authorizers.session.id,
     },
   };
 
@@ -192,12 +205,12 @@ export function setupRoutes(
   // ==========================================================================
 
   // Auth - protected endpoints
-  api.route("GET /api/auth/me", lambdas.auth.arn, authOptions);
-  api.route("GET /api/auth/whoami", lambdas.auth.arn, authOptions);
+  api.route("GET /api/auth/me", lambdas.auth.arn, authSessionOptions);
+  api.route("GET /api/auth/whoami", lambdas.auth.arn, authSessionOptions);
   api.route("POST /api/auth/device/verify", lambdas.auth.arn, authOptions);
   api.route("POST /api/auth/token/refresh", lambdas.auth.arn, authOptions);
   api.route("POST /api/auth/token/revoke", lambdas.auth.arn, authOptions);
-  api.route("POST /api/auth/token/issue", lambdas.auth.arn, authOptions);
+  api.route("POST /api/auth/token/issue", lambdas.auth.arn, authSessionOptions);
 
   // Projects and environments routes
   api.route("GET /api/projects", lambdas.services.arn, authOptions);
@@ -215,6 +228,15 @@ export function setupRoutes(
 
   // Infrastructure routes
   api.route("GET /api/{project}/infrastructure/{env}", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/meta", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/cloudfront", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/alb", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/rds", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/redis", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/s3", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/workloads", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/efs", lambdas.infrastructure.arn, authOptions);
+  api.route("GET /api/{project}/infrastructure/{env}/network", lambdas.infrastructure.arn, authOptions);
   api.route("GET /api/{project}/infrastructure/{env}/routing", lambdas.infrastructure.arn, authOptions);
   api.route("GET /api/{project}/infrastructure/{env}/enis", lambdas.infrastructure.arn, authOptions);
   api.route("GET /api/{project}/infrastructure/{env}/security-group/{sgId}", lambdas.infrastructure.arn, authOptions);
@@ -256,4 +278,63 @@ export function setupRoutes(
   api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/status", lambdas.comparison.arn, authOptions);
   api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}", lambdas.comparison.arn, authOptions);
   api.route("GET /api/{project}/comparison/{sourceEnv}/{destEnv}/{checkType}/history", lambdas.comparison.arn, authOptions);
+
+  // ==========================================================================
+  // Config Registry Routes (admin - manage projects, environments, clusters, accounts)
+  // ==========================================================================
+
+  // Global settings
+  api.route("GET /api/config/settings", lambdas.configRegistry.arn, authOptions);
+  api.route("PUT /api/config/settings", lambdas.configRegistry.arn, authOptions);
+
+  // Projects
+  api.route("GET /api/config/projects", lambdas.configRegistry.arn, authOptions);
+  api.route("GET /api/config/projects/{projectId}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/projects", lambdas.configRegistry.arn, authOptions);
+  api.route("PUT /api/config/projects/{projectId}", lambdas.configRegistry.arn, authOptions);
+  api.route("DELETE /api/config/projects/{projectId}", lambdas.configRegistry.arn, authOptions);
+
+  // Environments
+  api.route("GET /api/config/projects/{projectId}/environments", lambdas.configRegistry.arn, authOptions);
+  api.route("GET /api/config/projects/{projectId}/environments/{envId}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/projects/{projectId}/environments", lambdas.configRegistry.arn, authOptions);
+  api.route("PUT /api/config/projects/{projectId}/environments/{envId}", lambdas.configRegistry.arn, authOptions);
+  api.route("DELETE /api/config/projects/{projectId}/environments/{envId}", lambdas.configRegistry.arn, authOptions);
+  api.route("PATCH /api/config/projects/{projectId}/environments/{envId}/checkers", lambdas.configRegistry.arn, authOptions);
+
+  // Clusters
+  api.route("GET /api/config/clusters", lambdas.configRegistry.arn, authOptions);
+  api.route("GET /api/config/clusters/{clusterId}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/clusters", lambdas.configRegistry.arn, authOptions);
+  api.route("PUT /api/config/clusters/{clusterId}", lambdas.configRegistry.arn, authOptions);
+  api.route("DELETE /api/config/clusters/{clusterId}", lambdas.configRegistry.arn, authOptions);
+
+  // AWS Accounts (named aws_accounts for future multi-cloud support)
+  api.route("GET /api/config/aws-accounts", lambdas.configRegistry.arn, authOptions);
+  api.route("GET /api/config/aws-accounts/{accountId}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/aws-accounts", lambdas.configRegistry.arn, authOptions);
+  api.route("PUT /api/config/aws-accounts/{accountId}", lambdas.configRegistry.arn, authOptions);
+  api.route("DELETE /api/config/aws-accounts/{accountId}", lambdas.configRegistry.arn, authOptions);
+
+  // Import/Export/Validation
+  api.route("GET /api/config/export", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/import", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/validate", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/migrate-from-json", lambdas.configRegistry.arn, authOptions);
+
+  // Resolution (for terraform-aws-ops integration)
+  api.route("GET /api/config/resolve/{projectId}/{envId}", lambdas.configRegistry.arn, authOptions);
+
+  // ==========================================================================
+  // Discovery Routes (AWS resource discovery for Admin UI)
+  // ==========================================================================
+
+  // Test role directly (for form validation before save)
+  api.route("GET /api/config/discovery/test-role", lambdas.discovery.arn, authOptions);
+
+  // Test connection using saved config (legacy)
+  api.route("GET /api/config/discovery/{accountId}/test", lambdas.discovery.arn, authOptions);
+
+  // Resource discovery by type
+  api.route("GET /api/config/discovery/{accountId}/{resourceType}", lambdas.discovery.arn, authOptions);
 }

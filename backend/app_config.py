@@ -122,11 +122,18 @@ class NamingPattern:
 
 
 @dataclass
+class InfrastructureResourceConfig:
+    """Infrastructure resource selection config (IDs take precedence over tags)."""
+    ids: List[str] = field(default_factory=list)
+    tags: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class InfrastructureConfig:
     """Infrastructure discovery configuration for an environment"""
-    discovery_tags: Dict[str, str] = field(default_factory=dict)  # Tags for resource discovery
-    databases: List[str] = field(default_factory=list)  # Database types to discover
-    caches: List[str] = field(default_factory=list)  # Cache types to discover
+    default_tags: Dict[str, str] = field(default_factory=dict)
+    resources: Dict[str, InfrastructureResourceConfig] = field(default_factory=dict)
+    domain_config: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -141,6 +148,7 @@ class EnvironmentConfig:
     action_role_arn: Optional[str] = None  # Override cross-account action role
     status: Optional[str] = None  # Environment status (active, deployed, planned)
     infrastructure: Optional[InfrastructureConfig] = None  # Infrastructure discovery config
+    topology: Optional[Dict[str, Any]] = None  # Environment topology config
 
     def to_dict(self) -> dict:
         result = {
@@ -156,11 +164,19 @@ class EnvironmentConfig:
         if self.action_role_arn:
             result['actionRoleArn'] = self.action_role_arn
         if self.infrastructure:
+            resources = {}
+            for key, cfg in self.infrastructure.resources.items():
+                resources[key] = {
+                    'ids': cfg.ids,
+                    'tags': cfg.tags
+                }
             result['infrastructure'] = {
-                'discoveryTags': self.infrastructure.discovery_tags,
-                'databases': self.infrastructure.databases,
-                'caches': self.infrastructure.caches
+                'defaultTags': self.infrastructure.default_tags,
+                'domainConfig': self.infrastructure.domain_config,
+                'resources': resources,
             }
+        if self.topology:
+            result['topology'] = self.topology
         return result
 
 
@@ -178,6 +194,8 @@ class ProjectConfig:
     display_name: str
     environments: Dict[str, EnvironmentConfig]
     idp_group_mapping: Optional[Dict[str, Any]] = None
+    topology: Optional[Dict[str, Any]] = None
+    service_naming: Optional[Dict[str, Any]] = None
 
     def get_environment(self, env: str) -> Optional[EnvironmentConfig]:
         """Get environment configuration by name"""
@@ -187,6 +205,8 @@ class ProjectConfig:
         return {
             'name': self.name,
             'displayName': self.display_name,
+            'topology': self.topology,
+            'serviceNaming': self.service_naming,
             'environments': {
                 env: cfg.to_dict()
                 for env, cfg in self.environments.items()
@@ -291,7 +311,24 @@ class DashboardConfig:
         """Get environment configuration for a project"""
         proj = self.get_project(project)
         if proj:
-            return proj.get_environment(env)
+            env_config = proj.get_environment(env)
+            if not env_config:
+                return None
+            if proj.topology:
+                env_topology = env_config.topology
+                env_has_services = bool(_derive_services_from_topology(env_topology))
+                if not env_topology or not env_has_services:
+                    merged = dict(proj.topology)
+                    if env_topology:
+                        merged_components = {
+                            **(proj.topology.get('components') or {}),
+                            **(env_topology.get('components') or {})
+                        }
+                        merged['components'] = merged_components
+                        if env_topology.get('layout'):
+                            merged['layout'] = env_topology['layout']
+                    env_config.topology = merged
+            return env_config
         return None
 
     def get_cross_account_role(self, account_id: str) -> Optional[CrossAccountRole]:
@@ -307,7 +344,56 @@ class DashboardConfig:
 
     def get_service_name(self, project: str, env: str, service: str) -> str:
         """Get full service name"""
+        if not service:
+            return service
+        proj = self.get_project(project)
+        service_naming = proj.service_naming if proj else None
+        prefix_template = service_naming.get('prefix') if service_naming else None
+        suffix_template = service_naming.get('suffix') if service_naming else None
+        if prefix_template or suffix_template:
+            prefix = prefix_template.format(project=project, env=env) if prefix_template else ""
+            suffix = suffix_template.format(project=project, env=env) if suffix_template else ""
+            if service.startswith(prefix) and service.endswith(suffix):
+                return service
+            return f"{prefix}{service}{suffix}"
+        pattern = self.naming_pattern.service
+        if '{service}' in pattern:
+            prefix, suffix = pattern.split('{service}', 1)
+            prefix = prefix.format(project=project, env=env)
+            suffix = suffix.format(project=project, env=env)
+            if service.startswith(prefix) and service.endswith(suffix):
+                return service
+            return f"{prefix}{service}{suffix}"
         return self.naming_pattern.format('service', project=project, env=env, service=service)
+
+    def strip_service_name(self, project: str, env: str, service: str, strict: bool = False) -> Optional[str]:
+        """Strip project/env prefix (and suffix) from a service name."""
+        if not service:
+            return service
+        proj = self.get_project(project)
+        service_naming = proj.service_naming if proj else None
+        prefix_template = service_naming.get('prefix') if service_naming else None
+        suffix_template = service_naming.get('suffix') if service_naming else None
+        prefix = prefix_template.format(project=project, env=env) if prefix_template else ""
+        suffix = suffix_template.format(project=project, env=env) if suffix_template else ""
+
+        if prefix or suffix:
+            if service.startswith(prefix) and service.endswith(suffix):
+                end = len(service) - len(suffix) if suffix else None
+                return service[len(prefix):end]
+            return None if strict else service
+
+        pattern = self.naming_pattern.service
+        if '{service}' in pattern:
+            pattern_prefix, pattern_suffix = pattern.split('{service}', 1)
+            pattern_prefix = pattern_prefix.format(project=project, env=env)
+            pattern_suffix = pattern_suffix.format(project=project, env=env)
+            if service.startswith(pattern_prefix) and service.endswith(pattern_suffix):
+                end = len(service) - len(pattern_suffix) if pattern_suffix else None
+                return service[len(pattern_prefix):end]
+            return None if strict else service
+
+        return service
 
     def get_log_group(self, project: str, env: str, service: str) -> str:
         """Get CloudWatch log group"""
@@ -383,22 +469,21 @@ class DashboardConfig:
 def _parse_environment_config(env_data: dict, default_region: str) -> EnvironmentConfig:
     """Parse environment data into EnvironmentConfig dataclass."""
     infra_config = None
-    infra_data = env_data.get('infrastructure') or env_data.get('discoveryTags')
-    if infra_data:
-        if isinstance(infra_data, dict) and 'discoveryTags' in infra_data:
-            # Full infrastructure config
-            infra_config = InfrastructureConfig(
-                discovery_tags=infra_data.get('discoveryTags', {}),
-                databases=infra_data.get('databases', []),
-                caches=infra_data.get('caches', [])
+    infra_data = env_data.get('infrastructure')
+    if isinstance(infra_data, dict):
+        resources = {}
+        for key, value in (infra_data.get('resources') or {}).items():
+            if not isinstance(value, dict):
+                continue
+            resources[key] = InfrastructureResourceConfig(
+                ids=value.get('ids', []),
+                tags=value.get('tags', {})
             )
-        else:
-            # discoveryTags only (from DynamoDB format)
-            infra_config = InfrastructureConfig(
-                discovery_tags=env_data.get('discoveryTags', {}),
-                databases=env_data.get('databases', []),
-                caches=env_data.get('caches', [])
-            )
+        infra_config = InfrastructureConfig(
+            default_tags=infra_data.get('defaultTags', {}),
+            resources=resources,
+            domain_config=infra_data.get('domainConfig'),
+        )
 
     # Support both SSM format (clusterName) and DynamoDB format (kubernetes.clusterName)
     k8s = env_data.get('kubernetes', {})
@@ -414,8 +499,32 @@ def _parse_environment_config(env_data: dict, default_region: str) -> Environmen
         read_role_arn=env_data.get('readRoleArn'),
         action_role_arn=env_data.get('actionRoleArn'),
         status=env_data.get('status'),
-        infrastructure=infra_config
+        infrastructure=infra_config,
+        topology=env_data.get('topology'),
     )
+
+
+def _derive_services_from_topology(topology: Optional[Dict[str, Any]]) -> List[str]:
+    if not topology:
+        return []
+    components = topology.get('components') or {}
+    if not isinstance(components, dict):
+        return []
+
+    service_types = {'ecs-service', 'k8s-deployment', 'k8s-statefulset', 'service'}
+    infra_layers = {'edge', 'ingress', 'data'}
+    services = []
+    for name, component in components.items():
+        if not name:
+            continue
+        comp_type = component.get('type') if isinstance(component, dict) else None
+        layer = component.get('layer') if isinstance(component, dict) else None
+        if comp_type in service_types:
+            services.append(name)
+            continue
+        if comp_type is None and layer not in infra_layers:
+            services.append(name)
+    return services
 
 
 def _load_config_from_dynamodb(table_name: str, region: str) -> Tuple[dict, dict, dict, dict]:
@@ -442,7 +551,9 @@ def _load_config_from_dynamodb(table_name: str, region: str) -> Tuple[dict, dict
             name=project_id,
             display_name=project_data.get('displayName', project_id),
             environments=environments,
-            idp_group_mapping=project_data.get('idpGroupMapping')
+            idp_group_mapping=project_data.get('idpGroupMapping'),
+            topology=project_data.get('topology'),
+            service_naming=project_data.get('serviceNaming')
         )
 
     # Parse AWS accounts as cross-account roles

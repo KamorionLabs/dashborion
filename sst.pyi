@@ -18,13 +18,25 @@ class Resource:
     class Authorizer:
         name: str
         type: str
+    class CacheTable:
+        name: str
+        type: str
     class ComparisonHandler:
+        name: str
+        type: str
+    class ConfigRegistryHandler:
+        name: str
+        type: str
+    class ConfigTable:
         name: str
         type: str
     class DashborionApi:
         type: str
         url: str
     class DeviceCodesTable:
+        name: str
+        type: str
+    class DiscoveryHandler:
         name: str
         type: str
     class EventsHandler:
