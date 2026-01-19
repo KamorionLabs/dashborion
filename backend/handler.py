@@ -25,7 +25,7 @@ Routes:
 import json
 from datetime import datetime
 
-from app_config import get_config, ConfigNotInitializedError
+from app_config import get_config, ConfigNotInitializedError, InfrastructureConfig, InfrastructureResourceConfig
 from utils.aws import get_user_email
 from providers.base import ProviderFactory
 
@@ -61,8 +61,176 @@ except ImportError:
     AUTH_HANDLERS_AVAILABLE = False
 
 
+# Default env colors based on environment name patterns
+DEFAULT_ENV_COLORS = {
+    'staging': {'bg': 'bg-yellow-500', 'text': 'text-yellow-400', 'border': 'border-yellow-500'},
+    'stg': {'bg': 'bg-yellow-500', 'text': 'text-yellow-400', 'border': 'border-yellow-500'},
+    'preprod': {'bg': 'bg-blue-500', 'text': 'text-blue-400', 'border': 'border-blue-500'},
+    'ppd': {'bg': 'bg-blue-500', 'text': 'text-blue-400', 'border': 'border-blue-500'},
+    'production': {'bg': 'bg-green-500', 'text': 'text-green-400', 'border': 'border-green-500'},
+    'prod': {'bg': 'bg-green-500', 'text': 'text-green-400', 'border': 'border-green-500'},
+    'prd': {'bg': 'bg-green-500', 'text': 'text-green-400', 'border': 'border-green-500'},
+    'integration': {'bg': 'bg-orange-500', 'text': 'text-orange-400', 'border': 'border-orange-500'},
+    'int': {'bg': 'bg-orange-500', 'text': 'text-orange-400', 'border': 'border-orange-500'},
+    'shared': {'bg': 'bg-purple-500', 'text': 'text-purple-400', 'border': 'border-purple-500'},
+    'dev': {'bg': 'bg-gray-500', 'text': 'text-gray-400', 'border': 'border-gray-500'},
+}
+
+# Palette of colors for auto-generating service colors
+SERVICE_COLOR_PALETTE = [
+    '#3b82f6',  # blue
+    '#8b5cf6',  # violet
+    '#06b6d4',  # cyan
+    '#10b981',  # emerald
+    '#f59e0b',  # amber
+    '#ef4444',  # red
+    '#ec4899',  # pink
+    '#6366f1',  # indigo
+    '#14b8a6',  # teal
+    '#f97316',  # orange
+]
+
+
+def _get_env_color(env_name: str) -> dict:
+    """Get color config for an environment based on its name."""
+    env_lower = env_name.lower()
+    # Check exact match first
+    if env_lower in DEFAULT_ENV_COLORS:
+        return DEFAULT_ENV_COLORS[env_lower]
+    # Check if any key is contained in the env name
+    for key, colors in DEFAULT_ENV_COLORS.items():
+        if key in env_lower:
+            return colors
+    # Default gray
+    return {'bg': 'bg-gray-500', 'text': 'text-gray-400', 'border': 'border-gray-500'}
+
+
+def _generate_service_colors(services: list) -> dict:
+    """Generate colors for services using the palette."""
+    colors = {}
+    for i, service in enumerate(services):
+        colors[service] = SERVICE_COLOR_PALETTE[i % len(SERVICE_COLOR_PALETTE)]
+    return colors
+
+
+def build_frontend_config(config) -> dict:
+    """
+    Transform DashboardConfig to frontend format (compatible with config.json).
+
+    This enables the frontend to load config from the API instead of static config.json.
+    """
+    import os
+
+    # Build projects in frontend format
+    projects = {}
+    default_project = None
+
+    for project_name, project_config in config.projects.items():
+        if default_project is None:
+            default_project = project_name
+
+        # Collect all services across environments (deduplicated)
+        all_services = set()
+        env_names = []
+        env_details = {}
+        env_colors = {}
+        aws_accounts = {}
+
+        for env_name, env_config in project_config.environments.items():
+            env_names.append(env_name)
+            all_services.update(env_config.services or [])
+            env_colors[env_name] = _get_env_color(env_name)
+
+            # Build environment details (for new format support)
+            env_details[env_name] = {
+                'accountId': env_config.account_id,
+                'region': env_config.region,
+                'services': env_config.services or [],
+                'clusterName': env_config.cluster_name,
+                'namespace': env_config.namespace,
+                'orchestratorType': env_config.orchestrator_type or config.orchestrator.type,
+                'status': env_config.status,
+            }
+            if env_config.infrastructure:
+                env_details[env_name]['infrastructure'] = {
+                    'defaultTags': env_config.infrastructure.default_tags,
+                    'domainConfig': env_config.infrastructure.domain_config,
+                }
+
+            # Build AWS accounts map
+            if env_config.account_id and env_config.account_id not in aws_accounts:
+                # Get region from env config
+                aws_accounts[env_name] = {
+                    'id': env_config.account_id,
+                    'alias': f'{project_name}-{env_name}',
+                    'region': env_config.region
+                }
+
+        # Convert services set to sorted list
+        services_list = sorted(list(all_services))
+
+        # Generate service colors if not in infrastructure config
+        service_colors = _generate_service_colors(services_list)
+
+        # Build project entry
+        projects[project_name] = {
+            'name': project_config.display_name or project_name,
+            'shortName': project_name[:3].upper(),
+            'color': '#0ea5e9',  # Default sky blue
+            'client': '',
+            'description': '',
+            'aws': {
+                'accounts': aws_accounts
+            },
+            'services': services_list,
+            'environments': env_names,  # Array format for backward compat
+            'environmentDetails': env_details,  # Object format with full details
+            'serviceNaming': project_config.service_naming or {'prefix': project_name},
+            'infrastructure': {
+                'serviceColors': service_colors,
+            },
+            'envColors': env_colors,
+            'topology': project_config.topology,
+            'pipelines': {'enabled': False},  # Default disabled
+        }
+
+    # Build the full frontend config
+    return {
+        'global': {
+            'title': 'Operations Dashboard',
+            'logo': '/logo.png',
+            'logoAlt': 'Dashboard',
+            'ssoPortalUrl': config.sso_portal_url or os.environ.get('SSO_PORTAL_URL', ''),
+            'defaultRegion': config.region or 'eu-central-1',
+            'defaultOrchestratorType': config.orchestrator.type,
+        },
+        'api': {
+            'baseUrl': '/api',
+            'refreshIntervals': {
+                'dashboard': 30000,
+                'logs': 3000
+            }
+        },
+        'auth': {
+            'logoutUrl': '/saml/logout',
+            'deviceAuthPath': '/auth/device'
+        },
+        'features': config.features or {},
+        'projects': projects,
+        'defaultProject': default_project
+    }
+
+
 def get_providers(project: str):
-    """Get configured providers for a project"""
+    """Get configured providers for a project.
+
+    For projects with mixed orchestrator types (ECS + EKS environments),
+    the orchestrator provider is automatically a DynamicOrchestratorProxy
+    that routes to the correct provider based on the environment.
+
+    Args:
+        project: Project name
+    """
     config = get_config()
     return {
         'ci': ProviderFactory.get_ci_provider(config, project),
@@ -74,6 +242,23 @@ def get_providers(project: str):
         'config': config,
         'project': project
     }
+
+
+def get_orchestrator_for_env(project: str, env: str):
+    """Get orchestrator provider for a specific environment.
+
+    Use this when you need the correct orchestrator type (ecs/eks) for an
+    environment that may differ from the project's default orchestrator.
+
+    Args:
+        project: Project name
+        env: Environment name
+
+    Returns:
+        OrchestratorProvider instance (ECSProvider or EKSProvider)
+    """
+    config = get_config()
+    return ProviderFactory.get_orchestrator_provider(config, project, env)
 
 
 def lambda_handler(event, context):
@@ -126,9 +311,13 @@ def lambda_handler(event, context):
                 'config': config.to_dict()
             }
 
-        # Configuration endpoint
+        # Configuration endpoint (backend format)
         elif path == '/api/config':
             result = config.to_dict()
+
+        # Full configuration for frontend (frontend format)
+        elif path == '/api/config/full':
+            result = build_frontend_config(config)
 
         # Auth endpoints (no project context)
         elif path.startswith('/api/auth/'):
@@ -472,13 +661,28 @@ def route_project_request(project, resource, parts, method, body, event,
             caches_str = query_params.get('caches', '')
             caches_list = caches_str.split(',') if caches_str else None
 
+            resources_str = query_params.get('resources', '')
+            resources_list = resources_str.split(',') if resources_str else None
+
+            # Build InfrastructureConfig from query parameters
+            infra_config = None
+            if discovery_tags or domain_config or databases_list or caches_list:
+                resources = {}
+                if databases_list:
+                    resources['rds'] = InfrastructureResourceConfig(ids=databases_list)
+                if caches_list:
+                    resources['redis'] = InfrastructureResourceConfig(ids=caches_list)
+                infra_config = InfrastructureConfig(
+                    default_tags=discovery_tags or {},
+                    resources=resources,
+                    domain_config=domain_config
+                )
+
             return infrastructure.get_infrastructure(
                 env,
-                discovery_tags=discovery_tags,
                 services=services_list,
-                domain_config=domain_config,
-                databases=databases_list,
-                caches=caches_list
+                infra_config=infra_config,
+                resources=resources_list
             )
 
         return {'error': 'Invalid path. Use /api/{project}/infrastructure/{env}'}

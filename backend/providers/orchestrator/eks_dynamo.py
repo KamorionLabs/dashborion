@@ -1154,4 +1154,7 @@ class EKSDynamoProvider(OrchestratorProvider):
 
 
 # Register the provider with ProviderFactory
-ProviderFactory.register_orchestrator_provider('eks', EKSDynamoProvider)
+# Note: Uses 'eks-cached' to distinguish from direct EKSProvider ('eks')
+# - 'eks' (eks.py): Direct K8s API, real-time, full operations (scale, force deployment)
+# - 'eks-cached': DynamoDB cache, Step Functions refresh, read-only operations
+ProviderFactory.register_orchestrator_provider('eks-cached', EKSDynamoProvider)

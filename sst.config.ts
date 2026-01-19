@@ -12,10 +12,16 @@
  * Deployment:
  *   - npx sst dev (development with live reload)
  *   - npx sst deploy --stage <stage> (production)
+ *   - npx sst deploy --stage local (LocalStack - requires docker-compose up)
  *
  * Modes:
  *   - standalone: SST creates all resources (DynamoDB, IAM roles, etc.)
  *   - managed: References existing resources created by Terraform/OpenTofu
+ *
+ * LocalStack:
+ *   1. docker-compose up -d
+ *   2. npx sst deploy --stage local
+ *   3. ./scripts/seed-localstack.sh (optional: seed config data)
  */
 
 // Config loading must be sync and at module level for app() function
@@ -39,19 +45,53 @@ function loadConfigSync() {
   return { mode: "standalone" };
 }
 
+// LocalStack endpoint (default port)
+const LOCALSTACK_ENDPOINT = process.env.LOCALSTACK_ENDPOINT || "http://localhost:4566";
+
+// Build LocalStack AWS provider config
+function getLocalStackProviderConfig(region: aws.Region) {
+  return {
+    region,
+    accessKey: "test",
+    secretKey: "test",
+    skipCredentialsValidation: true,
+    skipMetadataApiCheck: true,
+    skipRegionValidation: true,
+    skipRequestingAccountId: true,
+    s3UsePathStyle: true,
+    endpoints: [{
+      apigateway: LOCALSTACK_ENDPOINT,
+      apigatewayv2: LOCALSTACK_ENDPOINT,
+      cloudwatch: LOCALSTACK_ENDPOINT,
+      dynamodb: LOCALSTACK_ENDPOINT,
+      iam: LOCALSTACK_ENDPOINT,
+      kms: LOCALSTACK_ENDPOINT,
+      lambda: LOCALSTACK_ENDPOINT,
+      s3: LOCALSTACK_ENDPOINT,
+      ssm: LOCALSTACK_ENDPOINT,
+      sts: LOCALSTACK_ENDPOINT,
+    }],
+  };
+}
+
 export default $config({
   app(input) {
     const config = loadConfigSync();
+    const isLocalStack = input?.stage === "local";
+    const region = (config.aws?.region || "eu-west-3") as aws.Region;
+
     return {
       name: config.naming?.app || "dashborion",
       removal: input?.stage === "production" ? "retain" : "remove",
       protect: ["production"].includes(input?.stage),
-      home: "aws",
+      home: isLocalStack ? "local" : "aws",
       providers: {
-        aws: {
-          region: (config.aws?.region || "eu-west-3") as aws.Region,
-          ...(config.aws?.profile ? { profile: config.aws.profile } : {}),
-        },
+        aws: isLocalStack
+          ? getLocalStackProviderConfig(region)
+          : {
+              region,
+              ...(config.aws?.profile ? { profile: config.aws.profile } : {}),
+            },
       },
     };
   },
@@ -79,21 +119,32 @@ export default $config({
     } = infra;
 
     const stage = $app.stage;
+    const isLocalStack = stage === "local";
     const configDir = getConfigDir();
     const config = loadConfig();
 
-    console.log(`Deploying Dashborion (stage: ${stage}, mode: ${config.mode})`);
+    // Override config for LocalStack
+    if (isLocalStack) {
+      config.mode = "standalone";
+      config.auth = { enabled: false };
+      console.log(`Deploying Dashborion to LocalStack (stage: ${stage})`);
+      console.log(`  LocalStack endpoint: ${LOCALSTACK_ENDPOINT}`);
+    } else {
+      console.log(`Deploying Dashborion (stage: ${stage}, mode: ${config.mode})`);
+    }
 
     // Create helpers
     const naming = createNaming(config, stage);
     const tags = createTags(config, stage);
 
-    // Determine domains
-    const frontendDomain = config.frontend?.cloudfrontDomain || `dashboard-${stage}.example.com`;
-    const apiDomain = getApiDomain(config);
+    // Determine domains (skip for LocalStack)
+    const frontendDomain = isLocalStack
+      ? "localhost"
+      : config.frontend?.cloudfrontDomain || `dashboard-${stage}.example.com`;
+    const apiDomain = isLocalStack ? undefined : getApiDomain(config);
 
-    // Create DNS provider if cross-account
-    const dnsProvider = config.apiGateway?.route53Profile
+    // Create DNS provider if cross-account (skip for LocalStack)
+    const dnsProvider = !isLocalStack && config.apiGateway?.route53Profile
       ? new aws.Provider("DnsProvider", {
           region: (config.aws?.region || "eu-west-3") as aws.Region,
           profile: config.apiGateway.route53Profile,
@@ -146,7 +197,7 @@ export default $config({
     }
 
     // ==========================================================================
-    // Frontend Deployment (managed mode only)
+    // Frontend Deployment (managed mode only, skip for LocalStack)
     // ==========================================================================
     let frontendOutput = {
       url: api.url as unknown as string,
@@ -154,7 +205,7 @@ export default $config({
       s3Bucket: "",
     };
 
-    if (config.mode === "managed" && config.frontend) {
+    if (!isLocalStack && config.mode === "managed" && config.frontend) {
       // Build frontend with API URL
       await buildFrontend(apiDomain);
 
@@ -165,6 +216,17 @@ export default $config({
     // ==========================================================================
     // Outputs
     // ==========================================================================
+    if (isLocalStack) {
+      // LocalStack-specific outputs
+      return {
+        apiUrl: api.url,
+        localstackEndpoint: LOCALSTACK_ENDPOINT,
+        configTable: tables.config.name,
+        stateTable: tables.state.name,
+        note: "Run 'npm run dev' in packages/frontend to start the frontend dev server",
+      };
+    }
+
     return {
       url: frontendOutput.url || api.url,
       cloudfrontId: frontendOutput.cloudfrontId,

@@ -177,6 +177,7 @@ def handle_infrastructure(event, auth, project: str, parts: list, config) -> Dic
     if not env_config:
         return error_response('not_found', f'Unknown environment: {env} for project {project}', 404)
 
+    project_config = config.get_project(project)
     infrastructure = InfrastructureAggregator(config, project)
     query_params = event.get('queryStringParameters') or {}
     force_refresh = query_params.get('force', 'false').lower() == 'true'

@@ -77,8 +77,14 @@ def check_permission(
     Returns:
         True if permission granted, False otherwise
     """
+    print(f"[DEBUG] check_permission: auth={auth}, action={action}, project={project}, env={env}")
     if not auth or not auth.is_authenticated:
+        print(f"[DEBUG] check_permission: NOT authenticated (auth={auth}, is_authenticated={auth.is_authenticated if auth else None})")
         return False
+
+    print(f"[DEBUG] check_permission: user={auth.email}, permissions_count={len(auth.permissions)}")
+    for p in auth.permissions:
+        print(f"[DEBUG]   - Permission: project={p.project}, env={p.environment}, role={p.role}")
 
     # Convert string action to Action enum
     if isinstance(action, str):

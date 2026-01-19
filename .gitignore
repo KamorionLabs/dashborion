@@ -97,6 +97,10 @@ backend/*.zip
 # SST
 .sst/
 
+# LocalStack
+.localstack/
+volume/
+
 # Turborepo
 .turbo/
 

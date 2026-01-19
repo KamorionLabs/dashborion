@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 // Configuration context
 import { useConfig, useConfigHelpers } from '../ConfigContext'
+import { stripServiceName } from '../utils/serviceNaming'
 // Auth hook
 import { useAuth } from '../hooks/useAuth'
 // Dashboard context for shell integration
@@ -313,11 +314,22 @@ export default function HomeDashboard() {
   // Derive selectedService from URL state (format: serviceName)
   // Internal format is env-service, so we build it from current env + URL service
   const selectedService = useMemo(() => {
-    if (urlService) {
-      return `${selectedInfraEnv}-${urlService}`
+    if (!urlService) return null
+    const servicesMap = services?.[selectedInfraEnv]?.services || {}
+    const normalizeServiceKey = (value) => {
+      if (!value) return ''
+      if (servicesMap[value]) return value
+      const stripped = stripServiceName(value, appConfig.serviceNaming, appConfig.currentProjectId, selectedInfraEnv)
+      if (servicesMap[stripped]) return stripped
+      const lower = stripped.toLowerCase()
+      if (servicesMap[lower]) return lower
+      const slug = stripped.replace(/\s+/g, '-').toLowerCase()
+      if (servicesMap[slug]) return slug
+      return ''
     }
-    return null
-  }, [urlService, selectedInfraEnv])
+    const resolved = normalizeServiceKey(urlService)
+    return resolved ? `${selectedInfraEnv}-${resolved}` : null
+  }, [urlService, selectedInfraEnv, services, appConfig.serviceNaming, appConfig.currentProjectId])
 
   // Note: getResourceId, findResource, findAllResources are imported from infraResourceHandlers.js
   // To add a new resource type, add a handler in that file
@@ -1173,14 +1185,17 @@ export default function HomeDashboard() {
   // Fetch details when service selection changes
   useEffect(() => {
     if (selectedService) {
-      const [env, service] = selectedService.split('-')
+      // selectedService format is `${selectedInfraEnv}-${serviceName}`
+      // Can't use split('-') because env may contain hyphens (e.g., "nh-staging")
+      const env = selectedInfraEnv
+      const service = selectedService.replace(`${selectedInfraEnv}-`, '')
       fetchMetrics(env, service)
       fetchDetails(env, service)
     } else {
       setServiceDetails(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedService])  // Callbacks are stable
+  }, [selectedService, selectedInfraEnv])  // Callbacks are stable
 
   // Handle infra component selection - for services, load the service details
   const handleInfraComponentSelect = useCallback((type, env, data) => {
@@ -1196,9 +1211,13 @@ export default function HomeDashboard() {
       const resolveServiceName = () => {
         for (const candidate of candidates) {
           if (servicesMap[candidate]) return candidate
-          const lower = candidate.toLowerCase()
+          const stripped = stripServiceName(candidate, appConfig.serviceNaming, appConfig.currentProjectId, env)
+          if (servicesMap[stripped]) return stripped
+          const lower = stripped.toLowerCase()
           if (servicesMap[lower]) return lower
-          const lastSegment = candidate.split('-').pop()
+          const slug = stripped.replace(/\s+/g, '-').toLowerCase()
+          if (servicesMap[slug]) return slug
+          const lastSegment = stripped.split('-').pop()
           if (servicesMap[lastSegment]) return lastSegment
           const lowerLast = lastSegment.toLowerCase()
           if (servicesMap[lowerLast]) return lowerLast
@@ -1216,7 +1235,7 @@ export default function HomeDashboard() {
       // Pass skipClear=true to avoid clearing the URL params we just set
       setSelectedService(null, true)
     }
-  }, [services, setSelectedService, setSelectedInfraComponent])
+  }, [services, setSelectedService, setSelectedInfraComponent, appConfig.serviceNaming, appConfig.currentProjectId])
 
   // Handle click on timeline event - open relevant panel
   const handleEventClick = useCallback((event) => {

@@ -20,6 +20,12 @@ export default function ServiceDetailsPanel({ details, loading, onClose, metrics
   const currentProjectId = appConfig.currentProjectId
   const ENV_COLORS = appConfig.envColors || {}
 
+  // Determine orchestrator type for this environment
+  // Config structure: currentProject.environments[env] or currentProject.orchestratorType (project-level default)
+  const envConfig = appConfig?.currentProject?.environments?.[details?.environment]
+  const orchestratorType = envConfig?.orchestratorType || appConfig?.currentProject?.orchestratorType || appConfig?.global?.defaultOrchestratorType || 'ecs'
+  const isEKS = orchestratorType === 'eks'
+
   // Pipeline tailing state
   const [isPipelineTailing, setIsPipelineTailing] = useState(false)
   const [pipelineLogs, setPipelineLogs] = useState(details?.deployPipeline?.buildLogs || [])
@@ -343,7 +349,7 @@ export default function ServiceDetailsPanel({ details, loading, onClose, metrics
           onClick={() => setActiveTab('taskdef')}
           className={`px-3 py-2 text-sm font-medium whitespace-nowrap ${activeTab === 'taskdef' ? 'text-brand-400 border-b-2 border-brand-400' : 'text-gray-400'}`}
         >
-          Task Defs
+          {isEKS ? 'Workload' : 'Task Defs'}
         </button>
         <button
           onClick={() => setActiveTab('pipeline')}
@@ -381,90 +387,159 @@ export default function ServiceDetailsPanel({ details, loading, onClose, metrics
       <div className="p-4">
         {activeTab === 'taskdef' && (
           <div className="space-y-4">
-            {/* Current Task Definition */}
-            <div className="bg-gray-900 rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-green-400">Current (Active)</span>
-                  <span className="text-xs text-gray-500">Rev {currentTd.revision}</span>
-                </div>
-                <a
-                  href={currentTd.consoleUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-gray-400 hover:text-brand-400"
-                >
-                  <ExternalLink className="w-4 h-4" />
-                </a>
-              </div>
-              <div className="text-xs text-gray-400 space-y-1">
-                <p><span className="text-gray-500">Image:</span> {currentTd.imageTag}</p>
-                <p><span className="text-gray-500">CPU:</span> {currentTd.cpu} | <span className="text-gray-500">Memory:</span> {currentTd.memory}MB</p>
-                <p><span className="text-gray-500">Env vars:</span> {allEnvVars.length}</p>
-              </div>
-            </div>
-
-            {/* Latest Task Definition with Diff */}
-            {(latestTd.revision !== currentTd.revision || currentTd.latestDiff) && (
-              <div className="bg-gray-900 rounded-lg p-3 border border-yellow-500/30">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-yellow-400">Latest (Not deployed)</span>
-                    <span className="text-xs text-gray-500">Rev {currentTd.latestDiff?.latestRevision || latestTd.revision}</span>
+            {isEKS ? (
+              /* EKS Workload Info */
+              <>
+                {/* Current Workload */}
+                <div className="bg-gray-900 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-green-400">Current Workload</span>
+                      {currentTd?.workloadType && (
+                        <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded capitalize">
+                          {currentTd.workloadType}
+                        </span>
+                      )}
+                      {currentTd?.revision && (
+                        <span className="text-xs text-gray-500">Gen {currentTd.revision}</span>
+                      )}
+                    </div>
+                    {details.consoleUrl && (
+                      <a
+                        href={details.consoleUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-gray-400 hover:text-brand-400"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
+                    )}
                   </div>
-                  <a
-                    href={latestTd.consoleUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-gray-400 hover:text-brand-400"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                  </a>
+                  <div className="text-xs text-gray-400 space-y-1">
+                    <p><span className="text-gray-500">Image:</span> <span className="font-mono">{currentTd?.image || currentTd?.imageTag || '-'}</span></p>
+                    <p><span className="text-gray-500">Replicas:</span> {details.runningCount}/{details.desiredCount}</p>
+                    <p><span className="text-gray-500">Env vars:</span> {allEnvVars.length}</p>
+                  </div>
                 </div>
 
-                {/* Diff display */}
-                {currentTd.latestDiff?.changes?.length > 0 ? (
-                  <div className="mt-2 border-t border-gray-700 pt-2">
-                    <p className="text-xs font-medium text-yellow-400 mb-2">Changes from Rev {currentTd.latestDiff.currentRevision} to Rev {currentTd.latestDiff.latestRevision}:</p>
-                    <div className="space-y-1">
-                      {currentTd.latestDiff.changes.map((change, i) => (
-                        <div key={i} className="text-xs grid grid-cols-3 gap-2 py-1 border-b border-gray-800 last:border-0">
-                          <span className="text-gray-400 font-medium">{change.label}</span>
-                          <span className="text-red-400 truncate" title={change.current}>{change.current}</span>
-                          <span className="text-green-400 truncate" title={change.latest}>{change.latest}</span>
+                {/* K8s Deployments */}
+                {details.deployments?.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium mb-2">Deployments</h4>
+                    <p className="text-xs text-gray-500 mb-2">Kubernetes rollout status</p>
+                    <div className="space-y-2">
+                      {details.deployments.map((d, i) => (
+                        <div key={i} className="bg-gray-900 rounded p-2 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className={`font-medium ${d.status === 'primary' ? 'text-green-400' : 'text-gray-400'}`}>
+                              {d.rolloutState || d.status}
+                            </span>
+                            <span className="text-gray-500 font-mono">{d.revision}</span>
+                          </div>
+                          <div className="text-gray-500 mt-1">
+                            {d.runningCount}/{d.desiredCount} pods
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
-                ) : (
-                  <div className="text-xs text-gray-400 space-y-1">
-                    <p><span className="text-gray-500">Image:</span> {latestTd.imageTag}</p>
-                    <p><span className="text-gray-500">CPU:</span> {latestTd.cpu} | <span className="text-gray-500">Memory:</span> {latestTd.memory}MB</p>
+                )}
+              </>
+            ) : (
+              /* ECS Task Definition Info */
+              <>
+                {/* Current Task Definition */}
+                {currentTd && (
+                  <div className="bg-gray-900 rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-green-400">Current (Active)</span>
+                        <span className="text-xs text-gray-500">Rev {currentTd.revision}</span>
+                      </div>
+                      {currentTd.consoleUrl && (
+                        <a
+                          href={currentTd.consoleUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-400 hover:text-brand-400"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-400 space-y-1">
+                      <p><span className="text-gray-500">Image:</span> {currentTd.imageTag}</p>
+                      <p><span className="text-gray-500">CPU:</span> {currentTd.cpu} | <span className="text-gray-500">Memory:</span> {currentTd.memory}MB</p>
+                      <p><span className="text-gray-500">Env vars:</span> {allEnvVars.length}</p>
+                    </div>
                   </div>
                 )}
-              </div>
-            )}
 
-            {/* ECS Deployments */}
-            <div>
-              <h4 className="text-sm font-medium mb-2">ECS Deployments</h4>
-              <p className="text-xs text-gray-500 mb-2">Task definition rollouts managed by ECS</p>
-              <div className="space-y-2">
-                {details.ecsDeployments?.map((d, i) => (
-                  <div key={i} className="bg-gray-900 rounded p-2 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className={`font-medium ${d.status === 'PRIMARY' ? 'text-green-400' : 'text-gray-400'}`}>
-                        {d.status}
-                      </span>
-                      <span className="text-gray-500">{d.taskDefinition}</span>
+                {/* Latest Task Definition with Diff */}
+                {currentTd && latestTd && (latestTd.revision !== currentTd.revision || currentTd.latestDiff) && (
+                  <div className="bg-gray-900 rounded-lg p-3 border border-yellow-500/30">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-yellow-400">Latest (Not deployed)</span>
+                        <span className="text-xs text-gray-500">Rev {currentTd.latestDiff?.latestRevision || latestTd.revision}</span>
+                      </div>
+                      {latestTd.consoleUrl && (
+                        <a
+                          href={latestTd.consoleUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-gray-400 hover:text-brand-400"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      )}
                     </div>
-                    <div className="text-gray-500 mt-1">
-                      {d.runningCount}/{d.desiredCount} tasks | {formatRelativeTime(d.updatedAt)}
-                    </div>
+
+                    {/* Diff display */}
+                    {currentTd.latestDiff?.changes?.length > 0 ? (
+                      <div className="mt-2 border-t border-gray-700 pt-2">
+                        <p className="text-xs font-medium text-yellow-400 mb-2">Changes from Rev {currentTd.latestDiff.currentRevision} to Rev {currentTd.latestDiff.latestRevision}:</p>
+                        <div className="space-y-1">
+                          {currentTd.latestDiff.changes.map((change, i) => (
+                            <div key={i} className="text-xs grid grid-cols-3 gap-2 py-1 border-b border-gray-800 last:border-0">
+                              <span className="text-gray-400 font-medium">{change.label}</span>
+                              <span className="text-red-400 truncate" title={change.current}>{change.current}</span>
+                              <span className="text-green-400 truncate" title={change.latest}>{change.latest}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-400 space-y-1">
+                        <p><span className="text-gray-500">Image:</span> {latestTd.imageTag}</p>
+                        <p><span className="text-gray-500">CPU:</span> {latestTd.cpu} | <span className="text-gray-500">Memory:</span> {latestTd.memory}MB</p>
+                      </div>
+                    )}
                   </div>
-                ))}
-              </div>
-            </div>
+                )}
+
+                {/* ECS Deployments */}
+                <div>
+                  <h4 className="text-sm font-medium mb-2">ECS Deployments</h4>
+                  <p className="text-xs text-gray-500 mb-2">Task definition rollouts managed by ECS</p>
+                  <div className="space-y-2">
+                    {details.ecsDeployments?.map((d, i) => (
+                      <div key={i} className="bg-gray-900 rounded p-2 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className={`font-medium ${d.status === 'PRIMARY' ? 'text-green-400' : 'text-gray-400'}`}>
+                            {d.status}
+                          </span>
+                          <span className="text-gray-500">{d.taskDefinition}</span>
+                        </div>
+                        <div className="text-gray-500 mt-1">
+                          {d.runningCount}/{d.desiredCount} tasks | {formatRelativeTime(d.updatedAt)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 

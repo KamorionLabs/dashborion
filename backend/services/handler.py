@@ -47,9 +47,16 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     Routes requests based on path structure.
     """
+    # DEBUG: Log incoming event
+    print(f"[DEBUG] Event: {json.dumps(event, default=str)}")
+
     method = get_method(event)
     path = get_path(event)
     auth = get_auth_context(event)
+
+    # DEBUG: Log auth context
+    print(f"[DEBUG] Method: {method}, Path: {path}")
+    print(f"[DEBUG] Auth context: {auth}")
 
     # Handle CORS preflight
     if method == 'OPTIONS':
@@ -153,7 +160,11 @@ def handle_services(event, auth, project: str, parts: list, config) -> Dict[str,
     """
     # Check read permission
     env = parts[3] if len(parts) > 3 else '*'
-    if not check_permission(auth, Action.READ, project, env):
+    print(f"[DEBUG] handle_services: project={project}, env={env}, parts={parts}")
+    print(f"[DEBUG] Checking permission: action=READ, project={project}, env={env}")
+    has_permission = check_permission(auth, Action.READ, project, env)
+    print(f"[DEBUG] Permission result: {has_permission}")
+    if not has_permission:
         return error_response('forbidden', f'Permission denied: read on {project}/{env}', 403)
 
     orchestrator = ProviderFactory.get_orchestrator_provider(config, project)

@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { RefreshCw, XCircle } from 'lucide-react'
 import { formatServicePrefix } from './utils/serviceNaming'
+import { fetchWithRetry } from './utils/fetch'
+import { useAuth } from './hooks/useAuth'
 
 const ConfigContext = createContext(null)
 
@@ -19,14 +21,27 @@ export function ConfigProvider({ children }) {
   const [currentProjectId, setCurrentProjectId] = useState(null)
   const [favoriteProjects, setFavoriteProjects] = useState([])
   const [error, setError] = useState(null)
+  const { isAuthenticated, isLoading: authLoading } = useAuth()
 
-  // Load config and restore project selection from localStorage
+  // Load config from API (requires auth)
   useEffect(() => {
-    fetch('/config.json')
-      .then(res => {
-        if (!res.ok) throw new Error(`Failed to load config: ${res.status}`)
-        return res.json()
-      })
+    // Wait for auth to be resolved before loading config
+    if (authLoading) return
+
+    // Not authenticated - config will not load, ProtectedRoute handles redirect
+    if (!isAuthenticated) {
+      return
+    }
+
+    const loadConfig = async () => {
+      const response = await fetchWithRetry('/api/config/full')
+      if (!response.ok) {
+        throw new Error(`Failed to load config: ${response.status}`)
+      }
+      return await response.json()
+    }
+
+    loadConfig()
       .then(data => {
         setRawConfig(data)
 
@@ -54,7 +69,7 @@ export function ConfigProvider({ children }) {
         console.error('Failed to load app configuration:', err)
         setError(err.message)
       })
-  }, [])
+  }, [authLoading, isAuthenticated])
 
   // Persist current project to localStorage
   const selectProject = useCallback((projectId) => {
@@ -75,9 +90,9 @@ export function ConfigProvider({ children }) {
     })
   }, [])
 
-  // Loading screen while config is loading or project not found
+  // Loading screen while auth or config is loading
   const currentProject = rawConfig?.projects?.[currentProjectId]
-  if (!rawConfig || !currentProjectId || !currentProject) {
+  if (authLoading || !isAuthenticated || !rawConfig || !currentProjectId || !currentProject) {
     return (
       <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
         <div className="text-center">
@@ -96,7 +111,9 @@ export function ConfigProvider({ children }) {
           ) : (
             <>
               <RefreshCw className="w-16 h-16 text-sky-500 mx-auto mb-4 animate-spin" />
-              <h1 className="text-xl font-bold">Loading Dashboard...</h1>
+              <h1 className="text-xl font-bold">
+                {authLoading ? 'Authenticating...' : 'Loading Dashboard...'}
+              </h1>
             </>
           )}
         </div>

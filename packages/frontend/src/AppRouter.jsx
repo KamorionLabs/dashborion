@@ -144,8 +144,8 @@ function ProjectRedirect() {
 export default function AppRouter() {
   return (
     <BrowserRouter>
-      <ConfigProvider>
-        <AuthProvider>
+      <AuthProvider>
+        <ConfigProvider>
           <DashboardProvider>
             <Routes>
               {/* Public routes - no auth required, no shell */}
@@ -246,8 +246,8 @@ export default function AppRouter() {
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </DashboardProvider>
-        </AuthProvider>
-      </ConfigProvider>
+        </ConfigProvider>
+      </AuthProvider>
     </BrowserRouter>
   );
 }

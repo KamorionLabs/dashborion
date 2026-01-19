@@ -30,7 +30,18 @@ def _get_dynamodb():
     """Get DynamoDB resource"""
     global _dynamodb
     if _dynamodb is None:
-        _dynamodb = boto3.resource('dynamodb')
+        # Support LocalStack for local development
+        localstack_endpoint = os.environ.get('LOCALSTACK_ENDPOINT')
+        if localstack_endpoint:
+            _dynamodb = boto3.resource(
+                'dynamodb',
+                endpoint_url=localstack_endpoint,
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'eu-west-3'),
+                aws_access_key_id='test',
+                aws_secret_access_key='test'
+            )
+        else:
+            _dynamodb = boto3.resource('dynamodb')
     return _dynamodb
 
 

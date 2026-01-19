@@ -84,7 +84,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     if method == 'OPTIONS':
         return json_response(200, {})
 
-    # All config endpoints require global admin
+    # /api/config/full is accessible to all authenticated users (used by frontend)
+    if path == '/api/config/full' and method == 'GET':
+        try:
+            return get_frontend_config()
+        except Exception as e:
+            print(f"Error in get_frontend_config: {e}")
+            return error_response('internal_error', str(e), 500)
+
+    # All other config endpoints require global admin
     if not is_global_admin(auth):
         return error_response('forbidden', 'Global admin access required', 403)
 
@@ -1068,3 +1076,148 @@ def resolve_config(project_id: str, env_id: str) -> Dict:
     }
 
     return json_response(200, resolved)
+
+
+# =============================================================================
+# Frontend Config (for React app)
+# =============================================================================
+
+def get_frontend_config() -> Dict:
+    """
+    Build frontend-compatible config from DynamoDB.
+
+    Returns config in the format expected by ConfigContext.jsx:
+    - global: branding, SSO portal URL, default region
+    - api: API configuration
+    - auth: auth configuration
+    - features: feature flags
+    - projects: map of projectId -> project config with environments
+    - defaultProject: first project ID
+    """
+    table = _get_table()
+
+    # Get settings
+    settings_response = table.get_item(Key={'pk': 'GLOBAL', 'sk': 'settings'})
+    settings = _decimal_to_native(settings_response.get('Item', {}))
+
+    # Get all projects
+    projects_response = table.query(
+        KeyConditionExpression=Key('pk').eq('PROJECT')
+    )
+    project_items = [_decimal_to_native(item) for item in projects_response.get('Items', [])]
+
+    # Get all environments
+    env_response = table.query(
+        KeyConditionExpression=Key('pk').eq('ENV')
+    )
+    env_items = [_decimal_to_native(item) for item in env_response.get('Items', [])]
+
+    # Get all AWS accounts (for accounts map)
+    accounts_response = table.query(
+        KeyConditionExpression=Key('pk').eq('GLOBAL') & Key('sk').begins_with('aws-account:')
+    )
+    account_items = [_decimal_to_native(item) for item in accounts_response.get('Items', [])]
+
+    # Build accounts map
+    aws_accounts = {}
+    for account in account_items:
+        account_id = account.get('accountId')
+        if account_id:
+            aws_accounts[account_id] = {
+                'displayName': account.get('displayName', account_id),
+                'readRoleArn': account.get('readRoleArn', ''),
+                'actionRoleArn': account.get('actionRoleArn', ''),
+                'defaultRegion': account.get('defaultRegion', 'eu-central-1'),
+            }
+
+    # Group environments by projectId
+    envs_by_project: Dict[str, List[Dict]] = {}
+    for env in env_items:
+        project_id = env.get('projectId')
+        if project_id:
+            if project_id not in envs_by_project:
+                envs_by_project[project_id] = []
+            envs_by_project[project_id].append(env)
+
+    # Build projects map
+    projects = {}
+    default_project = None
+
+    for project in project_items:
+        project_id = project.get('projectId')
+        if not project_id:
+            continue
+
+        if default_project is None:
+            default_project = project_id
+
+        # Get environments for this project
+        project_envs = envs_by_project.get(project_id, [])
+
+        # Build environments as object (envId -> env config) for frontend
+        environments_map = {}
+        environment_names = []
+        all_services = set()
+
+        for env in project_envs:
+            env_id = env.get('envId')
+            if not env_id:
+                continue
+
+            environment_names.append(env_id)
+
+            # Collect services from environment
+            env_services = env.get('services', [])
+            all_services.update(env_services)
+
+            # Build env config for frontend
+            environments_map[env_id] = {
+                'displayName': env.get('displayName', env_id),
+                'accountId': env.get('accountId', ''),
+                'region': env.get('region', 'eu-central-1'),
+                'clusterName': env.get('clusterName', ''),
+                'namespace': env.get('namespace', ''),
+                'services': env_services,
+                'status': env.get('status', 'active'),
+                'enabled': env.get('enabled', True),
+                'infrastructure': env.get('infrastructure', {}),
+                'topology': env.get('topology', {}),
+                'checkers': env.get('checkers', {}),
+            }
+
+        # Build project config for frontend
+        projects[project_id] = {
+            'name': project.get('displayName', project_id),
+            'description': project.get('description', ''),
+            'status': project.get('status', 'active'),
+            'orchestratorType': project.get('orchestratorType') or None,
+            'environments': environment_names,
+            'environmentsConfig': environments_map,
+            'services': list(all_services) or project.get('services', []),
+            'serviceNaming': project.get('serviceNaming', {}),
+            'envColors': project.get('envColors', {}),
+            'features': project.get('features', {}),
+            'pipelines': project.get('pipelines', {}),
+            'topology': project.get('topology', {}),
+            'idpGroupMapping': project.get('idpGroupMapping', {}),
+            'aws': {
+                'accounts': aws_accounts,
+            },
+        }
+
+    # Build final config
+    frontend_config = {
+        'global': {
+            'logo': settings.get('branding', {}).get('logo', '/logo.svg'),
+            'logoAlt': settings.get('branding', {}).get('logoAlt', 'Dashboard'),
+            'ssoPortalUrl': settings.get('aws', {}).get('ssoPortalUrl', ''),
+            'defaultRegion': settings.get('aws', {}).get('defaultRegion', 'eu-central-1'),
+        },
+        'api': settings.get('api', {}),
+        'auth': settings.get('auth', {}),
+        'features': settings.get('features', {}),
+        'projects': projects,
+        'defaultProject': default_project,
+    }
+
+    return json_response(200, frontend_config)

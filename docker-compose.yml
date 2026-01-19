@@ -1,0 +1,37 @@
+# LocalStack for local development
+#
+# Usage:
+#   docker-compose up -d
+#   npx sst deploy --stage local
+#   ./scripts/seed-localstack.sh  # (optional) seed config data
+#   npm run dev                   # start frontend dev server
+
+services:
+  localstack:
+    image: localstack/localstack:3.8
+    container_name: dashborion-localstack
+    ports:
+      - "4566:4566"           # LocalStack Gateway
+      - "4510-4559:4510-4559" # External services port range
+    environment:
+      - DEBUG=${LOCALSTACK_DEBUG:-0}
+      - SERVICES=dynamodb,lambda,apigateway,s3,ssm,kms,iam,sts,cloudwatch,ecr,ec2,ecs
+      - PERSISTENCE=1
+      - LAMBDA_EXECUTOR=docker
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LAMBDA_DOCKER_NETWORK=dashborion_default
+      - EAGER_SERVICE_LOADING=1
+    volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./.localstack}:/var/lib/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - default
+
+networks:
+  default:
+    name: dashborion_default

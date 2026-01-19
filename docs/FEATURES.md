@@ -45,9 +45,10 @@ Features can be configured at two levels:
 | `events` | `true` | Enable events timeline |
 | `actions` | `false` | Enable operational actions (deploy, scale, etc.) |
 | `comparison` | `false` | Enable environment comparison view (opt-in) |
-| `refresh` | `false` | Enable refresh/migration operations view (opt-in) |
+| `refresh` | `false` | Enable refresh/migration operations view (NOT IMPLEMENTED) |
 
-> **Note**: `comparison` and `refresh` are **opt-in** features - they are disabled by default and must be explicitly set to `true` to enable.
+> **Note**: `comparison` is an **opt-in** feature - disabled by default.
+> **Warning**: `refresh` is **not implemented** - the flag exists but the feature does not. See `docs/WORKPLAN.md`.
 
 ### Resolution Logic
 
@@ -198,11 +199,14 @@ The comparison view includes:
 
 ---
 
-## Refresh Feature (Planned)
+## Refresh Feature (NOT IMPLEMENTED)
 
-The refresh feature will allow triggering and monitoring migration/refresh operations.
+> **Status**: Cette feature est documentee mais **n'est pas implementee**. Seule la specification existe.
+> Voir `docs/WORKPLAN.md` pour le plan d'implementation eventuel (Phase 3, actions 3.4-3.7).
 
-### Enabling
+The refresh feature would allow triggering and monitoring migration/refresh operations.
+
+### Enabling (quand implemente)
 
 ```json
 {
@@ -212,19 +216,27 @@ The refresh feature will allow triggering and monitoring migration/refresh opera
 }
 ```
 
-### Routes (Planned)
+### Routes (specifiees, non implementees)
 
-| Route | Description |
-|-------|-------------|
-| `/:project/refresh` | Refresh operations dashboard |
-| `/:project/refresh/:operation` | Specific operation details |
+| Route | Description | Status |
+|-------|-------------|--------|
+| `/:project/refresh` | Refresh operations dashboard | NOT IMPLEMENTED |
+| `/:project/refresh/:operation` | Specific operation details | NOT IMPLEMENTED |
 
-### Capabilities (Planned)
+### Capabilities (specifiees, non implementees)
 
 - Trigger Step Function executions for refresh operations
 - Monitor running operations
 - View operation history
 - Rollback capabilities
+
+### Implementation Required
+
+Pour implementer cette feature :
+1. `backend/refresh/handler.py` - Handler API
+2. `providers/refresh/step_functions.py` - Provider Step Functions
+3. `frontend/pages/refresh/RefreshPage.jsx` - Page frontend
+4. Feature flag check dans le routing
 
 ---
 

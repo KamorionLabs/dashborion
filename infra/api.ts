@@ -325,6 +325,9 @@ export function setupRoutes(
   // Resolution (for terraform-aws-ops integration)
   api.route("GET /api/config/resolve/{projectId}/{envId}", lambdas.configRegistry.arn, authOptions);
 
+  // Frontend config (full merged config for React app)
+  api.route("GET /api/config/full", lambdas.configRegistry.arn, authOptions);
+
   // ==========================================================================
   // Discovery Routes (AWS resource discovery for Admin UI)
   // ==========================================================================

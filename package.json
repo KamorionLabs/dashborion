@@ -20,7 +20,15 @@
     "cli:install": "cd cli && pip install -e .",
     "tf:init": "cd terraform && terraform init",
     "tf:plan": "cd terraform && terraform plan",
-    "tf:apply": "cd terraform && terraform apply"
+    "tf:apply": "cd terraform && terraform apply",
+    "local:up": "docker-compose up -d",
+    "local:down": "docker-compose down",
+    "local:logs": "docker-compose logs -f localstack",
+    "local:setup": "./scripts/setup-localstack.sh",
+    "local:start": "docker-compose up -d && sleep 3 && ./scripts/setup-localstack.sh",
+    "backend:install": "uv pip install -e '.[dev]'",
+    "backend:dev": "cd backend && uv run flask --app dev_server run --reload --port 8080",
+    "dev:full": "pnpm local:start && concurrently 'pnpm backend:dev' 'cd packages/frontend && pnpm dev'"
   },
   "devDependencies": {
     "@types/mime-types": "^3.0.1",

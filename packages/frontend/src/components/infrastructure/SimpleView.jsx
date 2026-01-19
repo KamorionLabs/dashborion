@@ -233,9 +233,12 @@ export default function SimpleView({
     const svcData = node.data
     const isHealthy = svcData?.health === 'healthy' || svcData?.runningCount === svcData?.desiredCount
     const layerColor = LAYER_CONFIG[node.layer]?.color || '#6b7280'
+    const serviceKey = node.serviceKey || node.id
     const serviceWithName = {
       ...svcData,
-      name: node.name || svcData?.name || getShortServiceLabel(node.serviceKey || node.id),
+      serviceKey,
+      service: serviceKey,
+      name: node.name || svcData?.name || getShortServiceLabel(serviceKey),
     }
     const labelLines = serviceWithName.name
       ? serviceWithName.name

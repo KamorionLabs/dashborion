@@ -202,6 +202,11 @@ function ServiceCards({
   currentProjectId,
   appConfig
 }) {
+  // Get orchestrator type for this environment (eks or ecs)
+  const envDetails = appConfig?.currentProject?.environmentDetails?.[env]
+  const orchestratorType = envDetails?.orchestratorType || appConfig?.global?.defaultOrchestratorType || 'ecs'
+  const isEKS = orchestratorType === 'eks'
+
   const findServiceEntry = (shortName) => {
     const servicesMap = envServices?.services || {}
     if (servicesMap[shortName]) {
@@ -228,7 +233,12 @@ function ServiceCards({
           const isDeploying = service.deployPipeline?.lastExecution?.status === 'InProgress'
           const isBuilding = pipelines?.[svc]?.lastExecution?.status === 'InProgress'
           const isPipelineActive = isDeploying || isBuilding
-          const serviceWithName = { ...service, name: service.name || getServiceName(env, svc) }
+          const serviceWithName = {
+            ...service,
+            serviceKey: entry.key || svc,
+            service: entry.key || svc,
+            name: service.name || getServiceName(env, svc),
+          }
 
           return (
             <div
@@ -258,7 +268,7 @@ function ServiceCards({
                 <span className={`text-xs px-2 py-0.5 rounded ${
                   service.runningCount === service.desiredCount ? 'bg-green-500/30 text-green-400' : 'bg-yellow-500/30 text-yellow-400'
                 }`}>
-                  {service.runningCount}/{service.desiredCount} tasks
+                  {service.runningCount}/{service.desiredCount} {isEKS ? 'pods' : 'tasks'}
                 </span>
               </div>
 
@@ -269,16 +279,20 @@ function ServiceCards({
                   <span className={service.status === 'ACTIVE' ? 'text-green-400' : 'text-yellow-400'}>{service.status}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-500">Rev</span>
-                  <span className="text-gray-300">{service.taskDefinition}</span>
+                  <span className="text-gray-500">{isEKS ? 'Gen' : 'Rev'}</span>
+                  <span className="text-gray-300">
+                    {typeof service.taskDefinition === 'object'
+                      ? service.taskDefinition?.revision || service.taskDefinition?.family || '-'
+                      : service.taskDefinition || '-'}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">Image</span>
                   <span className="text-gray-300 font-mono text-[10px]">{service.image?.substring(0, 12)}</span>
                 </div>
 
-                {/* Deploy Pipeline */}
-                {service.deployPipeline && (
+                {/* Deploy Pipeline - ECS only (CodePipeline) */}
+                {!isEKS && service.deployPipeline && (
                   <div className="pt-1.5 mt-1.5 border-t border-gray-700">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-gray-500">Deploy</span>
@@ -375,7 +389,7 @@ function ServiceCards({
                         onClick={(e) => { e.stopPropagation(); onForceReload?.(env, svc) }}
                         disabled={!hasDeployPerm || actionLoading?.[`reload-${env}-${svc}`] || isPipelineActive}
                         className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-orange-600/80 hover:bg-orange-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
-                        title={!hasDeployPerm ? "Deploy permission required" : isPipelineActive ? "Disabled: pipeline in progress" : "Restart tasks (reload secrets)"}
+                        title={!hasDeployPerm ? "Deploy permission required" : isPipelineActive ? "Disabled: pipeline in progress" : isEKS ? "Restart pods (reload secrets)" : "Restart tasks (reload secrets)"}
                       >
                         {actionLoading?.[`reload-${env}-${svc}`] ? (
                           <RefreshCw className="w-3 h-3 animate-spin" />
@@ -390,7 +404,7 @@ function ServiceCards({
                         onClick={(e) => { e.stopPropagation(); onDeployLatest?.(env, svc) }}
                         disabled={!hasDeployPerm || actionLoading?.[`deploy-${env}-${svc}`] || isPipelineActive}
                         className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-blue-600/80 hover:bg-blue-500 disabled:bg-gray-600 disabled:opacity-50 rounded text-[10px] font-medium transition-colors"
-                        title={!hasDeployPerm ? "Deploy permission required" : isPipelineActive ? "Disabled: pipeline in progress" : "Update image & task def"}
+                        title={!hasDeployPerm ? "Deploy permission required" : isPipelineActive ? "Disabled: pipeline in progress" : isEKS ? "Update image & deployment" : "Update image & task def"}
                       >
                         {actionLoading?.[`deploy-${env}-${svc}`] ? (
                           <RefreshCw className="w-3 h-3 animate-spin" />
@@ -409,7 +423,7 @@ function ServiceCards({
                   <button
                     onClick={(e) => { e.stopPropagation(); onOpenLogsPanel?.({ env, service: svc, logs: [], autoTail: true }) }}
                     className="flex-1 flex items-center justify-center gap-1 px-2 py-1 bg-purple-600/80 hover:bg-purple-500 rounded text-[10px] font-medium transition-colors"
-                    title="Open ECS logs panel with live tail"
+                    title={isEKS ? "Open K8s logs panel with live tail" : "Open ECS logs panel with live tail"}
                   >
                     <Terminal className="w-3 h-3" />
                     Tail Logs

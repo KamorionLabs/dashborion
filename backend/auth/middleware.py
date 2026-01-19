@@ -31,8 +31,10 @@ def get_auth_context(event: Dict[str, Any]) -> Optional[AuthContext]:
     """
     # Primary: Lambda Authorizer context (API Gateway v2 format)
     authorizer = event.get('requestContext', {}).get('authorizer', {}).get('lambda', {})
+    print(f"[DEBUG] get_auth_context: authorizer={authorizer}")
 
     if authorizer and authorizer.get('email'):
+        print(f"[DEBUG] get_auth_context: found email={authorizer.get('email')}, parsing authorizer context")
         return _parse_authorizer_context(authorizer)
 
     # Fallback: Bearer token (for direct calls without authorizer)

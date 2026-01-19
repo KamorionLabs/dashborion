@@ -1,5 +1,17 @@
 # CLAUDE.md - Dashborion
 
+## CONSIGNE IMPORTANTE : Maintien du WORKPLAN
+
+> **A chaque session de travail sur Dashborion**, mettre a jour `docs/WORKPLAN.md` :
+> - Marquer les actions completees avec `[x]`
+> - Ajouter les nouvelles actions identifiees
+> - Mettre a jour la date de derniere modification
+> - Ajouter une ligne dans l'historique des mises a jour
+
+Le WORKPLAN est le plan de reference pour la stabilisation du projet. Il remplace tous les autres documents de planning/TODO.
+
+---
+
 ## Project Overview
 
 **Dashborion** is an open-source multi-cloud infrastructure dashboard with CLI for visualizing and managing ECS, EKS, and CI/CD pipelines.
@@ -57,16 +69,65 @@ dashborion/
 
 ## Development Setup
 
-### Frontend
+### Local Development with LocalStack (Recommended)
+
+Stack de dev complete avec LocalStack pour tester sans deployer sur AWS.
+
+**Pre-requis** : Docker, awscli-local (`pip install awscli-local`)
 
 ```bash
-cd frontend
+# Premier lancement (tout en un)
+pnpm local:start
+
+# Lancer le frontend en mode dev
+pnpm dev
+```
+
+**Commandes pnpm disponibles** :
+
+| Commande | Description |
+|----------|-------------|
+| `pnpm local:start` | Tout en un : up + setup (tables + seed) |
+| `pnpm local:up` | Demarrer LocalStack (docker-compose) |
+| `pnpm local:down` | Arreter LocalStack |
+| `pnpm local:logs` | Voir les logs LocalStack |
+| `pnpm local:setup` | Creer les tables DynamoDB et seeder |
+
+**Note importante** : SST deploy n'est **pas utilise** pour LocalStack car ECR est une feature Pro. Le script `setup-localstack.sh` cree directement les tables DynamoDB via `awslocal`.
+
+**Services LocalStack actives** : DynamoDB, Lambda, API Gateway, S3, SSM, KMS, IAM, STS, CloudWatch
+
+**Tables DynamoDB creees** :
+- `dashborion-local-tokens`, `dashborion-local-device-codes`
+- `dashborion-local-users`, `dashborion-local-groups`, `dashborion-local-permissions`
+- `dashborion-local-audit`, `dashborion-local-config`, `dashborion-local-cache`
+
+**Donnees de test** (apres setup) :
+- Projet `demo-project` avec services [api, web, worker]
+- 3 environnements : dev, staging, production (tous ECS)
+- Features : comparison=true, refresh=false
+- Utilisateur admin `admin@localhost`
+
+**Workflow apres un `local:down`** :
+```bash
+# Les donnees sont persistees dans .localstack/
+# Simplement redemarrer suffit :
+pnpm local:up
+
+# Si besoin de recreer les tables :
+pnpm local:setup
+```
+
+### Frontend (sans LocalStack)
+
+```bash
+cd packages/frontend
 npm install
 npm run dev          # Development server (localhost:5173)
 npm run build        # Production build
 ```
 
-### Backend (Local)
+### Backend (Local Lambda avec SAM)
 
 ```bash
 cd backend

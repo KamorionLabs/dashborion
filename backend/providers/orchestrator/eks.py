@@ -371,7 +371,8 @@ class EKSProvider(OrchestratorProvider):
                 deployments=deployments,
                 task_definition={
                     'image': workload.spec.template.spec.containers[0].image,
-                    'revision': str(workload.metadata.generation)
+                    'revision': str(workload.metadata.generation),
+                    'workloadType': workload_type  # 'deployment' or 'statefulset'
                 },
                 console_url=console_url,
                 account_id=env_config.account_id

@@ -523,6 +523,52 @@ class CacheProvider(ABC):
 
 
 # =============================================================================
+# DYNAMIC ORCHESTRATOR PROXY
+# =============================================================================
+
+class DynamicOrchestratorProxy:
+    """Proxy that selects the correct orchestrator provider based on environment.
+
+    This allows a project to have mixed ECS and EKS environments. The proxy
+    intercepts all method calls, determines the correct provider type from
+    the environment's orchestrator_type config, and delegates to that provider.
+
+    All OrchestratorProvider methods take `env` as their first argument,
+    which is used to select the appropriate provider.
+    """
+
+    def __init__(self, config, project: str):
+        self.config = config
+        self.project = project
+        self._provider_cache = {}  # Cache providers by type to avoid re-creation
+
+    def _get_provider_for_env(self, env: str) -> 'OrchestratorProvider':
+        """Get or create the appropriate provider for an environment."""
+        provider_type = self.config.get_orchestrator_type(self.project, env)
+
+        if provider_type not in self._provider_cache:
+            # Import here to avoid circular dependency
+            from providers.base import ProviderFactory
+            if provider_type not in ProviderFactory._orchestrator_providers:
+                raise ValueError(f"Unknown orchestrator type: {provider_type}")
+            provider_class = ProviderFactory._orchestrator_providers[provider_type]
+            self._provider_cache[provider_type] = provider_class(self.config, self.project)
+
+        return self._provider_cache[provider_type]
+
+    def __getattr__(self, name: str):
+        """Intercept method calls and delegate to the appropriate provider.
+
+        Assumes all OrchestratorProvider methods take `env` as first argument.
+        """
+        def method_wrapper(env, *args, **kwargs):
+            provider = self._get_provider_for_env(env)
+            method = getattr(provider, name)
+            return method(env, *args, **kwargs)
+        return method_wrapper
+
+
+# =============================================================================
 # PROVIDER FACTORY
 # =============================================================================
 
@@ -577,12 +623,52 @@ class ProviderFactory:
         return cls._ci_providers[provider_type](config, project)
 
     @classmethod
-    def get_orchestrator_provider(cls, config, project: str) -> OrchestratorProvider:
-        """Get orchestrator provider instance based on config"""
-        provider_type = config.orchestrator.type
+    def get_orchestrator_provider(cls, config, project: str, env: str = None):
+        """Get orchestrator provider instance based on config.
+
+        For projects with mixed orchestrator types (some envs ECS, some EKS),
+        returns a DynamicOrchestratorProxy that automatically routes to the
+        correct provider based on the environment.
+
+        Args:
+            config: Application configuration
+            project: Project name
+            env: Optional environment name. If provided and project is NOT mixed,
+                 uses env-specific orchestrator_type.
+
+        Returns:
+            OrchestratorProvider instance or DynamicOrchestratorProxy for mixed projects
+        """
+        # For mixed orchestrator projects, use dynamic proxy
+        if config.has_mixed_orchestrators(project):
+            return DynamicOrchestratorProxy(config, project)
+
+        # Single orchestrator type project - determine which one
+        if env:
+            provider_type = config.get_orchestrator_type(project, env)
+        else:
+            provider_type = config.orchestrator.type
+
         if provider_type not in cls._orchestrator_providers:
             raise ValueError(f"Unknown orchestrator type: {provider_type}")
         return cls._orchestrator_providers[provider_type](config, project)
+
+    @classmethod
+    def get_dynamic_orchestrator(cls, config, project: str) -> DynamicOrchestratorProxy:
+        """Get a dynamic orchestrator proxy that selects provider based on environment.
+
+        Use this when a project may have mixed ECS and EKS environments.
+        The proxy intercepts all method calls and delegates to the appropriate
+        provider (ECSProvider or EKSProvider) based on the env's orchestrator_type.
+
+        Args:
+            config: Application configuration
+            project: Project name
+
+        Returns:
+            DynamicOrchestratorProxy that delegates to ECS or EKS provider per env
+        """
+        return DynamicOrchestratorProxy(config, project)
 
     @classmethod
     def get_events_provider(cls, config, project: str) -> EventsProvider:

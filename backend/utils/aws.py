@@ -2,6 +2,7 @@
 AWS utility functions for cross-account access and console URLs.
 """
 
+import os
 import boto3
 import time
 from urllib.parse import quote
@@ -13,6 +14,18 @@ from app_config import get_config
 # Cache for cross-account clients with TTL (50 minutes, credentials expire after 1 hour)
 _client_cache = {}
 _CACHE_TTL_SECONDS = 50 * 60  # 50 minutes
+
+
+def _get_localstack_client(service: str, region: str):
+    """Get boto3 client configured for LocalStack."""
+    endpoint_url = os.environ.get('LOCALSTACK_ENDPOINT')
+    return boto3.client(
+        service,
+        endpoint_url=endpoint_url,
+        region_name=region,
+        aws_access_key_id='test',
+        aws_secret_access_key='test'
+    )
 
 
 def get_cross_account_client(
@@ -38,6 +51,11 @@ def get_cross_account_client(
     """
     config = get_config()
     region = region or config.region
+
+    # LocalStack mode: skip role assumption
+    if os.environ.get('LOCALSTACK_ENDPOINT'):
+        return _get_localstack_client(service, region)
+
     shared_account = config.shared_services_account
 
     # If same account as shared-services, use direct client (no caching needed)
@@ -113,6 +131,10 @@ def get_action_client(
     """
     config = get_config()
     region = region or config.region
+
+    # LocalStack mode: skip role assumption
+    if os.environ.get('LOCALSTACK_ENDPOINT'):
+        return _get_localstack_client(service, region)
 
     # Sanitize email for role session name
     sanitized_email = user_email.replace('@', '-at-').replace('.', '-dot-')[:64] if user_email else 'unknown'
