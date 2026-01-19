@@ -56,7 +56,9 @@ class EKSProvider(OrchestratorProvider):
         Get Kubernetes client for EKS cluster.
         Uses EKS token for authentication.
         """
+        print(f"[DEBUG] _get_k8s_client: env={env}")
         if env in self._k8s_clients:
+            print(f"[DEBUG] _get_k8s_client: returning cached client for {env}")
             return self._k8s_clients[env]
 
         try:
@@ -65,16 +67,20 @@ class EKSProvider(OrchestratorProvider):
             from kubernetes.client import Configuration
 
             env_config = self.config.get_environment(self.project, env)
+            print(f"[DEBUG] _get_k8s_client: env_config={env_config}")
             eks = self._get_eks_client(env)
 
             # Get cluster info - use env-specific cluster name from config
             cluster_name = env_config.cluster_name or self.config.get_cluster_name(self.project, env)
+            print(f"[DEBUG] _get_k8s_client: cluster_name={cluster_name}")
             cluster_info = eks.describe_cluster(name=cluster_name)['cluster']
+            print(f"[DEBUG] _get_k8s_client: cluster endpoint={cluster_info['endpoint']}")
 
             # Generate EKS token with assumed role credentials
             # Store env name in env_config for token generation
             env_config.env_name = env
             token = self._get_eks_token(env_config, cluster_name, env_config.region)
+            print(f"[DEBUG] _get_k8s_client: token generated (length={len(token)})")
 
             # Configure K8s client
             configuration = Configuration()
@@ -82,6 +88,7 @@ class EKSProvider(OrchestratorProvider):
             configuration.verify_ssl = True
             configuration.ssl_ca_cert = self._write_ca_cert(cluster_info['certificateAuthority']['data'])
             configuration.api_key = {"authorization": f"Bearer {token}"}
+            print(f"[DEBUG] _get_k8s_client: K8s client configured, host={configuration.host}")
 
             api_client = k8s_client.ApiClient(configuration)
             self._k8s_clients[env] = {
@@ -110,15 +117,20 @@ class EKSProvider(OrchestratorProvider):
         import hmac
         import urllib.parse
 
+        print(f"[DEBUG] _get_eks_token: cluster_name={cluster_name}, region={region}, account_id={env_config.account_id}")
+
         try:
             # Get assumed role credentials for the target account
             role_arn = self.config.get_read_role_arn_for_env(self.project, env_config.env_name, env_config.account_id)
+            print(f"[DEBUG] _get_eks_token: role_arn from env={role_arn}")
             if not role_arn:
                 role_arn = self.config.get_read_role_arn(env_config.account_id)
+                print(f"[DEBUG] _get_eks_token: role_arn from account={role_arn}")
 
             if not role_arn:
                 raise ValueError(f"No read role ARN configured for account {env_config.account_id}")
 
+            print(f"[DEBUG] _get_eks_token: assuming role {role_arn}")
             # Assume role to get temporary credentials
             sts = boto3.client('sts')
             assumed = sts.assume_role(
@@ -129,6 +141,7 @@ class EKSProvider(OrchestratorProvider):
             access_key = creds['AccessKeyId']
             secret_key = creds['SecretAccessKey']
             session_token = creds['SessionToken']
+            print(f"[DEBUG] _get_eks_token: role assumed successfully, access_key={access_key[:10]}...")
 
             # SigV4 signing for presigned URL
             method = 'GET'
@@ -170,8 +183,9 @@ class EKSProvider(OrchestratorProvider):
                 for k, v in sorted(query_params.items())
             )
 
-            # Payload hash (empty for GET with presigned URL uses UNSIGNED-PAYLOAD)
-            payload_hash = 'UNSIGNED-PAYLOAD'
+            # Payload hash must be SHA256 of empty string for EKS token generation
+            # This is different from S3 presigned URLs which use UNSIGNED-PAYLOAD
+            payload_hash = hashlib.sha256(b'').hexdigest()
 
             # Build canonical request
             canonical_request = f'{method}\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
@@ -222,21 +236,28 @@ class EKSProvider(OrchestratorProvider):
 
     def get_services(self, env: str) -> Dict[str, Service]:
         """Get all services (deployments) for an environment"""
+        print(f"[DEBUG] get_services: project={self.project}, env={env}")
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
+            print(f"[DEBUG] get_services: unknown environment {env}")
             return {'error': f'Unknown environment: {env}'}
 
+        print(f"[DEBUG] get_services: services to fetch={env_config.services}")
         result = {}
         for service_name in env_config.services:
             try:
+                print(f"[DEBUG] get_services: fetching service {service_name}")
                 result[service_name] = self.get_service(env, service_name)
+                print(f"[DEBUG] get_services: {service_name} OK")
             except Exception as e:
-                print(f"Error getting service {service_name}: {e}")
+                print(f"[DEBUG] get_services: ERROR for {service_name}: {e}")
+                import traceback
+                traceback.print_exc()
                 result[service_name] = Service(
                     name=service_name,
                     service=service_name,
                     environment=env,
-                    cluster_name=self.config.get_cluster_name(env),
+                    cluster_name=self.config.get_cluster_name(self.project, env),
                     status='error',
                     desired_count=0,
                     running_count=0
@@ -246,6 +267,7 @@ class EKSProvider(OrchestratorProvider):
 
     def get_service(self, env: str, service: str) -> Service:
         """Get service (deployment) information"""
+        print(f"[DEBUG] get_service: env={env}, service={service}")
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             raise ValueError(f"Unknown environment: {env}")
@@ -256,10 +278,34 @@ class EKSProvider(OrchestratorProvider):
             core_api = k8s['core']
             namespace = k8s['namespace']
             cluster_name = k8s['cluster_name']
+            print(f"[DEBUG] get_service: namespace={namespace}, cluster_name={cluster_name}")
 
-            # Get deployment
-            deployment_name = self.config.get_service_name(env, service)
-            deployment = apps_api.read_namespaced_deployment(deployment_name, namespace)
+            # Get workload (Deployment or StatefulSet)
+            from kubernetes.client.rest import ApiException
+            workload_name = self.config.get_service_name(self.project, env, service)
+            print(f"[DEBUG] get_service: fetching workload {workload_name} in namespace {namespace}")
+
+            workload = None
+            workload_type = None
+
+            # Try Deployment first
+            try:
+                workload = apps_api.read_namespaced_deployment(workload_name, namespace)
+                workload_type = 'deployment'
+                print(f"[DEBUG] get_service: found Deployment {workload_name}")
+            except ApiException as e:
+                if e.status == 404:
+                    # Try StatefulSet if Deployment not found
+                    try:
+                        workload = apps_api.read_namespaced_stateful_set(workload_name, namespace)
+                        workload_type = 'statefulset'
+                        print(f"[DEBUG] get_service: found StatefulSet {workload_name}")
+                    except ApiException as e2:
+                        if e2.status == 404:
+                            raise ValueError(f"Workload {workload_name} not found (tried Deployment and StatefulSet)")
+                        raise
+                else:
+                    raise
 
             # Get pods for this deployment
             label_selector = f"app={service}"
@@ -294,16 +340,16 @@ class EKSProvider(OrchestratorProvider):
                     started_at=pod.status.start_time
                 ))
 
-            # Build deployment info
+            # Build deployment info (works for both Deployment and StatefulSet)
             deployments = [ServiceDeployment(
-                deployment_id=deployment.metadata.uid,
+                deployment_id=workload.metadata.uid,
                 status='primary',
-                task_definition=deployment.spec.template.spec.containers[0].image,
-                revision=str(deployment.metadata.generation),
-                desired_count=deployment.spec.replicas or 0,
-                running_count=deployment.status.ready_replicas or 0,
-                pending_count=(deployment.status.replicas or 0) - (deployment.status.ready_replicas or 0),
-                rollout_state='COMPLETED' if deployment.status.ready_replicas == deployment.spec.replicas else 'IN_PROGRESS'
+                task_definition=workload.spec.template.spec.containers[0].image,
+                revision=str(workload.metadata.generation),
+                desired_count=workload.spec.replicas or 0,
+                running_count=workload.status.ready_replicas or 0,
+                pending_count=(workload.status.replicas or 0) - (workload.status.ready_replicas or 0),
+                rollout_state='COMPLETED' if workload.status.ready_replicas == workload.spec.replicas else 'IN_PROGRESS'
             )]
 
             console_url = build_sso_console_url(
@@ -313,19 +359,19 @@ class EKSProvider(OrchestratorProvider):
             )
 
             return Service(
-                name=deployment_name,
+                name=workload_name,
                 service=service,
                 environment=env,
                 cluster_name=cluster_name,
-                status='ACTIVE' if deployment.status.ready_replicas else 'INACTIVE',
-                desired_count=deployment.spec.replicas or 0,
-                running_count=deployment.status.ready_replicas or 0,
-                pending_count=(deployment.status.replicas or 0) - (deployment.status.ready_replicas or 0),
+                status='ACTIVE' if workload.status.ready_replicas else 'INACTIVE',
+                desired_count=workload.spec.replicas or 0,
+                running_count=workload.status.ready_replicas or 0,
+                pending_count=(workload.status.replicas or 0) - (workload.status.ready_replicas or 0),
                 tasks=tasks,
                 deployments=deployments,
                 task_definition={
-                    'image': deployment.spec.template.spec.containers[0].image,
-                    'revision': str(deployment.metadata.generation)
+                    'image': workload.spec.template.spec.containers[0].image,
+                    'revision': str(workload.metadata.generation)
                 },
                 console_url=console_url,
                 account_id=env_config.account_id
@@ -344,12 +390,27 @@ class EKSProvider(OrchestratorProvider):
             core_api = k8s['core']
             namespace = k8s['namespace']
 
-            deployment_name = self.config.get_service_name(env, service)
-            deployment = apps_api.read_namespaced_deployment(deployment_name, namespace)
+            # Get workload (Deployment or StatefulSet)
+            from kubernetes.client.rest import ApiException
+            workload_name = self.config.get_service_name(self.project, env, service)
+
+            workload = None
+            try:
+                workload = apps_api.read_namespaced_deployment(workload_name, namespace)
+            except ApiException as e:
+                if e.status == 404:
+                    try:
+                        workload = apps_api.read_namespaced_stateful_set(workload_name, namespace)
+                    except ApiException as e2:
+                        if e2.status == 404:
+                            raise ValueError(f"Workload {workload_name} not found")
+                        raise
+                else:
+                    raise
 
             # Extract environment variables
             env_vars = []
-            container = deployment.spec.template.spec.containers[0]
+            container = workload.spec.template.spec.containers[0]
             if container.env:
                 for e in container.env:
                     value = e.value or ''
@@ -372,7 +433,7 @@ class EKSProvider(OrchestratorProvider):
             # Get recent events
             events = core_api.list_namespaced_event(
                 namespace,
-                field_selector=f"involvedObject.name={deployment_name}"
+                field_selector=f"involvedObject.name={workload_name}"
             )
 
             ecs_events = []
@@ -514,30 +575,35 @@ class EKSProvider(OrchestratorProvider):
             return [{'error': str(e)}]
 
     def scale_service(self, env: str, service: str, replicas: int, user_email: str) -> dict:
-        """Scale deployment to specified replica count"""
+        """Scale deployment/statefulset to specified replica count"""
         env_config = self.config.get_environment(self.project, env)
         if not env_config:
             return {'error': f'Unknown environment: {env}'}
 
         try:
+            from kubernetes.client.rest import ApiException
             k8s = self._get_k8s_client(env)
             apps_api = k8s['apps']
             namespace = k8s['namespace']
 
-            deployment_name = self.config.get_service_name(env, service)
-
-            # Patch deployment replicas
+            workload_name = self.config.get_service_name(self.project, env, service)
             body = {'spec': {'replicas': replicas}}
-            apps_api.patch_namespaced_deployment_scale(
-                deployment_name,
-                namespace,
-                body
-            )
+
+            # Try Deployment first, then StatefulSet
+            try:
+                apps_api.patch_namespaced_deployment_scale(workload_name, namespace, body)
+                workload_type = 'deployment'
+            except ApiException as e:
+                if e.status == 404:
+                    apps_api.patch_namespaced_stateful_set_scale(workload_name, namespace, body)
+                    workload_type = 'statefulset'
+                else:
+                    raise
 
             action_name = 'stop' if replicas == 0 else 'start'
             return {
                 'success': True,
-                'deployment': deployment_name,
+                'deployment': workload_name,
                 'desiredCount': replicas,
                 'triggeredBy': user_email,
                 'action': action_name
@@ -553,13 +619,14 @@ class EKSProvider(OrchestratorProvider):
             return {'error': f'Unknown environment: {env}'}
 
         try:
+            from kubernetes.client.rest import ApiException
             k8s = self._get_k8s_client(env)
             apps_api = k8s['apps']
             namespace = k8s['namespace']
 
-            deployment_name = self.config.get_service_name(env, service)
+            workload_name = self.config.get_service_name(self.project, env, service)
 
-            # Patch deployment to trigger rollout (add annotation)
+            # Patch to trigger rollout (add annotation)
             body = {
                 'spec': {
                     'template': {
@@ -572,15 +639,18 @@ class EKSProvider(OrchestratorProvider):
                 }
             }
 
-            apps_api.patch_namespaced_deployment(
-                deployment_name,
-                namespace,
-                body
-            )
+            # Try Deployment first, then StatefulSet
+            try:
+                apps_api.patch_namespaced_deployment(workload_name, namespace, body)
+            except ApiException as e:
+                if e.status == 404:
+                    apps_api.patch_namespaced_stateful_set(workload_name, namespace, body)
+                else:
+                    raise
 
             return {
                 'success': True,
-                'deployment': deployment_name,
+                'deployment': workload_name,
                 'triggeredBy': user_email,
                 'action': 'rollout-restart'
             }
@@ -596,7 +666,7 @@ class EKSProvider(OrchestratorProvider):
 
         try:
             eks = self._get_eks_client(env)
-            cluster_name = self.config.orchestrator.eks_cluster_name or self.config.get_cluster_name(env)
+            cluster_name = env_config.cluster_name or self.config.get_cluster_name(self.project, env)
 
             cluster = eks.describe_cluster(name=cluster_name)['cluster']
 
@@ -636,7 +706,7 @@ class EKSProvider(OrchestratorProvider):
             'cloudwatch', env_config.account_id, env_config.region,
             project=self.project, env=env
         )
-        cluster_name = self.config.orchestrator.eks_cluster_name or self.config.get_cluster_name(env)
+        cluster_name = env_config.cluster_name or self.config.get_cluster_name(self.project, env)
         namespace = env_config.namespace or self.config.orchestrator.default_namespace
 
         end_time = datetime.utcnow()

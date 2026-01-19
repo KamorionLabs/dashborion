@@ -40,7 +40,18 @@ def _get_dynamodb_resource():
     """Get or create DynamoDB resource."""
     global _dynamodb_resource
     if _dynamodb_resource is None:
-        _dynamodb_resource = boto3.resource('dynamodb')
+        # Support LocalStack for local development
+        localstack_endpoint = os.environ.get('LOCALSTACK_ENDPOINT')
+        if localstack_endpoint:
+            _dynamodb_resource = boto3.resource(
+                'dynamodb',
+                endpoint_url=localstack_endpoint,
+                region_name=os.environ.get('AWS_DEFAULT_REGION', 'eu-west-3'),
+                aws_access_key_id='test',
+                aws_secret_access_key='test'
+            )
+        else:
+            _dynamodb_resource = boto3.resource('dynamodb')
     return _dynamodb_resource
 
 
@@ -144,6 +155,7 @@ class EnvironmentConfig:
     region: str = "eu-west-3"
     cluster_name: Optional[str] = None  # Override naming pattern
     namespace: Optional[str] = None  # For EKS
+    orchestrator_type: Optional[str] = None  # "ecs" or "eks" - overrides global setting
     read_role_arn: Optional[str] = None  # Override cross-account read role
     action_role_arn: Optional[str] = None  # Override cross-account action role
     status: Optional[str] = None  # Environment status (active, deployed, planned)
@@ -157,6 +169,7 @@ class EnvironmentConfig:
             'region': self.region,
             'clusterName': self.cluster_name,
             'namespace': self.namespace,
+            'orchestratorType': self.orchestrator_type,
             'status': self.status
         }
         if self.read_role_arn:
@@ -348,14 +361,16 @@ class DashboardConfig:
             return service
         proj = self.get_project(project)
         service_naming = proj.service_naming if proj else None
-        prefix_template = service_naming.get('prefix') if service_naming else None
-        suffix_template = service_naming.get('suffix') if service_naming else None
-        if prefix_template or suffix_template:
+        # If service_naming is defined (even with empty values), use it
+        if service_naming is not None:
+            prefix_template = service_naming.get('prefix', '')
+            suffix_template = service_naming.get('suffix', '')
             prefix = prefix_template.format(project=project, env=env) if prefix_template else ""
             suffix = suffix_template.format(project=project, env=env) if suffix_template else ""
             if service.startswith(prefix) and service.endswith(suffix):
                 return service
             return f"{prefix}{service}{suffix}"
+        # Fall back to default naming pattern
         pattern = self.naming_pattern.service
         if '{service}' in pattern:
             prefix, suffix = pattern.split('{service}', 1)
@@ -443,6 +458,36 @@ class DashboardConfig:
             return env_config.action_role_arn
         return self.get_action_role_arn(account_id)
 
+    def get_orchestrator_type(self, project: str, env: str) -> str:
+        """Get orchestrator type for an environment with fallback to global.
+        Priority: environment.orchestratorType > global orchestrator.type
+        Returns: 'ecs' or 'eks'
+        """
+        env_config = self.get_environment(project, env)
+        if env_config and env_config.orchestrator_type:
+            return env_config.orchestrator_type
+        return self.orchestrator.type
+
+    def has_mixed_orchestrators(self, project: str) -> bool:
+        """Check if a project has environments with different orchestrator types.
+
+        Returns True if the project has both ECS and EKS environments,
+        which requires using the DynamicOrchestratorProxy.
+        """
+        proj = self.get_project(project)
+        if not proj:
+            return False
+
+        orchestrator_types = set()
+        for env_name in proj.environments:
+            orch_type = self.get_orchestrator_type(project, env_name)
+            orchestrator_types.add(orch_type)
+            # Early exit if we found both types
+            if len(orchestrator_types) > 1:
+                return True
+
+        return False
+
     def build_console_url(self, url_type: str, **kwargs) -> str:
         """Build a console URL from template"""
         template = self.console_urls.get(url_type)
@@ -470,6 +515,8 @@ def _parse_environment_config(env_data: dict, default_region: str) -> Environmen
     """Parse environment data into EnvironmentConfig dataclass."""
     infra_config = None
     infra_data = env_data.get('infrastructure')
+    if infra_data is None:
+        infra_data = {}
     if isinstance(infra_data, dict):
         resources = {}
         for key, value in (infra_data.get('resources') or {}).items():
@@ -479,10 +526,13 @@ def _parse_environment_config(env_data: dict, default_region: str) -> Environmen
                 ids=value.get('ids', []),
                 tags=value.get('tags', {})
             )
+        legacy_default_tags = env_data.get('discoveryTags') or infra_data.get('discoveryTags') or {}
+        default_tags = infra_data.get('defaultTags') or legacy_default_tags or {}
+        domain_config = infra_data.get('domainConfig') or env_data.get('domainConfig')
         infra_config = InfrastructureConfig(
-            default_tags=infra_data.get('defaultTags', {}),
+            default_tags=default_tags,
             resources=resources,
-            domain_config=infra_data.get('domainConfig'),
+            domain_config=domain_config,
         )
 
     # Support both SSM format (clusterName) and DynamoDB format (kubernetes.clusterName)
@@ -496,6 +546,7 @@ def _parse_environment_config(env_data: dict, default_region: str) -> Environmen
         region=env_data.get('region', default_region),
         cluster_name=cluster_name,
         namespace=namespace,
+        orchestrator_type=env_data.get('orchestratorType'),
         read_role_arn=env_data.get('readRoleArn'),
         action_role_arn=env_data.get('actionRoleArn'),
         status=env_data.get('status'),
