@@ -15,6 +15,12 @@ import {
   Plus,
   Trash2,
   Compass,
+  GitBranch,
+  Search,
+  Folder,
+  FolderOpen,
+  ChevronRight,
+  X,
 } from 'lucide-react';
 import { fetchWithRetry } from '../../utils/fetch';
 
@@ -30,6 +36,45 @@ const AWS_REGIONS = [
 const TOPOLOGY_PRESETS = {
   ecs: ['edge', 'ingress', 'frontend', 'application', 'data'],
   eks: ['edge', 'ingress', 'frontend', 'proxy', 'application', 'search', 'data'],
+};
+
+const PIPELINE_PROVIDER_TYPES = [
+  { value: 'codepipeline', label: 'AWS CodePipeline' },
+  { value: 'jenkins', label: 'Jenkins' },
+  { value: 'argocd', label: 'ArgoCD' },
+  { value: 'github-actions', label: 'GitHub Actions' },
+  { value: 'azure-devops', label: 'Azure DevOps' },
+];
+
+// Provider-specific field definitions
+const PIPELINE_PROVIDER_FIELDS = {
+  codepipeline: [
+    { key: 'accountId', label: 'AWS Account', type: 'aws-account' },
+    { key: 'region', label: 'Region', type: 'aws-region' },
+  ],
+  jenkins: [
+    { key: 'jobPath', label: 'Job Path', type: 'text', placeholder: 'RubixDeployment/EKS/STAGING/deploy-service' },
+  ],
+  argocd: [
+    { key: 'appName', label: 'Application Name', type: 'text', placeholder: 'my-app-staging' },
+    { key: 'project', label: 'ArgoCD Project', type: 'text', placeholder: 'default' },
+  ],
+  'github-actions': [
+    { key: 'repo', label: 'Repository', type: 'text', placeholder: 'org/repo' },
+    { key: 'workflow', label: 'Workflow', type: 'text', placeholder: 'deploy.yml' },
+  ],
+  'azure-devops': [
+    { key: 'organization', label: 'Organization', type: 'text', placeholder: 'my-org' },
+    { key: 'adoProject', label: 'Project', type: 'text', placeholder: 'MyProject' },
+    { key: 'pipelineId', label: 'Pipeline ID', type: 'text', placeholder: '123' },
+  ],
+};
+
+// Categories for pipeline configuration
+const PIPELINE_CATEGORIES = ['build', 'deploy'];
+const PIPELINE_CATEGORY_LABELS = {
+  build: 'Build (CI)',
+  deploy: 'Deploy (CD)',
 };
 
 export default function ProjectForm() {
@@ -48,6 +93,7 @@ export default function ProjectForm() {
     orchestratorType: '',  // eks, ecs, or empty
     serviceNaming: { prefix: '' },
     topology: null,
+    pipelines: { enabled: false, services: {} },
   });
 
   const [newLayer, setNewLayer] = useState('');
@@ -78,6 +124,21 @@ export default function ProjectForm() {
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
   const [discoveryError, setDiscoveryError] = useState(null);
   const [namespaceOptions, setNamespaceOptions] = useState([]);
+
+  // Pipeline discovery state
+  const [pipelineDiscovery, setPipelineDiscovery] = useState({
+    open: false,
+    provider: null,
+    loading: false,
+    error: null,
+    currentPath: '/',
+    items: [],
+    filter: '',
+    // Callback info for selection
+    serviceId: null,
+    category: null,
+    fieldKey: null,
+  });
 
   const discoveryOrchestratorReady = form.orchestratorType === 'ecs' || form.orchestratorType === 'eks';
 
@@ -151,6 +212,7 @@ export default function ProjectForm() {
         orchestratorType: data.orchestratorType || '',
         serviceNaming: data.serviceNaming || { prefix: '' },
         topology: data.topology || null,
+        pipelines: data.pipelines || { enabled: false, services: {} },
       });
     } catch (err) {
       console.error('Error loading project:', err);
@@ -184,6 +246,7 @@ export default function ProjectForm() {
         description: form.description,
         orchestratorType: form.orchestratorType,
         serviceNaming: form.serviceNaming || {},
+        pipelines: form.pipelines || { enabled: false, providers: [] },
       };
       if (normalizedTopology) {
         payload.topology = normalizedTopology;
@@ -207,6 +270,92 @@ export default function ProjectForm() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // Pipeline discovery functions
+  const openPipelineDiscovery = async (provider, serviceId, category, fieldKey) => {
+    setPipelineDiscovery({
+      open: true,
+      provider,
+      loading: true,
+      error: null,
+      currentPath: '/',
+      items: [],
+      filter: '',
+      serviceId,
+      category,
+      fieldKey,
+    });
+
+    await discoverPipelines(provider, '/');
+  };
+
+  const discoverPipelines = async (provider, path = '/') => {
+    setPipelineDiscovery(prev => ({ ...prev, loading: true, error: null }));
+
+    try {
+      const response = await fetchWithRetry('/api/config/secrets/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: provider.replace('-token', ''),
+          path: path === '/' ? '' : path,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || data.error || 'Discovery failed');
+      }
+
+      setPipelineDiscovery(prev => ({
+        ...prev,
+        loading: false,
+        currentPath: data.currentPath || path,
+        items: data.items || [],
+      }));
+    } catch (err) {
+      console.error('Pipeline discovery error:', err);
+      setPipelineDiscovery(prev => ({
+        ...prev,
+        loading: false,
+        error: err.message,
+      }));
+    }
+  };
+
+  const navigateToFolder = (path) => {
+    discoverPipelines(pipelineDiscovery.provider, path);
+  };
+
+  const selectPipelineItem = (item) => {
+    const { serviceId, category, fieldKey } = pipelineDiscovery;
+
+    // Update the form with selected value
+    setForm(prev => ({
+      ...prev,
+      pipelines: {
+        ...prev.pipelines,
+        services: {
+          ...prev.pipelines.services,
+          [serviceId]: {
+            ...prev.pipelines.services[serviceId],
+            [category]: {
+              ...prev.pipelines.services[serviceId]?.[category],
+              [fieldKey]: item.path || item.name,
+            },
+          },
+        },
+      },
+    }));
+
+    // Close modal
+    setPipelineDiscovery(prev => ({ ...prev, open: false }));
+  };
+
+  const closePipelineDiscovery = () => {
+    setPipelineDiscovery(prev => ({ ...prev, open: false }));
   };
 
   const normalizeTopology = (topology) => {
@@ -1136,6 +1285,385 @@ export default function ProjectForm() {
           })()}
         </div>
 
+        {/* Pipelines */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <GitBranch size={18} className="text-green-400" />
+              <div>
+                <h2 className="text-lg font-semibold text-white">Pipelines</h2>
+                <p className="text-xs text-gray-500">
+                  Configure build pipelines. Deploy pipelines are configured per environment.
+                </p>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className="text-sm text-gray-400">Enable pipelines</span>
+              <input
+                type="checkbox"
+                checked={form.pipelines?.enabled || false}
+                onChange={(e) => setForm((prev) => ({
+                  ...prev,
+                  pipelines: { ...prev.pipelines, enabled: e.target.checked },
+                }))}
+                className="w-5 h-5 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
+              />
+            </label>
+          </div>
+
+          {form.pipelines?.enabled && (
+            <div className="flex items-center gap-4 p-3 bg-gray-800/50 rounded-lg">
+              <span className="text-sm text-gray-400">Build mode:</span>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="buildMode"
+                  value="project"
+                  checked={(form.pipelines?.buildMode || 'project') === 'project'}
+                  onChange={() => setForm((prev) => ({
+                    ...prev,
+                    pipelines: { ...prev.pipelines, buildMode: 'project' },
+                  }))}
+                  className="w-4 h-4 border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-white">Per project</span>
+                <span className="text-xs text-gray-500">(one build for all envs)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="buildMode"
+                  value="environment"
+                  checked={form.pipelines?.buildMode === 'environment'}
+                  onChange={() => setForm((prev) => ({
+                    ...prev,
+                    pipelines: { ...prev.pipelines, buildMode: 'environment' },
+                  }))}
+                  className="w-4 h-4 border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-white">Per environment</span>
+                <span className="text-xs text-gray-500">(build configured per env)</span>
+              </label>
+            </div>
+          )}
+
+          {form.pipelines?.enabled && (form.pipelines?.buildMode || 'project') === 'project' && (() => {
+            const pipelineServices = form.pipelines?.services || {};
+            const serviceEntries = Object.entries(pipelineServices);
+            const topologyComponents = Object.keys(normalizeTopologyShape(form.topology).components || {});
+
+            // Get workload-type components from topology (services that can have pipelines)
+            const workloadTypes = ['ecs-service', 'k8s-deployment', 'k8s-statefulset', 'service'];
+            const workloadComponents = Object.entries(normalizeTopologyShape(form.topology).components || {})
+              .filter(([_, comp]) => workloadTypes.includes(comp.type))
+              .map(([id]) => id);
+            const missingServices = workloadComponents.filter((id) => !pipelineServices[id]);
+
+            // Helper to render provider-specific fields for a category
+            const renderProviderFields = (serviceId, category, categoryConfig) => {
+              const providerFields = PIPELINE_PROVIDER_FIELDS[categoryConfig?.provider] || [];
+              if (providerFields.length === 0) return null;
+
+              return (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                  {providerFields.map((field) => (
+                    <div key={field.key}>
+                      <label className="block text-[10px] font-medium text-gray-500 mb-0.5">{field.label}</label>
+                      {field.type === 'aws-account' ? (
+                        <select
+                          value={categoryConfig?.[field.key] || ''}
+                          onChange={(e) => setForm((prev) => ({
+                            ...prev,
+                            pipelines: {
+                              ...prev.pipelines,
+                              services: {
+                                ...prev.pipelines.services,
+                                [serviceId]: {
+                                  ...prev.pipelines.services[serviceId],
+                                  [category]: { ...categoryConfig, [field.key]: e.target.value },
+                                },
+                              },
+                            },
+                          }))}
+                          className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value="">Select account</option>
+                          {awsAccounts.map((account) => (
+                            <option key={account.accountId} value={account.accountId}>
+                              {account.displayName || account.accountId}
+                            </option>
+                          ))}
+                        </select>
+                      ) : field.type === 'aws-region' ? (
+                        <select
+                          value={categoryConfig?.[field.key] || ''}
+                          onChange={(e) => setForm((prev) => ({
+                            ...prev,
+                            pipelines: {
+                              ...prev.pipelines,
+                              services: {
+                                ...prev.pipelines.services,
+                                [serviceId]: {
+                                  ...prev.pipelines.services[serviceId],
+                                  [category]: { ...categoryConfig, [field.key]: e.target.value },
+                                },
+                              },
+                            },
+                          }))}
+                          className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white focus:border-blue-500 focus:outline-none"
+                        >
+                          <option value="">Default region</option>
+                          {AWS_REGIONS.map((region) => (
+                            <option key={region.value} value={region.value}>{region.label}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="flex gap-1">
+                          <input
+                            type="text"
+                            value={categoryConfig?.[field.key] || ''}
+                            onChange={(e) => setForm((prev) => ({
+                              ...prev,
+                              pipelines: {
+                                ...prev.pipelines,
+                                services: {
+                                  ...prev.pipelines.services,
+                                  [serviceId]: {
+                                    ...prev.pipelines.services[serviceId],
+                                    [category]: { ...categoryConfig, [field.key]: e.target.value },
+                                  },
+                                },
+                              },
+                            }))}
+                            placeholder={field.placeholder || ''}
+                            className="flex-1 px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+                          />
+                          {/* Browse button for Jenkins and ArgoCD */}
+                          {(categoryConfig?.provider === 'jenkins' && field.key === 'jobPath') ||
+                           (categoryConfig?.provider === 'argocd' && field.key === 'appName') ? (
+                            <button
+                              type="button"
+                              onClick={() => openPipelineDiscovery(
+                                categoryConfig.provider,
+                                serviceId,
+                                category,
+                                field.key
+                              )}
+                              className="px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded text-xs flex items-center gap-1"
+                              title="Browse available pipelines"
+                            >
+                              <Search size={12} />
+                            </button>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            };
+
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <label className="text-sm font-medium text-gray-300">Services</label>
+                  <div className="flex items-center gap-2">
+                    {missingServices.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setForm((prev) => {
+                            const newServices = { ...(prev.pipelines?.services || {}) };
+                            missingServices.forEach((id) => {
+                              newServices[id] = {
+                                build: { enabled: true, provider: 'jenkins' },
+                              };
+                            });
+                            return {
+                              ...prev,
+                              pipelines: { ...prev.pipelines, services: newServices },
+                            };
+                          });
+                        }}
+                        className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded"
+                      >
+                        <Layers size={14} />
+                        Import from topology ({missingServices.length})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newServiceId = `service-${serviceEntries.length + 1}`;
+                        setForm((prev) => ({
+                          ...prev,
+                          pipelines: {
+                            ...prev.pipelines,
+                            services: {
+                              ...(prev.pipelines?.services || {}),
+                              [newServiceId]: {
+                                build: { enabled: false, provider: 'jenkins' },
+                                deploy: { enabled: false, provider: 'jenkins' },
+                              },
+                            },
+                          },
+                        }));
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-white rounded"
+                    >
+                      <Plus size={14} />
+                      Add Service
+                    </button>
+                  </div>
+                </div>
+
+                {serviceEntries.length === 0 ? (
+                  <p className="text-xs text-gray-500">
+                    No services configured.
+                    {workloadComponents.length > 0
+                      ? ` Click "Import from topology" to add ${workloadComponents.length} service(s) from the topology.`
+                      : ' Add a service to enable pipeline features.'}
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {serviceEntries.map(([serviceId, config]) => (
+                      <div
+                        key={serviceId}
+                        className="bg-gray-800/60 border border-gray-800 rounded-lg p-4 space-y-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={serviceId}
+                              onChange={(e) => {
+                                const newId = e.target.value.trim();
+                                if (!newId || newId === serviceId) return;
+                                setForm((prev) => {
+                                  const { [serviceId]: oldConfig, ...rest } = prev.pipelines?.services || {};
+                                  return {
+                                    ...prev,
+                                    pipelines: {
+                                      ...prev.pipelines,
+                                      services: { ...rest, [newId]: oldConfig },
+                                    },
+                                  };
+                                });
+                              }}
+                              list="topology-component-ids"
+                              placeholder="service-name"
+                              className="px-2 py-1 bg-gray-900 border border-gray-700 rounded text-sm font-medium text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+                            />
+                            <datalist id="topology-component-ids">
+                              {topologyComponents.map((id) => (
+                                <option key={id} value={id} />
+                              ))}
+                            </datalist>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setForm((prev) => {
+                              const { [serviceId]: _, ...rest } = prev.pipelines?.services || {};
+                              return {
+                                ...prev,
+                                pipelines: { ...prev.pipelines, services: rest },
+                              };
+                            })}
+                            className="text-red-400 hover:text-red-300"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+
+                        {/* Build section only (deploy is per environment) */}
+                        {(() => {
+                          const category = 'build';
+                          const categoryConfig = config?.[category] || {};
+                          const isEnabled = categoryConfig?.enabled || false;
+
+                          return (
+                            <div className={`p-3 rounded-lg border ${isEnabled ? 'bg-gray-900/60 border-gray-700' : 'bg-gray-900/30 border-gray-800'}`}>
+                              <div className="flex items-center justify-between mb-2">
+                                <span className={`text-xs font-semibold ${isEnabled ? 'text-white' : 'text-gray-500'}`}>
+                                  {PIPELINE_CATEGORY_LABELS[category]}
+                                </span>
+                                <label className="flex items-center gap-1.5 cursor-pointer">
+                                  <span className="text-[10px] text-gray-500">
+                                    {isEnabled ? 'On' : 'Off'}
+                                  </span>
+                                  <input
+                                    type="checkbox"
+                                    checked={isEnabled}
+                                    onChange={(e) => setForm((prev) => ({
+                                      ...prev,
+                                      pipelines: {
+                                        ...prev.pipelines,
+                                        services: {
+                                          ...prev.pipelines.services,
+                                          [serviceId]: {
+                                            ...config,
+                                            [category]: {
+                                              ...categoryConfig,
+                                              enabled: e.target.checked,
+                                              provider: e.target.checked ? (categoryConfig?.provider || 'jenkins') : categoryConfig?.provider,
+                                            },
+                                          },
+                                        },
+                                      },
+                                    }))}
+                                    className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-600 focus:ring-blue-500"
+                                  />
+                                </label>
+                              </div>
+
+                              {isEnabled && (
+                                <div className="space-y-2">
+                                  <div>
+                                    <label className="block text-[10px] font-medium text-gray-500 mb-0.5">Provider</label>
+                                    <select
+                                      value={categoryConfig?.provider || 'jenkins'}
+                                      onChange={(e) => {
+                                        const newProvider = e.target.value;
+                                        setForm((prev) => ({
+                                          ...prev,
+                                          pipelines: {
+                                            ...prev.pipelines,
+                                            services: {
+                                              ...prev.pipelines.services,
+                                              [serviceId]: {
+                                                ...config,
+                                                [category]: { enabled: true, provider: newProvider },
+                                              },
+                                            },
+                                          },
+                                        }));
+                                      }}
+                                      className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs text-white focus:border-blue-500 focus:outline-none"
+                                    >
+                                      {PIPELINE_PROVIDER_TYPES.map((opt) => (
+                                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  {renderProviderFields(serviceId, category, categoryConfig)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        <p className="text-[10px] text-gray-500">
+                          Deploy pipelines are configured per environment
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+
         {/* Actions */}
         <div className="flex items-center gap-3 pt-4 border-t border-gray-800">
           <button
@@ -1173,6 +1701,152 @@ export default function ProjectForm() {
             <FolderKanban size={16} />
             Manage Environments
           </Link>
+        </div>
+      )}
+
+      {/* Pipeline Discovery Modal */}
+      {pipelineDiscovery.open && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-2xl max-h-[80vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+              <div>
+                <h3 className="text-lg font-semibold text-white">
+                  Browse {pipelineDiscovery.provider === 'jenkins' ? 'Jenkins Jobs' : 'ArgoCD Applications'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  {pipelineDiscovery.provider === 'jenkins'
+                    ? `Current path: ${pipelineDiscovery.currentPath || '/'}`
+                    : 'Select an application'}
+                </p>
+              </div>
+              <button
+                onClick={closePipelineDiscovery}
+                className="p-1 hover:bg-gray-700 rounded"
+              >
+                <X size={20} className="text-gray-400" />
+              </button>
+            </div>
+
+            {/* Search filter */}
+            <div className="px-4 py-2 border-b border-gray-700">
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  type="text"
+                  value={pipelineDiscovery.filter}
+                  onChange={(e) => setPipelineDiscovery(prev => ({ ...prev, filter: e.target.value }))}
+                  placeholder="Filter items..."
+                  className="w-full pl-9 pr-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-auto p-4">
+              {pipelineDiscovery.loading ? (
+                <div className="flex items-center justify-center py-12">
+                  <RefreshCw size={24} className="animate-spin text-gray-500" />
+                </div>
+              ) : pipelineDiscovery.error ? (
+                <div className="text-center py-8">
+                  <AlertCircle size={32} className="mx-auto text-red-400 mb-2" />
+                  <p className="text-red-400">{pipelineDiscovery.error}</p>
+                  <button
+                    onClick={() => discoverPipelines(pipelineDiscovery.provider, pipelineDiscovery.currentPath)}
+                    className="mt-4 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : pipelineDiscovery.items.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  No items found
+                </div>
+              ) : (() => {
+                // Filter items based on search
+                const filterText = pipelineDiscovery.filter.toLowerCase();
+                const filteredItems = filterText
+                  ? pipelineDiscovery.items.filter(item =>
+                      item.name.toLowerCase().includes(filterText) ||
+                      (item.path && item.path.toLowerCase().includes(filterText))
+                    )
+                  : pipelineDiscovery.items;
+
+                if (filteredItems.length === 0) {
+                  return (
+                    <div className="text-center py-8 text-gray-500">
+                      No items match "{pipelineDiscovery.filter}"
+                    </div>
+                  );
+                }
+
+                return (
+                <div className="space-y-1">
+                  {/* Back button for Jenkins folders */}
+                  {pipelineDiscovery.provider === 'jenkins' && pipelineDiscovery.currentPath !== '/' && (
+                    <button
+                      onClick={() => {
+                        const parts = pipelineDiscovery.currentPath.split('/').filter(Boolean);
+                        parts.pop();
+                        navigateToFolder(parts.length > 0 ? parts.join('/') : '/');
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded text-left"
+                    >
+                      <FolderOpen size={16} className="text-yellow-400" />
+                      <span className="text-gray-400">..</span>
+                    </button>
+                  )}
+
+                  {/* Items list */}
+                  {filteredItems.map((item, index) => (
+                    <div
+                      key={`${item.path}-${index}`}
+                      className="flex items-center gap-2 px-3 py-2 hover:bg-gray-800 rounded cursor-pointer group"
+                      onClick={() => {
+                        if (item.type === 'folder') {
+                          navigateToFolder(item.path);
+                        } else {
+                          selectPipelineItem(item);
+                        }
+                      }}
+                    >
+                      {item.type === 'folder' ? (
+                        <Folder size={16} className="text-yellow-400" />
+                      ) : pipelineDiscovery.provider === 'argocd' ? (
+                        <GitBranch size={16} className="text-green-400" />
+                      ) : (
+                        <GitBranch size={16} className="text-blue-400" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm text-white truncate">{item.name}</div>
+                        {item.type !== 'folder' && (
+                          <div className="text-xs text-gray-500 truncate">{item.path}</div>
+                        )}
+                        {/* ArgoCD specific info */}
+                        {item.status && (
+                          <div className="text-xs text-gray-500 flex items-center gap-2 mt-0.5">
+                            <span className={item.status.health === 'Healthy' ? 'text-green-400' : item.status.health === 'Degraded' ? 'text-red-400' : 'text-yellow-400'}>
+                              {item.status.health}
+                            </span>
+                            <span className={item.status.sync === 'Synced' ? 'text-green-400' : 'text-yellow-400'}>
+                              {item.status.sync}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      {item.type === 'folder' ? (
+                        <ChevronRight size={16} className="text-gray-500 opacity-0 group-hover:opacity-100" />
+                      ) : (
+                        <span className="text-xs text-blue-400 opacity-0 group-hover:opacity-100">Select</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                );
+              })()}
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -18,6 +18,8 @@ from .base import (
 # CI Providers
 from .ci.codepipeline import CodePipelineProvider
 from .ci.github_actions import GitHubActionsProvider
+from .ci.jenkins import JenkinsProvider
+from .ci.argocd import ArgoCDProvider
 
 # Orchestrator Providers
 from .orchestrator.ecs import ECSProvider
@@ -44,6 +46,8 @@ __all__ = [
     # Providers (for explicit import if needed)
     'CodePipelineProvider',
     'GitHubActionsProvider',
+    'JenkinsProvider',
+    'ArgoCDProvider',
     'ECSProvider',
     'EKSProvider',
     'EKSDynamoProvider',

@@ -260,6 +260,24 @@ class CIProviderConfig:
     def argocd_token_secret(self) -> Optional[str]:
         return self.config.get('token_secret')
 
+    # Jenkins specific
+    @property
+    def jenkins_url(self) -> Optional[str]:
+        return self.config.get('url')
+
+    @property
+    def jenkins_user(self) -> Optional[str]:
+        return self.config.get('user')
+
+    @property
+    def jenkins_token_secret(self) -> Optional[str]:
+        return self.config.get('token_secret')
+
+    @property
+    def jenkins_job_path_pattern(self) -> str:
+        """Pattern for Jenkins job paths. Variables: {project}, {env}, {service}"""
+        return self.config.get('job_path_pattern', 'RubixDeployment/EKS/{env}/deploy-{service}')
+
 
 @dataclass
 class OrchestratorConfig:

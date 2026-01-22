@@ -544,6 +544,20 @@ export function createLambdaFunctions(
     ...(linkableResources.length > 0 ? { link: linkableResources } : {}),
     permissions: [
       ...dynamoFullPermissions,
+      // Secrets Manager permissions for CI/CD provider tokens
+      ...(useExistingRole ? [] : [{
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:TagResource",
+          "secretsmanager:ListSecrets",
+        ],
+        resources: ["*"],
+      }]),
     ],
     transform: {
       function: {

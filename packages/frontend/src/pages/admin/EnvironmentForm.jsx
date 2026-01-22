@@ -25,11 +25,13 @@ import {
   Tag,
   Globe,
   Info,
+  GitBranch,
 } from 'lucide-react';
 import { fetchWithRetry } from '../../utils/fetch';
 import { useConfig } from '../../ConfigContext';
 import ResourcePicker from '../../components/admin/ResourcePicker';
 import { stripServiceName } from '../../utils/serviceNaming';
+import { PipelineConfigSection } from '../../components/admin/pipelines';
 
 const AWS_REGIONS = [
   { value: 'eu-central-1', label: 'EU (Frankfurt)' },
@@ -52,6 +54,7 @@ const INFRA_RESOURCE_CONFIGS = [
   { key: 'cloudfront', label: 'CloudFront', pickerType: 'cloudfront', idLabel: 'Distribution ID' },
 ];
 
+
 const STEPS = [
   {
     id: 'context',
@@ -70,6 +73,12 @@ const STEPS = [
     label: 'Service Discovery',
     icon: Layers,
     description: 'Discover services in ECS/EKS and select what to monitor.',
+  },
+  {
+    id: 'pipelines',
+    label: 'Pipelines',
+    icon: GitBranch,
+    description: 'Configure build and deploy pipelines for services.',
   },
   {
     id: 'discovery',
@@ -134,6 +143,7 @@ export default function EnvironmentForm() {
       resources: {},
     },
     checkers: {},
+    pipelines: { services: {} },
   });
 
   const [servicePickerValue, setServicePickerValue] = useState('');
@@ -158,6 +168,7 @@ export default function EnvironmentForm() {
   const [newDomainValue, setNewDomainValue] = useState('');
   const [resourceIdDrafts, setResourceIdDrafts] = useState({});
   const [resourceTagDrafts, setResourceTagDrafts] = useState({});
+
 
   function normalizeDiscoveredServiceName(serviceName, envOverride = '') {
     const envValue = envOverride || form.envId || envId || '';
@@ -247,6 +258,7 @@ export default function EnvironmentForm() {
           resources,
         },
         checkers: data.checkers || {},
+        pipelines: data.pipelines || { services: {} },
       });
     } catch (err) {
       console.error('Error loading environment:', err);
@@ -1211,6 +1223,15 @@ export default function EnvironmentForm() {
       )}
 
       {wizardStep === 3 && (
+        <PipelineConfigSection
+          services={form.services}
+          pipelines={form.pipelines || { services: {} }}
+          project={project}
+          onPipelinesChange={(pipelines) => setForm(prev => ({ ...prev, pipelines }))}
+        />
+      )}
+
+      {wizardStep === 4 && (
         <div className="space-y-6">
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
             <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
@@ -1602,7 +1623,7 @@ export default function EnvironmentForm() {
         </div>
       )}
 
-      {wizardStep === 4 && (
+      {wizardStep === 5 && (
         <div className="space-y-6">
           <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
             <h2 className="text-lg font-semibold text-white mb-4">Review</h2>
@@ -1630,6 +1651,14 @@ export default function EnvironmentForm() {
               <div>
                 <div className="text-gray-500">Default Tags</div>
                 <div>{Object.keys(form.infrastructure.defaultTags || {}).length}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Pipelines Configured</div>
+                <div>
+                  {Object.values(form.pipelines?.services || {}).filter(svc =>
+                    svc.deploy?.enabled || svc.build?.enabled
+                  ).length} services
+                </div>
               </div>
             </div>
           </div>

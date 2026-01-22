@@ -24,6 +24,7 @@ from shared.response import (
     get_method,
     get_path,
     get_body,
+    get_query_params,
 )
 from app_config import get_config
 from providers import ProviderFactory
@@ -46,6 +47,11 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     parts = path.strip('/').split('/')
     if len(parts) < 3:
         return error_response('invalid_path', 'Invalid path structure', 400)
+
+    # Check for Jenkins discovery/history routes (no project prefix)
+    # /api/pipelines/jenkins/{action}/{path...}
+    if parts[1] == 'pipelines' and len(parts) >= 3 and parts[2] == 'jenkins':
+        return handle_jenkins_routes(event, auth, parts)
 
     project = parts[1]
     resource = parts[2]
@@ -85,9 +91,10 @@ def handle_pipelines(event, auth, project: str, parts: list, config) -> Dict[str
     if not check_permission(auth, Action.READ, project, permission_env):
         return error_response('forbidden', f'Permission denied: read on {project}/{permission_env}', 403)
 
-    ci = ProviderFactory.get_ci_provider(config, project)
+    # Get provider for this specific service and pipeline type
+    ci = ProviderFactory.get_ci_provider_for_service(config, project, service, pipeline_type)
     if not ci:
-        return error_response('not_configured', 'CI/CD provider not configured for this project', 501)
+        return error_response('not_configured', f'CI/CD provider not configured for {service} {pipeline_type}', 501)
 
     if pipeline_type == 'build':
         pipeline = ci.get_build_pipeline(service)
@@ -116,9 +123,10 @@ def handle_images(event, auth, project: str, parts: list, config) -> Dict[str, A
     if not check_permission(auth, Action.READ, project, '*'):
         return error_response('forbidden', f'Permission denied: read on {project}', 403)
 
-    ci = ProviderFactory.get_ci_provider(config, project)
+    # Use build provider for images (images are typically from build pipelines)
+    ci = ProviderFactory.get_ci_provider_for_service(config, project, service, 'build')
     if not ci:
-        return error_response('not_configured', 'CI/CD provider not configured for this project', 501)
+        return error_response('not_configured', f'CI/CD provider not configured for {service}', 501)
 
     images = ci.get_images(service)
 
@@ -155,9 +163,10 @@ def handle_build_action(event, auth, project: str, parts: list, config) -> Dict[
     image_tag = body.get('imageTag', 'latest')
     source_revision = body.get('sourceRevision', '')
 
-    ci = ProviderFactory.get_ci_provider(config, project)
+    # Use build provider for triggering builds
+    ci = ProviderFactory.get_ci_provider_for_service(config, project, service, 'build')
     if not ci:
-        return error_response('not_configured', 'CI/CD provider not configured for this project', 501)
+        return error_response('not_configured', f'CI/CD provider not configured for {service} build', 501)
 
     # Audit log start
     _audit_log(email, 'build_trigger', {
@@ -235,3 +244,214 @@ def format_image(img) -> Dict[str, Any]:
         'sizeBytes': img.size_bytes,
         'sizeMB': img.size_mb
     }
+
+
+# =============================================================================
+# Jenkins Discovery and History Handlers
+# =============================================================================
+
+def handle_jenkins_routes(event, auth, parts: list) -> Dict[str, Any]:
+    """
+    Handle Jenkins-specific routes for discovery and history.
+
+    Routes:
+    - GET /api/pipelines/jenkins/discover?providerId=...&path=...&includeParams=true
+    - GET /api/pipelines/jenkins/job/{jobPath+}?providerId=...
+    - GET /api/pipelines/jenkins/history/{jobPath+}?providerId=...&Webshop=MI2&limit=20
+    - GET /api/pipelines/jenkins/params/{jobPath+}?providerId=...&param=Webshop
+
+    Path: /api/pipelines/jenkins/{action}/{path...}
+    Index:  0     1         2        3        4...
+
+    All routes require providerId query parameter referencing a global CI Provider.
+    """
+    # Require at least admin read permission for Jenkins discovery
+    if not check_permission(auth, Action.READ, '*', '*'):
+        return error_response('forbidden', 'Permission denied: admin read required', 403)
+
+    if len(parts) < 4:
+        return error_response('invalid_path', 'Use /api/pipelines/jenkins/{action}/...', 400)
+
+    action = parts[3]
+    config = get_config()
+    params = get_query_params(event)
+
+    # providerId is required - references global CI Provider
+    provider_id = params.get('providerId')
+    if not provider_id:
+        return error_response('validation_error', 'providerId query parameter is required', 400)
+
+    # Load CI Provider config with credentials
+    from config.handler import get_ci_provider_with_credentials
+    provider_config = get_ci_provider_with_credentials(provider_id)
+
+    if not provider_config:
+        return error_response('not_found', f'CI Provider not found: {provider_id}', 404)
+
+    if provider_config.get('type') != 'jenkins':
+        return error_response('invalid_type', f'CI Provider {provider_id} is not a Jenkins provider', 400)
+
+    # Create Jenkins provider from global config
+    from providers.ci.jenkins import JenkinsProvider
+    jenkins = JenkinsProvider.from_provider_config(config, provider_config)
+
+    if action == 'discover':
+        return handle_jenkins_discover(event, jenkins)
+    elif action == 'job':
+        job_path = '/'.join(parts[4:]) if len(parts) > 4 else ''
+        return handle_jenkins_job(event, jenkins, job_path)
+    elif action == 'history':
+        job_path = '/'.join(parts[4:]) if len(parts) > 4 else ''
+        return handle_jenkins_history(event, jenkins, job_path)
+    elif action == 'params':
+        job_path = '/'.join(parts[4:]) if len(parts) > 4 else ''
+        return handle_jenkins_params(event, jenkins, job_path)
+
+    return error_response('not_found', f'Unknown Jenkins action: {action}', 404)
+
+
+def handle_jenkins_discover(event, jenkins) -> Dict[str, Any]:
+    """
+    Handle GET /api/pipelines/jenkins/discover
+
+    Query params:
+    - path: Folder path to browse (optional)
+    - includeParams: Include parameter definitions (default: true)
+    - limit: Max jobs to return (default: 50)
+
+    Returns:
+    - items: Combined list of jobs and folders with type field
+    - currentPath: Current folder path
+    - error: Error message if any
+    """
+    params = get_query_params(event)
+    folder_path = params.get('path', '')
+    include_params = params.get('includeParams', 'true').lower() == 'true'
+    limit = int(params.get('limit', '50'))
+
+    result = jenkins.discover_jobs(
+        folder_path=folder_path if folder_path else None,
+        include_params=include_params,
+        limit=limit
+    )
+
+    # Transform to unified items format for frontend compatibility
+    # Frontend expects: { items: [...], currentPath: string, error: string|null }
+    items = []
+
+    # Add folders first (sorted by name)
+    for folder in result.get('folders', []):
+        items.append({
+            'name': folder.get('name'),
+            'path': folder.get('fullPath'),
+            'fullPath': folder.get('fullPath'),
+            'type': 'folder',
+        })
+
+    # Add jobs (sorted by name)
+    for job in result.get('jobs', []):
+        items.append({
+            'name': job.get('name'),
+            'path': job.get('fullPath'),
+            'fullPath': job.get('fullPath'),
+            'type': job.get('type', 'job'),
+            'parameters': job.get('parameters'),
+        })
+
+    return json_response(200, {
+        'items': items,
+        'currentPath': result.get('currentPath', ''),
+        'error': result.get('error'),
+    })
+
+
+def handle_jenkins_job(event, jenkins, job_path: str) -> Dict[str, Any]:
+    """
+    Handle GET /api/pipelines/jenkins/job/{jobPath+}
+
+    Returns job details with parameter definitions.
+    """
+    if not job_path:
+        return error_response('invalid_path', 'Job path required', 400)
+
+    result = jenkins.get_job_with_params(job_path)
+
+    if 'error' in result:
+        return error_response('not_found', result['error'], 404)
+
+    return json_response(200, result)
+
+
+def handle_jenkins_history(event, jenkins, job_path: str) -> Dict[str, Any]:
+    """
+    Handle GET /api/pipelines/jenkins/history/{jobPath+}
+
+    Query params:
+    - limit: Max builds to return (default: 20)
+    - result: Filter by result (SUCCESS, FAILURE, etc.)
+    - Any other param: Filter by parameter value (e.g., Webshop=MI2)
+    """
+    if not job_path:
+        return error_response('invalid_path', 'Job path required', 400)
+
+    params = get_query_params(event)
+    limit = int(params.get('limit', '20'))
+    result_filter = params.get('result')
+
+    # Extract parameter filters (any param that's not limit/result)
+    filter_params = {}
+    for key, value in params.items():
+        if key not in ('limit', 'result'):
+            filter_params[key] = value
+
+    builds = jenkins.get_builds_filtered(
+        job_path=job_path,
+        filter_params=filter_params if filter_params else None,
+        limit=limit,
+        result_filter=result_filter
+    )
+
+    # Get job info for context
+    job_info = jenkins.get_job_with_params(job_path)
+
+    return json_response(200, {
+        'jobPath': job_path,
+        'jobName': job_info.get('name') if not job_info.get('error') else job_path.split('/')[-1],
+        'parameters': job_info.get('parameters', []) if not job_info.get('error') else [],
+        'filters': filter_params,
+        'builds': builds,
+        'count': len(builds),
+    })
+
+
+def handle_jenkins_params(event, jenkins, job_path: str) -> Dict[str, Any]:
+    """
+    Handle GET /api/pipelines/jenkins/params/{jobPath+}
+
+    Query params:
+    - param: Parameter name to analyze (required)
+    - limit: Number of recent builds to analyze (default: 50)
+
+    Returns unique values used for the parameter, sorted by frequency.
+    """
+    if not job_path:
+        return error_response('invalid_path', 'Job path required', 400)
+
+    params = get_query_params(event)
+    param_name = params.get('param')
+    if not param_name:
+        return error_response('validation_error', 'param query parameter required', 400)
+
+    limit = int(params.get('limit', '50'))
+
+    values = jenkins.get_parameter_values(
+        job_path=job_path,
+        param_name=param_name,
+        limit=limit
+    )
+
+    return json_response(200, {
+        'jobPath': job_path,
+        'parameterName': param_name,
+        'values': values,
+    })

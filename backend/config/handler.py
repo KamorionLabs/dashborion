@@ -192,6 +192,32 @@ def route_request(path: str, method: str, body: Dict, path_params: Dict, actor: 
         elif method == 'DELETE':
             return delete_aws_account(account_id, actor)
 
+    # CI Providers (Jenkins, ArgoCD, etc.)
+    if path == '/api/config/ci-providers':
+        if method == 'GET':
+            return list_ci_providers()
+        elif method == 'POST':
+            return create_ci_provider(body, actor)
+
+    # Test CI Provider connection (without saving) - must be before /{providerId}/test
+    if path == '/api/config/ci-providers/test':
+        if method == 'POST':
+            return test_ci_provider_credentials(body)
+
+    if re.match(r'^/api/config/ci-providers/[^/]+/test$', path):
+        provider_id = path_params.get('providerId')
+        if method == 'POST':
+            return test_ci_provider(provider_id)
+
+    if re.match(r'^/api/config/ci-providers/[^/]+$', path):
+        provider_id = path_params.get('providerId')
+        if method == 'GET':
+            return get_ci_provider(provider_id)
+        elif method == 'PUT':
+            return update_ci_provider(provider_id, body, actor)
+        elif method == 'DELETE':
+            return delete_ci_provider(provider_id, actor)
+
     # Export/Import/Validation
     if path == '/api/config/export' and method == 'GET':
         return export_config()
@@ -208,6 +234,25 @@ def route_request(path: str, method: str, body: Dict, path_params: Dict, actor: 
         env_id = path_params.get('envId')
         if method == 'GET':
             return resolve_config(project_id, env_id)
+
+    # Secrets Management (for CI/CD provider tokens)
+    # Handle special routes first
+    if path == '/api/config/secrets/test-connection' and method == 'POST':
+        return test_provider_connection(body)
+
+    if path == '/api/config/secrets/discover' and method == 'POST':
+        return discover_pipelines(body)
+
+    # Generic secret CRUD routes
+    secrets_match = re.match(r'^/api/config/secrets/([^/]+)$', path)
+    if secrets_match:
+        secret_type = secrets_match.group(1)
+        if method == 'POST':
+            return create_or_update_secret(secret_type, body, actor)
+        elif method == 'DELETE':
+            return delete_secret(secret_type, body, actor)
+        elif method == 'GET':
+            return get_secret_info(secret_type, body)
 
     return error_response('not_found', f'Unknown endpoint: {method} {path}', 404)
 
@@ -227,8 +272,13 @@ def get_settings() -> Dict:
             'features': {},
             'comparison': {},
             'opsIntegration': {},
+            'secretsPrefix': '/dashborion',
         })
-    return json_response(200, _decimal_to_native(item))
+    # Ensure secretsPrefix has a default
+    item = _decimal_to_native(item)
+    if 'secretsPrefix' not in item:
+        item['secretsPrefix'] = '/dashborion'
+    return json_response(200, item)
 
 
 def update_settings(body: Dict, actor: str) -> Dict:
@@ -243,9 +293,10 @@ def update_settings(body: Dict, actor: str) -> Dict:
     item = {
         'pk': 'GLOBAL',
         'sk': 'settings',
-        'features': body.get('features', {}),
-        'comparison': body.get('comparison', {}),
-        'opsIntegration': body.get('opsIntegration', {}),
+        'features': body.get('features', existing.get('features', {})),
+        'comparison': body.get('comparison', existing.get('comparison', {})),
+        'opsIntegration': body.get('opsIntegration', existing.get('opsIntegration', {})),
+        'secretsPrefix': body.get('secretsPrefix', existing.get('secretsPrefix', '/dashborion')),
         'updatedAt': now,
         'updatedBy': actor,
         'version': version,
@@ -741,6 +792,390 @@ def delete_aws_account(account_id: str, actor: str) -> Dict:
 
 
 # =============================================================================
+# CI Providers (Jenkins, ArgoCD, etc.)
+# =============================================================================
+
+# Valid CI provider types
+CI_PROVIDER_TYPES = ['jenkins', 'argocd', 'codepipeline', 'github-actions', 'azure-devops']
+
+
+def list_ci_providers() -> Dict:
+    """List all CI providers."""
+    table = _get_table()
+    response = table.query(
+        KeyConditionExpression=Key('pk').eq('CI_PROVIDER')
+    )
+    items = [_decimal_to_native(item) for item in response.get('Items', [])]
+    # Remove token from response (security)
+    for item in items:
+        item.pop('token', None)
+    return json_response(200, {'ciProviders': items})
+
+
+def get_ci_provider(provider_id: str) -> Dict:
+    """Get a specific CI provider (without token)."""
+    table = _get_table()
+    response = table.get_item(Key={'pk': 'CI_PROVIDER', 'sk': provider_id})
+    item = response.get('Item')
+    if not item:
+        return error_response('not_found', f'CI Provider {provider_id} not found', 404)
+    # Remove token from response (security)
+    item = _decimal_to_native(item)
+    item.pop('token', None)
+    return json_response(200, item)
+
+
+def get_ci_provider_with_credentials(provider_id: str) -> Optional[Dict]:
+    """
+    Get CI provider with credentials (internal use only).
+    Loads token from Secrets Manager if tokenSecret is specified.
+    """
+    table = _get_table()
+    response = table.get_item(Key={'pk': 'CI_PROVIDER', 'sk': provider_id})
+    item = response.get('Item')
+    if not item:
+        return None
+
+    item = _decimal_to_native(item)
+
+    # If tokenSecret is specified, load from Secrets Manager
+    token_secret = item.get('tokenSecret')
+    if token_secret and not item.get('token'):
+        try:
+            client = _get_secretsmanager_client()
+            response = client.get_secret_value(SecretId=token_secret)
+            secret_data = json.loads(response['SecretString'])
+            item['token'] = secret_data.get('token', secret_data.get('api_token', ''))
+            # Also get url/user from secret if not in DynamoDB item
+            if not item.get('url'):
+                item['url'] = secret_data.get('url', '')
+            if not item.get('user'):
+                item['user'] = secret_data.get('user', '')
+        except Exception as e:
+            print(f"Error loading token from Secrets Manager {token_secret}: {e}")
+
+    return item
+
+
+def create_ci_provider(body: Dict, actor: str) -> Dict:
+    """Create a new CI provider."""
+    provider_id = body.get('providerId')
+    provider_type = body.get('type')
+
+    if not provider_id:
+        return error_response('validation', 'providerId is required', 400)
+    if not provider_type:
+        return error_response('validation', 'type is required', 400)
+    if provider_type not in CI_PROVIDER_TYPES:
+        return error_response('validation', f'Invalid type. Must be one of: {", ".join(CI_PROVIDER_TYPES)}', 400)
+
+    table = _get_table()
+    now = _now_iso()
+
+    # Check if exists
+    existing = table.get_item(Key={'pk': 'CI_PROVIDER', 'sk': provider_id}).get('Item')
+    if existing:
+        return error_response('conflict', f'CI Provider {provider_id} already exists', 409)
+
+    # Build item
+    item = {
+        'pk': 'CI_PROVIDER',
+        'sk': provider_id,
+        'providerId': provider_id,
+        'type': provider_type,
+        'name': body.get('name', provider_id),
+        'url': body.get('url', ''),
+        'user': body.get('user', ''),
+        'tokenSecret': body.get('tokenSecret', ''),  # Reference to Secrets Manager
+        'createdAt': now,
+        'createdBy': actor,
+        'updatedAt': now,
+        'updatedBy': actor,
+    }
+
+    # If token is provided directly, store it (or create secret)
+    token = body.get('token')
+    if token:
+        # Store in Secrets Manager
+        token_secret_name = _create_ci_provider_secret(provider_id, {
+            'url': item['url'],
+            'user': item['user'],
+            'token': token,
+        })
+        item['tokenSecret'] = token_secret_name
+
+    table.put_item(Item=item)
+
+    # Remove token from response
+    result = _decimal_to_native(item)
+    result.pop('token', None)
+    return json_response(201, result)
+
+
+def _create_ci_provider_secret(provider_id: str, secret_data: Dict) -> str:
+    """Create or update secret in Secrets Manager for CI provider."""
+    prefix = _get_secrets_prefix().rstrip('/')
+    secret_name = f"{prefix}/ci-providers/{provider_id}"
+
+    client = _get_secretsmanager_client()
+    secret_string = json.dumps(secret_data)
+
+    try:
+        # Try to update existing
+        client.put_secret_value(SecretId=secret_name, SecretString=secret_string)
+    except client.exceptions.ResourceNotFoundException:
+        # Create new
+        client.create_secret(
+            Name=secret_name,
+            SecretString=secret_string,
+            Description=f'CI Provider credentials for {provider_id}'
+        )
+
+    return secret_name
+
+
+def update_ci_provider(provider_id: str, body: Dict, actor: str) -> Dict:
+    """Update a CI provider."""
+    table = _get_table()
+    now = _now_iso()
+
+    # Check if exists
+    existing = table.get_item(Key={'pk': 'CI_PROVIDER', 'sk': provider_id}).get('Item')
+    if not existing:
+        return error_response('not_found', f'CI Provider {provider_id} not found', 404)
+
+    # Validate type if provided
+    provider_type = body.get('type', existing.get('type'))
+    if provider_type not in CI_PROVIDER_TYPES:
+        return error_response('validation', f'Invalid type. Must be one of: {", ".join(CI_PROVIDER_TYPES)}', 400)
+
+    # Build update
+    item = {
+        'pk': 'CI_PROVIDER',
+        'sk': provider_id,
+        'providerId': provider_id,
+        'type': provider_type,
+        'name': body.get('name', existing.get('name', provider_id)),
+        'url': body.get('url', existing.get('url', '')),
+        'user': body.get('user', existing.get('user', '')),
+        'tokenSecret': body.get('tokenSecret', existing.get('tokenSecret', '')),
+        'createdAt': existing.get('createdAt', now),
+        'createdBy': existing.get('createdBy', actor),
+        'updatedAt': now,
+        'updatedBy': actor,
+    }
+
+    # If token is provided, update secret
+    token = body.get('token')
+    if token:
+        token_secret_name = _create_ci_provider_secret(provider_id, {
+            'url': item['url'],
+            'user': item['user'],
+            'token': token,
+        })
+        item['tokenSecret'] = token_secret_name
+
+    table.put_item(Item=item)
+
+    # Remove token from response
+    result = _decimal_to_native(item)
+    result.pop('token', None)
+    return json_response(200, result)
+
+
+def delete_ci_provider(provider_id: str, actor: str) -> Dict:
+    """Delete a CI provider and its secret."""
+    table = _get_table()
+
+    # Check if exists
+    existing = table.get_item(Key={'pk': 'CI_PROVIDER', 'sk': provider_id}).get('Item')
+    if not existing:
+        return error_response('not_found', f'CI Provider {provider_id} not found', 404)
+
+    # Delete secret if exists
+    token_secret = existing.get('tokenSecret')
+    if token_secret:
+        try:
+            client = _get_secretsmanager_client()
+            client.delete_secret(SecretId=token_secret, ForceDeleteWithoutRecovery=True)
+        except Exception as e:
+            print(f"Warning: Failed to delete secret {token_secret}: {e}")
+
+    # Delete from DynamoDB
+    table.delete_item(Key={'pk': 'CI_PROVIDER', 'sk': provider_id})
+    return json_response(200, {'deleted': provider_id, 'deletedBy': actor})
+
+
+def test_ci_provider(provider_id: str) -> Dict:
+    """Test connection to a CI provider."""
+    provider = get_ci_provider_with_credentials(provider_id)
+    if not provider:
+        return error_response('not_found', f'CI Provider {provider_id} not found', 404)
+
+    provider_type = provider.get('type')
+    url = provider.get('url', '').rstrip('/')
+    user = provider.get('user', '')
+    token = provider.get('token', '')
+
+    if not url:
+        return error_response('validation', 'Provider URL is not configured', 400)
+    if not token:
+        return error_response('validation', 'Provider token is not configured', 400)
+
+    import requests
+
+    try:
+        if provider_type == 'jenkins':
+            # Test Jenkins API
+            if not user:
+                return error_response('validation', 'Jenkins user is not configured', 400)
+            response = requests.get(
+                f"{url}/api/json",
+                auth=(user, token),
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return json_response(200, {
+                'success': True,
+                'provider': provider_id,
+                'type': provider_type,
+                'message': f"Connected to Jenkins: {data.get('description', 'OK')}",
+                'version': data.get('version'),
+            })
+
+        elif provider_type == 'argocd':
+            # Test ArgoCD API
+            response = requests.get(
+                f"{url}/api/v1/applications",
+                headers={'Authorization': f'Bearer {token}'},
+                timeout=10,
+                verify=True
+            )
+            response.raise_for_status()
+            data = response.json()
+            app_count = len(data.get('items', []))
+            return json_response(200, {
+                'success': True,
+                'provider': provider_id,
+                'type': provider_type,
+                'message': f"Connected to ArgoCD: {app_count} applications found",
+            })
+
+        else:
+            return json_response(200, {
+                'success': True,
+                'provider': provider_id,
+                'type': provider_type,
+                'message': f"Provider type '{provider_type}' connection test not implemented",
+            })
+
+    except requests.exceptions.HTTPError as e:
+        return json_response(200, {
+            'success': False,
+            'provider': provider_id,
+            'type': provider_type,
+            'error': f"HTTP {e.response.status_code}: {e.response.reason}",
+        })
+    except requests.exceptions.ConnectionError as e:
+        return json_response(200, {
+            'success': False,
+            'provider': provider_id,
+            'type': provider_type,
+            'error': f"Connection failed: {str(e)}",
+        })
+    except Exception as e:
+        return json_response(200, {
+            'success': False,
+            'provider': provider_id,
+            'type': provider_type,
+            'error': str(e),
+        })
+
+
+def test_ci_provider_credentials(body: Dict) -> Dict:
+    """
+    Test connection to a CI provider using credentials from request body.
+    This allows testing before saving the provider.
+    """
+    provider_type = body.get('type')
+    url = (body.get('url') or '').rstrip('/')
+    user = body.get('user', '')
+    token = body.get('token', '')
+
+    if not provider_type:
+        return error_response('validation', 'Provider type is required', 400)
+    if not url:
+        return error_response('validation', 'Provider URL is required', 400)
+    if not token:
+        return error_response('validation', 'Provider token is required', 400)
+
+    import requests
+
+    try:
+        if provider_type == 'jenkins':
+            # Test Jenkins API
+            if not user:
+                return error_response('validation', 'Jenkins user is required', 400)
+            response = requests.get(
+                f"{url}/api/json",
+                auth=(user, token),
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            return json_response(200, {
+                'success': True,
+                'type': provider_type,
+                'message': f"Connected to Jenkins: {data.get('description', 'OK')}",
+                'version': data.get('version'),
+            })
+
+        elif provider_type == 'argocd':
+            # Test ArgoCD API
+            response = requests.get(
+                f"{url}/api/v1/applications",
+                headers={'Authorization': f'Bearer {token}'},
+                timeout=10,
+                verify=True
+            )
+            response.raise_for_status()
+            data = response.json()
+            app_count = len(data.get('items', []))
+            return json_response(200, {
+                'success': True,
+                'type': provider_type,
+                'message': f"Connected to ArgoCD: {app_count} applications found",
+            })
+
+        else:
+            return json_response(200, {
+                'success': True,
+                'type': provider_type,
+                'message': f"Provider type '{provider_type}' connection test not implemented",
+            })
+
+    except requests.exceptions.HTTPError as e:
+        return json_response(200, {
+            'success': False,
+            'type': provider_type,
+            'error': f"HTTP {e.response.status_code}: {e.response.reason}",
+        })
+    except requests.exceptions.ConnectionError as e:
+        return json_response(200, {
+            'success': False,
+            'type': provider_type,
+            'error': f"Connection failed: {str(e)}",
+        })
+    except Exception as e:
+        return json_response(200, {
+            'success': False,
+            'type': provider_type,
+            'error': str(e),
+        })
+
+
+# =============================================================================
 # Export/Import/Validation
 # =============================================================================
 
@@ -1076,6 +1511,512 @@ def resolve_config(project_id: str, env_id: str) -> Dict:
     }
 
     return json_response(200, resolved)
+
+
+# =============================================================================
+# Secrets Management (for CI/CD provider tokens)
+# =============================================================================
+
+def _get_secrets_prefix() -> str:
+    """Get the secrets prefix from settings."""
+    table = _get_table()
+    response = table.get_item(Key={'pk': 'GLOBAL', 'sk': 'settings'})
+    item = response.get('Item', {})
+    return item.get('secretsPrefix', '/dashborion')
+
+
+def _build_secret_name(secret_type: str, project: Optional[str] = None) -> str:
+    """
+    Build secret name from prefix, project (optional), and type.
+
+    Patterns:
+    - Global secret: {prefix}/{type}  (e.g., /dashborion/jenkins-token)
+    - Project secret: {prefix}/{project}/{type}  (e.g., /dashborion/rubix/argocd-token)
+    """
+    prefix = _get_secrets_prefix().rstrip('/')
+    if project:
+        return f"{prefix}/{project}/{secret_type}"
+    return f"{prefix}/{secret_type}"
+
+
+def _get_secretsmanager_client():
+    """Get Secrets Manager client."""
+    return boto3.client('secretsmanager')
+
+
+def create_or_update_secret(secret_type: str, body: Dict, actor: str) -> Dict:
+    """
+    Create or update a secret in AWS Secrets Manager.
+
+    Body:
+    - value: The secret value (required)
+    - url: Optional URL for the provider (e.g., Jenkins URL)
+    - user: Optional username for the provider (e.g., Jenkins user)
+    - project: Optional project scope (creates project-specific secret)
+    - description: Optional description
+
+    Secret types:
+    - jenkins-token: Jenkins API token
+    - argocd-token: ArgoCD API token
+    - github-token: GitHub personal access token
+    - bitbucket-token: Bitbucket app password
+    """
+    if not secret_type:
+        return error_response('validation', 'secret_type is required', 400)
+
+    value = body.get('value')
+    if not value:
+        return error_response('validation', 'value is required', 400)
+
+    project = body.get('project')
+    description = body.get('description', f'Dashborion {secret_type} token')
+
+    # Build secret data including optional url and user
+    secret_data = {'token': value}
+    if body.get('url'):
+        secret_data['url'] = body['url']
+    if body.get('user'):
+        secret_data['user'] = body['user']
+
+    secret_name = _build_secret_name(secret_type, project)
+    client = _get_secretsmanager_client()
+
+    try:
+        # Try to create the secret
+        response = client.create_secret(
+            Name=secret_name,
+            Description=description,
+            SecretString=json.dumps(secret_data),
+            Tags=[
+                {'Key': 'ManagedBy', 'Value': 'dashborion'},
+                {'Key': 'SecretType', 'Value': secret_type},
+                {'Key': 'CreatedBy', 'Value': actor},
+            ]
+        )
+        return json_response(201, {
+            'secretName': secret_name,
+            'secretArn': response['ARN'],
+            'created': True,
+            'message': f'Secret {secret_name} created successfully'
+        })
+    except client.exceptions.ResourceExistsException:
+        # Secret exists, update it
+        response = client.put_secret_value(
+            SecretId=secret_name,
+            SecretString=json.dumps(secret_data)
+        )
+        # Update description if provided
+        if description:
+            client.update_secret(
+                SecretId=secret_name,
+                Description=description
+            )
+        return json_response(200, {
+            'secretName': secret_name,
+            'secretArn': response['ARN'],
+            'created': False,
+            'message': f'Secret {secret_name} updated successfully'
+        })
+    except Exception as e:
+        return error_response('secrets_error', f'Failed to manage secret: {str(e)}', 500)
+
+
+def delete_secret(secret_type: str, body: Dict, actor: str) -> Dict:
+    """Delete a secret from AWS Secrets Manager."""
+    if not secret_type:
+        return error_response('validation', 'secret_type is required', 400)
+
+    project = body.get('project')
+    secret_name = _build_secret_name(secret_type, project)
+    client = _get_secretsmanager_client()
+
+    try:
+        # Schedule deletion (recoverable for 7 days)
+        client.delete_secret(
+            SecretId=secret_name,
+            RecoveryWindowInDays=7
+        )
+        return json_response(200, {
+            'secretName': secret_name,
+            'deleted': True,
+            'message': f'Secret {secret_name} scheduled for deletion (recoverable for 7 days)'
+        })
+    except client.exceptions.ResourceNotFoundException:
+        return error_response('not_found', f'Secret {secret_name} not found', 404)
+    except Exception as e:
+        return error_response('secrets_error', f'Failed to delete secret: {str(e)}', 500)
+
+
+def get_secret_info(secret_type: str, body: Dict) -> Dict:
+    """
+    Get secret metadata (not the value) from AWS Secrets Manager.
+
+    Returns info about whether the secret exists and when it was last modified.
+    """
+    if not secret_type:
+        return error_response('validation', 'secret_type is required', 400)
+
+    project = body.get('project') if body else None
+    secret_name = _build_secret_name(secret_type, project)
+    client = _get_secretsmanager_client()
+
+    try:
+        response = client.describe_secret(SecretId=secret_name)
+        return json_response(200, {
+            'secretName': secret_name,
+            'secretArn': response.get('ARN'),
+            'exists': True,
+            'lastModified': response.get('LastChangedDate').isoformat() if response.get('LastChangedDate') else None,
+            'createdDate': response.get('CreatedDate').isoformat() if response.get('CreatedDate') else None,
+            'description': response.get('Description'),
+        })
+    except client.exceptions.ResourceNotFoundException:
+        return json_response(200, {
+            'secretName': secret_name,
+            'exists': False,
+        })
+    except Exception as e:
+        return error_response('secrets_error', f'Failed to get secret info: {str(e)}', 500)
+
+
+def test_provider_connection(body: Dict) -> Dict:
+    """
+    Test connection to a CI/CD provider.
+
+    Body:
+    - provider: jenkins, argocd, github, bitbucket
+    - project: Optional project scope
+    - url: Provider URL (for jenkins, argocd)
+    - user: Username (for jenkins)
+    - token: Optional token to test (if not provided, retrieves from Secrets Manager)
+    """
+    import requests
+
+    provider = body.get('provider')
+    if not provider:
+        return error_response('validation', 'provider is required', 400)
+
+    # Check if token is provided directly (for testing before save)
+    token = body.get('token')
+
+    if not token:
+        # Retrieve from Secrets Manager
+        project = body.get('project')
+        secret_type = f'{provider}-token'
+        secret_name = _build_secret_name(secret_type, project)
+
+        client = _get_secretsmanager_client()
+        try:
+            response = client.get_secret_value(SecretId=secret_name)
+            secret_data = json.loads(response['SecretString'])
+            token = secret_data.get('token', '')
+        except client.exceptions.ResourceNotFoundException:
+            return error_response('not_found', f'Secret {secret_name} not found. Please save credentials first or provide token in request.', 404)
+        except Exception as e:
+            return error_response('secrets_error', f'Failed to retrieve secret: {str(e)}', 500)
+
+    # Test connection based on provider
+    try:
+        if provider == 'jenkins':
+            url = body.get('url', '').rstrip('/')
+            user = body.get('user', '')
+            if not url:
+                return error_response('validation', 'url is required for Jenkins', 400)
+            if not user:
+                return error_response('validation', 'user is required for Jenkins', 400)
+
+            # Test Jenkins API
+            test_url = f'{url}/api/json'
+            resp = requests.get(test_url, auth=(user, token), timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return json_response(200, {
+                    'success': True,
+                    'provider': 'jenkins',
+                    'message': 'Connection successful',
+                    'details': {
+                        'mode': data.get('mode', 'unknown'),
+                        'numExecutors': data.get('numExecutors', 0),
+                    }
+                })
+            else:
+                return json_response(200, {
+                    'success': False,
+                    'provider': 'jenkins',
+                    'message': f'Connection failed: HTTP {resp.status_code}',
+                })
+
+        elif provider == 'argocd':
+            url = body.get('url', '').rstrip('/')
+            if not url:
+                return error_response('validation', 'url is required for ArgoCD', 400)
+
+            # Test ArgoCD API
+            test_url = f'{url}/api/v1/session/userinfo'
+            headers = {'Authorization': f'Bearer {token}'}
+            resp = requests.get(test_url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return json_response(200, {
+                    'success': True,
+                    'provider': 'argocd',
+                    'message': 'Connection successful',
+                    'details': {
+                        'username': data.get('username', 'unknown'),
+                        'iss': data.get('iss', 'argocd'),
+                    }
+                })
+            else:
+                return json_response(200, {
+                    'success': False,
+                    'provider': 'argocd',
+                    'message': f'Connection failed: HTTP {resp.status_code}',
+                })
+
+        elif provider == 'github':
+            # Test GitHub API
+            headers = {'Authorization': f'token {token}'}
+            resp = requests.get('https://api.github.com/user', headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                return json_response(200, {
+                    'success': True,
+                    'provider': 'github',
+                    'message': 'Connection successful',
+                    'details': {
+                        'login': data.get('login', 'unknown'),
+                        'name': data.get('name', ''),
+                    }
+                })
+            else:
+                return json_response(200, {
+                    'success': False,
+                    'provider': 'github',
+                    'message': f'Connection failed: HTTP {resp.status_code}',
+                })
+
+        else:
+            return error_response('validation', f'Unsupported provider: {provider}', 400)
+
+    except requests.exceptions.Timeout:
+        return json_response(200, {
+            'success': False,
+            'provider': provider,
+            'message': 'Connection timed out',
+        })
+    except requests.exceptions.ConnectionError as e:
+        return json_response(200, {
+            'success': False,
+            'provider': provider,
+            'message': f'Connection error: {str(e)}',
+        })
+    except Exception as e:
+        return error_response('test_error', f'Test failed: {str(e)}', 500)
+
+
+def discover_pipelines(body: Dict) -> Dict:
+    """
+    Discover available pipelines from CI/CD providers.
+
+    Body:
+    - provider: jenkins, argocd
+    - url: Provider URL
+    - user: Username (for jenkins)
+    - token: API token (optional, will use stored if not provided)
+    - path: Optional path to list jobs from (for jenkins folders)
+    - project: Optional project scope for stored token
+    """
+    import requests
+
+    provider = body.get('provider')
+    if not provider:
+        return error_response('validation', 'provider is required', 400)
+
+    # Get token and credentials from body or Secrets Manager
+    token = body.get('token')
+    secret_data = {}
+
+    if not token:
+        project = body.get('project')
+        secret_type = f'{provider}-token'
+        secret_name = _build_secret_name(secret_type, project)
+
+        client = _get_secretsmanager_client()
+        try:
+            response = client.get_secret_value(SecretId=secret_name)
+            secret_data = json.loads(response['SecretString'])
+            token = secret_data.get('token', '')
+        except client.exceptions.ResourceNotFoundException:
+            return error_response('not_found', f'No token configured for {provider}. Please configure it first or provide token in request.', 404)
+        except Exception as e:
+            return error_response('secrets_error', f'Failed to retrieve token: {str(e)}', 500)
+
+    try:
+        if provider == 'jenkins':
+            # Get URL and user from request or stored secret
+            url = body.get('url') or secret_data.get('url', '')
+            url = url.rstrip('/') if url else ''
+            user = body.get('user') or secret_data.get('user', '')
+            path = body.get('path', '')  # Folder path (e.g., 'RubixDeployment/EKS')
+
+            if not url:
+                return error_response('validation', 'url is required for Jenkins. Configure it in Settings first.', 400)
+            if not user:
+                return error_response('validation', 'user is required for Jenkins. Configure it in Settings first.', 400)
+
+            # Build API URL for listing jobs
+            if path:
+                # Encode path for Jenkins API (replace / with /job/)
+                encoded_path = '/job/'.join(path.split('/'))
+                api_url = f'{url}/job/{encoded_path}/api/json?tree=jobs[name,url,_class,jobs[name,url,_class]]'
+            else:
+                api_url = f'{url}/api/json?tree=jobs[name,url,_class,jobs[name,url,_class]]'
+
+            resp = requests.get(api_url, auth=(user, token), timeout=15)
+
+            if resp.status_code != 200:
+                return json_response(200, {
+                    'success': False,
+                    'provider': 'jenkins',
+                    'message': f'Failed to list jobs: HTTP {resp.status_code}',
+                    'items': []
+                })
+
+            data = resp.json()
+            jobs = data.get('jobs', [])
+
+            # Parse jobs into a flat list with folder structure
+            items = []
+            for job in jobs:
+                job_class = job.get('_class', '')
+                job_name = job.get('name', '')
+                job_url = job.get('url', '')
+
+                # Determine job type
+                if 'Folder' in job_class or 'OrganizationFolder' in job_class:
+                    job_type = 'folder'
+                elif 'WorkflowJob' in job_class or 'FreeStyleProject' in job_class:
+                    job_type = 'job'
+                else:
+                    job_type = 'other'
+
+                full_path = f'{path}/{job_name}' if path else job_name
+
+                items.append({
+                    'name': job_name,
+                    'path': full_path,
+                    'type': job_type,
+                    'url': job_url,
+                    '_class': job_class
+                })
+
+                # If it's a folder with nested jobs, include them
+                nested_jobs = job.get('jobs', [])
+                for nested in nested_jobs:
+                    nested_name = nested.get('name', '')
+                    nested_class = nested.get('_class', '')
+                    nested_type = 'folder' if 'Folder' in nested_class else 'job'
+                    nested_path = f'{full_path}/{nested_name}'
+
+                    items.append({
+                        'name': nested_name,
+                        'path': nested_path,
+                        'type': nested_type,
+                        'url': nested.get('url', ''),
+                        '_class': nested_class,
+                        'parent': full_path
+                    })
+
+            return json_response(200, {
+                'success': True,
+                'provider': 'jenkins',
+                'currentPath': path or '/',
+                'items': items
+            })
+
+        elif provider == 'argocd':
+            # Get URL from request or stored secret
+            url = body.get('url') or secret_data.get('url', '')
+            url = url.rstrip('/') if url else ''
+            if not url:
+                return error_response('validation', 'url is required for ArgoCD. Configure it in Settings first.', 400)
+
+            # List all applications
+            headers = {'Authorization': f'Bearer {token}'}
+            resp = requests.get(f'{url}/api/v1/applications', headers=headers, timeout=15)
+
+            if resp.status_code != 200:
+                return json_response(200, {
+                    'success': False,
+                    'provider': 'argocd',
+                    'message': f'Failed to list applications: HTTP {resp.status_code}',
+                    'items': []
+                })
+
+            data = resp.json()
+            apps = data.get('items', [])
+
+            items = []
+            for app in apps:
+                metadata = app.get('metadata', {})
+                spec = app.get('spec', {})
+                status = app.get('status', {})
+
+                app_name = metadata.get('name', '')
+                namespace = metadata.get('namespace', 'argocd')
+                project = spec.get('project', 'default')
+
+                # Get sync and health status
+                sync_status = status.get('sync', {}).get('status', 'Unknown')
+                health_status = status.get('health', {}).get('status', 'Unknown')
+
+                # Get destination info
+                destination = spec.get('destination', {})
+                dest_server = destination.get('server', '')
+                dest_namespace = destination.get('namespace', '')
+
+                items.append({
+                    'name': app_name,
+                    'path': f'{project}/{app_name}',
+                    'type': 'application',
+                    'project': project,
+                    'namespace': namespace,
+                    'destination': {
+                        'server': dest_server,
+                        'namespace': dest_namespace
+                    },
+                    'status': {
+                        'sync': sync_status,
+                        'health': health_status
+                    },
+                    'url': f'{url}/applications/{app_name}'
+                })
+
+            return json_response(200, {
+                'success': True,
+                'provider': 'argocd',
+                'items': items
+            })
+
+        else:
+            return error_response('validation', f'Discovery not supported for provider: {provider}', 400)
+
+    except requests.exceptions.Timeout:
+        return json_response(200, {
+            'success': False,
+            'provider': provider,
+            'message': 'Request timed out',
+            'items': []
+        })
+    except requests.exceptions.ConnectionError as e:
+        return json_response(200, {
+            'success': False,
+            'provider': provider,
+            'message': f'Connection error: {str(e)}',
+            'items': []
+        })
+    except Exception as e:
+        return error_response('discover_error', f'Discovery failed: {str(e)}', 500)
 
 
 # =============================================================================

@@ -16,14 +16,45 @@ import {
   Trash2,
   ToggleLeft,
   ToggleRight,
+  Key,
+  Eye,
+  EyeOff,
+  Plug,
+  Lock,
 } from 'lucide-react';
 import { fetchWithRetry } from '../../utils/fetch';
 
 const AVAILABLE_FEATURES = [
   { key: 'comparison', label: 'Environment Comparison', description: 'Enable environment comparison features' },
   { key: 'discovery', label: 'AWS Discovery', description: 'Enable AWS resource discovery' },
-  { key: 'pipelines', label: 'Pipeline Integration', description: 'Enable Azure DevOps pipeline integration' },
+  { key: 'pipelines', label: 'Pipeline Integration', description: 'Enable CI/CD pipeline integration (Jenkins, ArgoCD)' },
   { key: 'replication', label: 'EFS Replication', description: 'Enable EFS replication monitoring' },
+];
+
+const CI_PROVIDERS = [
+  {
+    key: 'jenkins-token',
+    label: 'Jenkins',
+    description: 'Jenkins API token for build pipelines',
+    urlField: true,
+    urlPlaceholder: 'https://jenkins.example.com',
+    userField: true,
+  },
+  {
+    key: 'argocd-token',
+    label: 'ArgoCD',
+    description: 'ArgoCD API token for deployment pipelines',
+    urlField: true,
+    urlPlaceholder: 'https://argocd.example.com',
+    userField: false,
+  },
+  {
+    key: 'github-token',
+    label: 'GitHub',
+    description: 'GitHub personal access token for GitHub Actions',
+    urlField: false,
+    userField: false,
+  },
 ];
 
 export default function SettingsPage() {
@@ -35,9 +66,19 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState({
     features: {},
     comparisonGroups: [],
+    secretsPrefix: '/dashborion',
   });
 
   const [newGroup, setNewGroup] = useState({ name: '', sourceEnv: '', destEnv: '' });
+
+  // CI Provider tokens state
+  const [providerTokens, setProviderTokens] = useState({});
+  const [providerUrls, setProviderUrls] = useState({});
+  const [providerUsers, setProviderUsers] = useState({});
+  const [showTokens, setShowTokens] = useState({});
+  const [savingToken, setSavingToken] = useState({});
+  const [testingConnection, setTestingConnection] = useState({});
+  const [tokenStatus, setTokenStatus] = useState({});
 
   useEffect(() => {
     loadSettings();
@@ -58,7 +99,27 @@ export default function SettingsPage() {
       setSettings({
         features: data.features || {},
         comparisonGroups: data.comparisonGroups || [],
+        secretsPrefix: data.secretsPrefix || '/dashborion',
       });
+
+      // Load token status for each provider
+      const statuses = {};
+      for (const provider of CI_PROVIDERS) {
+        try {
+          const tokenResponse = await fetchWithRetry(`/api/config/secrets/${provider.key}`);
+          if (tokenResponse.ok) {
+            const tokenData = await tokenResponse.json();
+            statuses[provider.key] = {
+              exists: tokenData.exists,
+              lastModified: tokenData.lastModified,
+            };
+          }
+        } catch {
+          // Token doesn't exist yet
+          statuses[provider.key] = { exists: false };
+        }
+      }
+      setTokenStatus(statuses);
     } catch (err) {
       console.error('Error loading settings:', err);
       setError(err.message);
@@ -76,7 +137,11 @@ export default function SettingsPage() {
       const response = await fetchWithRetry('/api/config/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
+        body: JSON.stringify({
+          features: settings.features,
+          comparisonGroups: settings.comparisonGroups,
+          secretsPrefix: settings.secretsPrefix,
+        }),
       });
 
       if (!response.ok) {
@@ -126,6 +191,123 @@ export default function SettingsPage() {
     });
   };
 
+  // Save a provider token to Secrets Manager
+  const saveProviderToken = async (providerKey) => {
+    const token = providerTokens[providerKey];
+    if (!token) {
+      setError('Token value is required');
+      return;
+    }
+
+    const provider = CI_PROVIDERS.find(p => p.key === providerKey);
+
+    setSavingToken({ ...savingToken, [providerKey]: true });
+    setError(null);
+
+    try {
+      const body = {
+        value: token,
+        description: `Dashborion ${providerKey} for CI/CD integration`,
+      };
+
+      // Include url and user if they are configured for this provider
+      if (provider?.urlField && providerUrls[providerKey]) {
+        body.url = providerUrls[providerKey];
+      }
+      if (provider?.userField && providerUsers[providerKey]) {
+        body.user = providerUsers[providerKey];
+      }
+
+      const response = await fetchWithRetry(`/api/config/secrets/${providerKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || 'Failed to save token');
+      }
+
+      const data = await response.json();
+      setTokenStatus({
+        ...tokenStatus,
+        [providerKey]: { exists: true, lastModified: new Date().toISOString() },
+      });
+      setProviderTokens({ ...providerTokens, [providerKey]: '' }); // Clear input
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 3000);
+    } catch (err) {
+      console.error('Error saving token:', err);
+      setError(err.message);
+    } finally {
+      setSavingToken({ ...savingToken, [providerKey]: false });
+    }
+  };
+
+  // Test connection to a provider
+  const testConnection = async (providerKey) => {
+    const provider = CI_PROVIDERS.find(p => p.key === providerKey);
+    if (!provider) return;
+
+    setTestingConnection({ ...testingConnection, [providerKey]: true });
+    setError(null);
+
+    try {
+      const body = {
+        provider: providerKey.replace('-token', ''),
+      };
+
+      if (provider.urlField && providerUrls[providerKey]) {
+        body.url = providerUrls[providerKey];
+      }
+      if (provider.userField && providerUsers[providerKey]) {
+        body.user = providerUsers[providerKey];
+      }
+      // Send token from form if available (allows testing before save)
+      if (providerTokens[providerKey]) {
+        body.token = providerTokens[providerKey];
+      }
+
+      const response = await fetchWithRetry('/api/config/secrets/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || data.error || 'Connection test failed');
+      }
+
+      setTokenStatus({
+        ...tokenStatus,
+        [providerKey]: {
+          ...tokenStatus[providerKey],
+          connectionOk: true,
+          connectionMessage: data.message,
+        },
+      });
+    } catch (err) {
+      console.error('Connection test failed:', err);
+      setTokenStatus({
+        ...tokenStatus,
+        [providerKey]: {
+          ...tokenStatus[providerKey],
+          connectionOk: false,
+          connectionMessage: err.message,
+        },
+      });
+    } finally {
+      setTestingConnection({ ...testingConnection, [providerKey]: false });
+    }
+  };
+
+  const toggleShowToken = (providerKey) => {
+    setShowTokens({ ...showTokens, [providerKey]: !showTokens[providerKey] });
+  };
+
   if (loading) {
     return (
       <div className="p-6">
@@ -170,6 +352,157 @@ export default function SettingsPage() {
       )}
 
       <div className="space-y-8">
+        {/* Secrets Configuration */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Lock size={20} className="text-yellow-500" />
+            <h2 className="text-lg font-semibold text-white">Secrets Configuration</h2>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            Configure the naming convention for secrets stored in AWS Secrets Manager.
+          </p>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">
+                Secrets Prefix
+              </label>
+              <input
+                type="text"
+                value={settings.secretsPrefix}
+                onChange={(e) => setSettings({ ...settings, secretsPrefix: e.target.value })}
+                placeholder="/dashborion"
+                className="w-full max-w-md px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 text-sm focus:border-blue-500 focus:outline-none"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Secrets will be stored as: <code className="text-gray-400">{settings.secretsPrefix}/[project/]&lt;type&gt;</code>
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* CI/CD Provider Tokens */}
+        <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Key size={20} className="text-blue-500" />
+            <h2 className="text-lg font-semibold text-white">CI/CD Provider Tokens</h2>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            Configure API tokens for CI/CD providers. Tokens are securely stored in AWS Secrets Manager.
+          </p>
+          <div className="space-y-6">
+            {CI_PROVIDERS.map((provider) => (
+              <div key={provider.key} className="p-4 bg-gray-800 rounded-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h3 className="text-sm font-medium text-white">{provider.label}</h3>
+                    <p className="text-xs text-gray-500">{provider.description}</p>
+                  </div>
+                  {tokenStatus[provider.key]?.exists && (
+                    <span className="flex items-center gap-1 text-xs text-green-400">
+                      <CheckCircle size={14} />
+                      Configured
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  {/* URL field if needed */}
+                  {provider.urlField && (
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">URL</label>
+                      <input
+                        type="text"
+                        value={providerUrls[provider.key] || ''}
+                        onChange={(e) => setProviderUrls({ ...providerUrls, [provider.key]: e.target.value })}
+                        placeholder={provider.urlPlaceholder}
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 text-sm focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  )}
+
+                  {/* User field if needed */}
+                  {provider.userField && (
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Username</label>
+                      <input
+                        type="text"
+                        value={providerUsers[provider.key] || ''}
+                        onChange={(e) => setProviderUsers({ ...providerUsers, [provider.key]: e.target.value })}
+                        placeholder="jenkins-user"
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 text-sm focus:border-blue-500 focus:outline-none"
+                      />
+                    </div>
+                  )}
+
+                  {/* Token input */}
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">
+                      {tokenStatus[provider.key]?.exists ? 'New Token (leave empty to keep existing)' : 'API Token'}
+                    </label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type={showTokens[provider.key] ? 'text' : 'password'}
+                          value={providerTokens[provider.key] || ''}
+                          onChange={(e) => setProviderTokens({ ...providerTokens, [provider.key]: e.target.value })}
+                          placeholder="Enter API token..."
+                          className="w-full px-3 py-2 pr-10 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-500 text-sm focus:border-blue-500 focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => toggleShowToken(provider.key)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white"
+                        >
+                          {showTokens[provider.key] ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </div>
+                      <button
+                        onClick={() => saveProviderToken(provider.key)}
+                        disabled={!providerTokens[provider.key] || savingToken[provider.key]}
+                        className="flex items-center gap-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {savingToken[provider.key] ? (
+                          <RefreshCw size={14} className="animate-spin" />
+                        ) : (
+                          <Save size={14} />
+                        )}
+                        Save
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Test connection button - show when token exists OR form has token + required fields */}
+                  {(tokenStatus[provider.key]?.exists || (
+                    providerTokens[provider.key] &&
+                    (!provider.urlField || providerUrls[provider.key]) &&
+                    (!provider.userField || providerUsers[provider.key])
+                  )) && (
+                    <div className="flex items-center gap-3 pt-2">
+                      <button
+                        onClick={() => testConnection(provider.key)}
+                        disabled={testingConnection[provider.key]}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm disabled:opacity-50"
+                      >
+                        {testingConnection[provider.key] ? (
+                          <RefreshCw size={14} className="animate-spin" />
+                        ) : (
+                          <Plug size={14} />
+                        )}
+                        Test Connection
+                      </button>
+                      {tokenStatus[provider.key]?.connectionOk !== undefined && (
+                        <span className={`text-xs ${tokenStatus[provider.key].connectionOk ? 'text-green-400' : 'text-red-400'}`}>
+                          {tokenStatus[provider.key].connectionMessage}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Feature Flags */}
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
           <h2 className="text-lg font-semibold text-white mb-4">Feature Flags</h2>

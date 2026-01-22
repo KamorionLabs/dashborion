@@ -168,6 +168,11 @@ def get_query_param(event: Dict[str, Any], name: str, default: str = '') -> str:
     return params.get(name, default)
 
 
+def get_query_params(event: Dict[str, Any]) -> Dict[str, str]:
+    """Get all query string parameters from the event."""
+    return event.get('queryStringParameters', {}) or {}
+
+
 def get_body(event: Dict[str, Any]) -> Dict[str, Any]:
     """Parse JSON body from the event."""
     body = event.get('body', '')

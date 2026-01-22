@@ -250,6 +250,12 @@ export function setupRoutes(
   api.route("GET /api/{project}/images/{service}", lambdas.pipelines.arn, authOptions);
   api.route("POST /api/{project}/actions/build/{service}", lambdas.pipelines.arn, authOptions);
 
+  // Jenkins discovery and history routes (for Admin UI and CLI)
+  api.route("GET /api/pipelines/jenkins/discover", lambdas.pipelines.arn, authOptions);
+  api.route("GET /api/pipelines/jenkins/job/{jobPath+}", lambdas.pipelines.arn, authOptions);
+  api.route("GET /api/pipelines/jenkins/history/{jobPath+}", lambdas.pipelines.arn, authOptions);
+  api.route("GET /api/pipelines/jenkins/params/{jobPath+}", lambdas.pipelines.arn, authOptions);
+
   // Events routes
   api.route("GET /api/{project}/events/{env}", lambdas.events.arn, authOptions);
   api.route("POST /api/{project}/events/{env}/enrich", lambdas.events.arn, authOptions);
@@ -316,6 +322,15 @@ export function setupRoutes(
   api.route("PUT /api/config/aws-accounts/{accountId}", lambdas.configRegistry.arn, authOptions);
   api.route("DELETE /api/config/aws-accounts/{accountId}", lambdas.configRegistry.arn, authOptions);
 
+  // CI Providers (Jenkins, ArgoCD, etc.)
+  api.route("GET /api/config/ci-providers", lambdas.configRegistry.arn, authOptions);
+  api.route("GET /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/ci-providers", lambdas.configRegistry.arn, authOptions);
+  api.route("PUT /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
+  api.route("DELETE /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/ci-providers/test", lambdas.configRegistry.arn, authOptions);  // Test before save
+  api.route("POST /api/config/ci-providers/{providerId}/test", lambdas.configRegistry.arn, authOptions);
+
   // Import/Export/Validation
   api.route("GET /api/config/export", lambdas.configRegistry.arn, authOptions);
   api.route("POST /api/config/import", lambdas.configRegistry.arn, authOptions);
@@ -327,6 +342,13 @@ export function setupRoutes(
 
   // Frontend config (full merged config for React app)
   api.route("GET /api/config/full", lambdas.configRegistry.arn, authOptions);
+
+  // Secrets Management (CI/CD provider tokens stored in Secrets Manager)
+  api.route("GET /api/config/secrets/{secretType}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/secrets/{secretType}", lambdas.configRegistry.arn, authOptions);
+  api.route("DELETE /api/config/secrets/{secretType}", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/secrets/test-connection", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/secrets/discover", lambdas.configRegistry.arn, authOptions);
 
   // ==========================================================================
   // Discovery Routes (AWS resource discovery for Admin UI)

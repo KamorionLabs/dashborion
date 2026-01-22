@@ -91,8 +91,23 @@ export function ConfigProvider({ children }) {
   }, [])
 
   // Loading screen while auth or config is loading
+  // BUT: don't block unauthenticated users - let public routes (like /login) render
   const currentProject = rawConfig?.projects?.[currentProjectId]
-  if (authLoading || !isAuthenticated || !rawConfig || !currentProjectId || !currentProject) {
+  const configReady = rawConfig && currentProjectId && currentProject
+
+  // If not authenticated, render children without config (public routes don't need it)
+  // ProtectedRoute will handle redirecting to /login for protected routes
+  if (!isAuthenticated && !authLoading) {
+    // Provide a minimal context for public routes
+    return (
+      <ConfigContext.Provider value={null}>
+        {children}
+      </ConfigContext.Provider>
+    )
+  }
+
+  // Show loading screen while authenticating or loading config for authenticated users
+  if (authLoading || !configReady) {
     return (
       <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
         <div className="text-center">

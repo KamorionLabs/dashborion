@@ -623,6 +623,41 @@ class ProviderFactory:
         return cls._ci_providers[provider_type](config, project)
 
     @classmethod
+    def get_ci_provider_for_service(
+        cls, config, project: str, service: str, pipeline_type: str = 'build'
+    ) -> Optional[CIProvider]:
+        """
+        Get CI provider for a specific service and pipeline type.
+
+        Uses per-service pipeline config if available, otherwise falls back to global CI provider.
+
+        Args:
+            config: Application configuration
+            project: Project name
+            service: Service name
+            pipeline_type: 'build' or 'deploy'
+
+        Returns:
+            CIProvider instance or None if disabled
+        """
+        # Get project-specific pipeline config
+        project_config = config.get_project_config(project)
+        if project_config:
+            pipelines_config = project_config.get('pipelines', {})
+            if pipelines_config.get('enabled', False):
+                services_config = pipelines_config.get('services', {})
+                service_config = services_config.get(service, {})
+                type_config = service_config.get(pipeline_type, {})
+
+                if type_config.get('enabled', False):
+                    provider_type = type_config.get('provider')
+                    if provider_type and provider_type in cls._ci_providers:
+                        return cls._ci_providers[provider_type](config, project)
+
+        # Fallback to global CI provider
+        return cls.get_ci_provider(config, project)
+
+    @classmethod
     def get_orchestrator_provider(cls, config, project: str, env: str = None):
         """Get orchestrator provider instance based on config.
 
