@@ -380,15 +380,16 @@ export default function CIProviderForm() {
             <div>
               <h3 className="text-sm font-medium text-white">Test Connection</h3>
               <p className="text-xs text-gray-500">
-                {isEdit && !form.token
-                  ? 'Test with saved credentials'
-                  : 'Verify the provider is accessible before saving'}
+                {!form.url ? 'Enter URL to test connection' :
+                 !isEdit && !form.token ? 'Enter token to test connection' :
+                 form.token ? 'Test with credentials from form' :
+                 'Test with saved credentials'}
               </p>
             </div>
             <button
               type="button"
               onClick={handleTest}
-              disabled={testing || (!isEdit && !form.token)}
+              disabled={testing || !form.url || (!isEdit && !form.token) || (needsUser && !form.user)}
               className="flex items-center gap-2 px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded-lg disabled:opacity-50"
             >
               {testing ? (

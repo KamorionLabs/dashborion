@@ -324,11 +324,11 @@ export function setupRoutes(
 
   // CI Providers (Jenkins, ArgoCD, etc.)
   api.route("GET /api/config/ci-providers", lambdas.configRegistry.arn, authOptions);
-  api.route("GET /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
   api.route("POST /api/config/ci-providers", lambdas.configRegistry.arn, authOptions);
+  api.route("POST /api/config/ci-providers/test", lambdas.configRegistry.arn, authOptions);  // Test before save (must be before {providerId})
+  api.route("GET /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
   api.route("PUT /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
   api.route("DELETE /api/config/ci-providers/{providerId}", lambdas.configRegistry.arn, authOptions);
-  api.route("POST /api/config/ci-providers/test", lambdas.configRegistry.arn, authOptions);  // Test before save
   api.route("POST /api/config/ci-providers/{providerId}/test", lambdas.configRegistry.arn, authOptions);
 
   // Import/Export/Validation
