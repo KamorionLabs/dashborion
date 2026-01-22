@@ -199,29 +199,38 @@ export default function HomeDashboard() {
   const AWS_ACCOUNTS = useMemo(() => appConfig.aws?.accounts || {}, [appConfig.aws?.accounts])
   const ENV_COLORS = useMemo(() => appConfig.envColors || {}, [appConfig.envColors])
 
-  // Per-project pipelines configuration
-  const pipelinesConfig = useMemo(() => appConfig.pipelines || { enabled: false }, [appConfig.pipelines])
+  // Per-project pipelines configuration (service-centric structure)
+  const pipelinesConfig = useMemo(() => appConfig.pipelines || { enabled: false, services: {} }, [appConfig.pipelines])
   const pipelinesEnabled = pipelinesConfig.enabled
+  const pipelineServicesConfig = useMemo(() => pipelinesConfig.services || {}, [pipelinesConfig.services])
 
-  // Get build providers (CodePipeline, etc.) from pipelines config
-  const buildProviders = useMemo(() => {
-    if (!pipelinesConfig.enabled || !pipelinesConfig.providers) return []
-    return pipelinesConfig.providers.filter(p => p.category === 'build' || p.category === 'both')
-  }, [pipelinesConfig])
+  // Services that have deploy pipelines (category: 'deploy' or 'both')
+  const DEPLOY_SERVICES = useMemo(() => {
+    if (!pipelinesEnabled) return []
+    return Object.entries(pipelineServicesConfig)
+      .filter(([_, config]) => config.category === 'deploy' || config.category === 'both')
+      .map(([serviceId]) => serviceId)
+  }, [pipelinesEnabled, pipelineServicesConfig])
 
-  // Get services that have build pipelines (union of all build providers' services)
+  // Services that have build pipelines (category: 'build' or 'both')
   const PIPELINE_SERVICES = useMemo(() => {
-    const services = new Set()
-    buildProviders.forEach(provider => {
-      (provider.services || []).forEach(s => services.add(s))
-    })
-    return Array.from(services)
-  }, [buildProviders])
+    if (!pipelinesEnabled) return []
+    return Object.entries(pipelineServicesConfig)
+      .filter(([_, config]) => config.category === 'build' || config.category === 'both')
+      .map(([serviceId]) => serviceId)
+  }, [pipelinesEnabled, pipelineServicesConfig])
 
-  // Get the primary CodePipeline provider (for AWS console link)
+  // Get pipeline config for a specific service
+  const getPipelineConfig = useCallback((serviceId) => {
+    return pipelineServicesConfig[serviceId] || null
+  }, [pipelineServicesConfig])
+
+  // Get the first CodePipeline provider config (for AWS console link)
   const codePipelineProvider = useMemo(() => {
-    return buildProviders.find(p => p.type === 'codepipeline')
-  }, [buildProviders])
+    const entry = Object.entries(pipelineServicesConfig)
+      .find(([_, config]) => config.provider === 'codepipeline')
+    return entry ? { ...entry[1], service: entry[0] } : null
+  }, [pipelineServicesConfig])
 
   // Session expiration state
   const [sessionExpired, setSessionExpired] = useState(false)
@@ -1340,8 +1349,8 @@ export default function HomeDashboard() {
           style={{ marginLeft: eventsPanelVisible ? `${eventsPanelWidth}px` : '32px' }}
         >
           <div className="max-w-[1600px] mx-auto">
-          {/* Build Pipelines - At the top (only if pipelines enabled and has services) */}
-          {pipelinesEnabled && PIPELINE_SERVICES.length > 0 && (
+          {/* Build Pipelines - At the top (only if deploy pipelines enabled, distinct from build-only) */}
+          {pipelinesEnabled && DEPLOY_SERVICES.length > 0 && (
           <section>
             <div className="flex items-center justify-between mb-5">
               <h2 className="text-xl font-semibold flex items-center gap-3">
@@ -1368,7 +1377,7 @@ export default function HomeDashboard() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {PIPELINE_SERVICES.map(service => (
+              {DEPLOY_SERVICES.map(service => (
                 <BuildPipelineCard
                   key={service}
                   service={service}
