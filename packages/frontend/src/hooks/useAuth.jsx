@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useCallback, createContext, useContext } from 'react';
-import { fetchWithRetry, clearAuthTokens } from '../utils/fetch';
+import { fetchWithRetry, clearAuthTokens, storeToken, refreshAccessToken } from '../utils/fetch';
 
 // Role hierarchy for permission checks
 const ROLE_HIERARCHY = {
@@ -67,8 +67,8 @@ export function AuthProvider({ children }) {
             const data = await response.json();
             setUser(data.user);
             setPermissions(data.permissions || []);
-          } else if (response.status === 401) {
-            // Token expired/invalid - clear and retry with cookie
+          } else if (response.status === 401 || response.status === 403) {
+            // Token expired/invalid or unauthorized - clear and retry with cookie
             clearAuthTokens();
             await tryAuthViaCookie();
           } else {
@@ -102,8 +102,8 @@ export function AuthProvider({ children }) {
 
         // SSO authenticated - exchange for Bearer token
         await exchangeSsoForToken();
-      } else if (response.status === 401) {
-        // Not authenticated
+      } else if (response.status === 401 || response.status === 403) {
+        // Not authenticated (401) or unauthorized (403 from Lambda Authorizer)
         setUser(null);
         setPermissions([]);
       } else {
@@ -125,10 +125,8 @@ export function AuthProvider({ children }) {
 
         if (response.ok) {
           const data = await response.json();
-          // Store tokens for direct API access
-          localStorage.setItem('dashborion_token', data.access_token);
-          localStorage.setItem('dashborion_refresh_token', data.refresh_token);
-          localStorage.setItem('dashborion_user', JSON.stringify(data.user));
+          // Store tokens for direct API access (including expiration time)
+          storeToken(data.access_token, data.refresh_token, data.expires_in || 3600, data.user);
           localStorage.setItem('dashborion_auth_method', 'saml');
           console.log('SSO session exchanged for Bearer token');
         } else {

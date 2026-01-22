@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from './hooks/useAuth';
 import { ConfigProvider, useConfig } from './ConfigContext';
 import { DashboardProvider, useDashboard } from './contexts/DashboardContext';
 import { Shell } from './shell/Shell';
+import { SessionMonitor } from './components/common';
 
 // Pages
 import DeviceAuth from './pages/DeviceAuth';
@@ -30,6 +31,8 @@ import ClustersPage from './pages/admin/ClustersPage';
 import ClusterForm from './pages/admin/ClusterForm';
 import AccountsPage from './pages/admin/AccountsPage';
 import AccountForm from './pages/admin/AccountForm';
+import CIProvidersPage from './pages/admin/CIProvidersPage';
+import CIProviderForm from './pages/admin/CIProviderForm';
 
 /**
  * Loading screen
@@ -145,6 +148,7 @@ export default function AppRouter() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <SessionMonitor />
         <ConfigProvider>
           <DashboardProvider>
             <Routes>
@@ -185,6 +189,9 @@ export default function AppRouter() {
                 <Route path="accounts" element={<AccountsPage />} />
                 <Route path="accounts/new" element={<AccountForm />} />
                 <Route path="accounts/:accountId" element={<AccountForm />} />
+                <Route path="ci-providers" element={<CIProvidersPage />} />
+                <Route path="ci-providers/new" element={<CIProviderForm />} />
+                <Route path="ci-providers/:providerId" element={<CIProviderForm />} />
               </Route>
 
               {/* Protected routes with Shell */}
