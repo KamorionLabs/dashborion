@@ -9,16 +9,18 @@ import {
   FolderKanban,
   Server,
   Cloud,
+  GitBranch,
   LayoutDashboard,
   ChevronLeft,
 } from 'lucide-react';
 
 const navItems = [
   { path: '/admin/config', label: 'Overview', icon: LayoutDashboard, exact: true },
-  { path: '/admin/config/settings', label: 'Settings', icon: Settings },
   { path: '/admin/config/projects', label: 'Projects', icon: FolderKanban },
-  { path: '/admin/config/clusters', label: 'Clusters', icon: Server },
   { path: '/admin/config/accounts', label: 'AWS Accounts', icon: Cloud },
+  { path: '/admin/config/clusters', label: 'Clusters', icon: Server },
+  { path: '/admin/config/ci-providers', label: 'CI Providers', icon: GitBranch },
+  { path: '/admin/config/settings', label: 'Settings', icon: Settings },
 ];
 
 export default function AdminLayout() {

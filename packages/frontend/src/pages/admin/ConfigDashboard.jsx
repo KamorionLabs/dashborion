@@ -4,13 +4,13 @@
  * Shows summary statistics and quick links for config management.
  */
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   FolderKanban,
   Server,
   Cloud,
   Layers,
-  Plus,
+  GitBranch,
   RefreshCw,
   AlertCircle,
 } from 'lucide-react';
@@ -27,10 +27,11 @@ export default function ConfigDashboard() {
 
     try {
       // Fetch all data in parallel
-      const [projectsRes, clustersRes, accountsRes, settingsRes] = await Promise.all([
+      const [projectsRes, clustersRes, accountsRes, providersRes, settingsRes] = await Promise.all([
         fetchWithRetry('/api/config/projects'),
         fetchWithRetry('/api/config/clusters'),
         fetchWithRetry('/api/config/aws-accounts'),
+        fetchWithRetry('/api/config/ci-providers'),
         fetchWithRetry('/api/config/settings'),
       ]);
 
@@ -41,11 +42,13 @@ export default function ConfigDashboard() {
       const projectsData = await projectsRes.json();
       const clustersData = await clustersRes.json();
       const accountsData = await accountsRes.json();
+      const providersData = providersRes.ok ? await providersRes.json() : { ciProviders: [] };
       const settings = await settingsRes.json();
 
       const projects = projectsData.projects || [];
       const clusters = clustersData.clusters || [];
       const accounts = accountsData.awsAccounts || [];
+      const ciProviders = providersData.ciProviders || [];
 
       // Count environments across all projects
       const envCount = projects.reduce((acc, p) => acc + (p.environmentCount || 0), 0);
@@ -55,6 +58,7 @@ export default function ConfigDashboard() {
         environments: envCount,
         clusters: clusters.length,
         accounts: accounts.length,
+        ciProviders: ciProviders.length,
         features: settings?.features || {},
       });
     } catch (err) {
@@ -69,8 +73,13 @@ export default function ConfigDashboard() {
     fetchStats();
   }, []);
 
-  const StatCard = ({ icon: Icon, label, value, linkTo, linkLabel, color = 'blue' }) => (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
+  const navigate = useNavigate();
+
+  const StatCard = ({ icon: Icon, label, value, linkTo, color = 'blue' }) => (
+    <div
+      onClick={() => linkTo && navigate(linkTo)}
+      className={`bg-gray-900 border border-gray-800 rounded-lg p-6 ${linkTo ? 'cursor-pointer hover:border-gray-700 hover:bg-gray-900/80 transition-colors' : ''}`}
+    >
       <div className="flex items-center justify-between">
         <div className={`p-3 rounded-lg bg-${color}-600/20`}>
           <Icon size={24} className={`text-${color}-400`} />
@@ -78,15 +87,6 @@ export default function ConfigDashboard() {
         <span className="text-3xl font-bold text-white">{value}</span>
       </div>
       <h3 className="text-gray-400 mt-4">{label}</h3>
-      {linkTo && (
-        <Link
-          to={linkTo}
-          className={`inline-flex items-center gap-1 mt-2 text-sm text-${color}-400 hover:text-${color}-300`}
-        >
-          <Plus size={14} />
-          {linkLabel}
-        </Link>
-      )}
     </div>
   );
 
@@ -136,13 +136,12 @@ export default function ConfigDashboard() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         <StatCard
           icon={FolderKanban}
           label="Projects"
           value={stats?.projects || 0}
-          linkTo="/admin/config/projects/new"
-          linkLabel="Add Project"
+          linkTo="/admin/config/projects"
           color="blue"
         />
         <StatCard
@@ -152,27 +151,32 @@ export default function ConfigDashboard() {
           color="green"
         />
         <StatCard
-          icon={Server}
-          label="Clusters"
-          value={stats?.clusters || 0}
-          linkTo="/admin/config/clusters/new"
-          linkLabel="Add Cluster"
-          color="purple"
-        />
-        <StatCard
           icon={Cloud}
           label="AWS Accounts"
           value={stats?.accounts || 0}
-          linkTo="/admin/config/accounts/new"
-          linkLabel="Add Account"
+          linkTo="/admin/config/accounts"
           color="orange"
+        />
+        <StatCard
+          icon={Server}
+          label="Clusters"
+          value={stats?.clusters || 0}
+          linkTo="/admin/config/clusters"
+          color="purple"
+        />
+        <StatCard
+          icon={GitBranch}
+          label="CI Providers"
+          value={stats?.ciProviders || 0}
+          linkTo="/admin/config/ci-providers"
+          color="cyan"
         />
       </div>
 
       {/* Quick Actions */}
       <div className="bg-gray-900 border border-gray-800 rounded-lg p-6">
         <h2 className="text-lg font-semibold text-white mb-4">Quick Actions</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <Link
             to="/admin/config/projects/new"
             className="flex items-center gap-3 p-4 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
@@ -209,6 +213,19 @@ export default function ConfigDashboard() {
             <div>
               <h3 className="text-white font-medium">Add Cluster</h3>
               <p className="text-sm text-gray-500">Register an EKS or ECS cluster</p>
+            </div>
+          </Link>
+
+          <Link
+            to="/admin/config/ci-providers/new"
+            className="flex items-center gap-3 p-4 bg-gray-800 hover:bg-gray-700 rounded-lg transition-colors"
+          >
+            <div className="p-2 bg-cyan-600/20 rounded-lg">
+              <GitBranch size={20} className="text-cyan-400" />
+            </div>
+            <div>
+              <h3 className="text-white font-medium">Add CI Provider</h3>
+              <p className="text-sm text-gray-500">Configure Jenkins, ArgoCD, etc.</p>
             </div>
           </Link>
         </div>
